@@ -1,0 +1,337 @@
+# ============================================================================
+# Aerial Fleet Monitor — .gitignore
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Secrets and environment
+# ----------------------------------------------------------------------------
+# Never commit any of these. .env.example is the only env file in the repo.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets/
+
+# Cloudflare Tunnel credentials and configs with tokens baked in
+infra/cloudflared/credentials.json
+infra/cloudflared/*.json
+!infra/cloudflared/*.example.json
+infra/cloudflared/config.yml
+!infra/cloudflared/config.yml.example
+
+# Service tokens and JWT keys
+*.jwt
+service-tokens/
+
+# ----------------------------------------------------------------------------
+# Python (api/, pipelines/)
+# ----------------------------------------------------------------------------
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# Test and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.nox/
+nosetests.xml
+
+# Type checkers
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter (just in case)
+.ipynb_checkpoints/
+
+# Alembic — keep migrations, ignore generated artifacts
+api/alembic/versions/__pycache__/
+
+# ----------------------------------------------------------------------------
+# Node / TypeScript (web/)
+# ----------------------------------------------------------------------------
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.yarn-integrity
+
+# Build output
+web/dist/
+web/build/
+web/.vite/
+web/.turbo/
+
+# Vite cache
+.vite/
+
+# TypeScript
+*.tsbuildinfo
+web/tsconfig.tsbuildinfo
+
+# Vitest
+coverage/
+.vitest/
+
+# Playwright
+web/test-results/
+web/playwright-report/
+web/playwright/.cache/
+web/blob-report/
+
+# OpenAPI generated types — committed but regeneratable; if regenerating
+# in CI causes drift, uncomment the next line:
+# web/src/api/types.ts
+
+# ----------------------------------------------------------------------------
+# Salesforce / SFDX (salesforce/)
+# ----------------------------------------------------------------------------
+.sfdx/
+.sf/
+.localdevserver/
+salesforce/.sfdx/
+salesforce/.sf/
+
+# Deploy artifacts
+salesforce/manifest/package.xml.bak
+salesforce/**/MDAPIPackage/
+salesforce/**/.sfdx_test/
+
+# Apex test results
+salesforce/test-results/
+
+# Auth files (sf CLI stores these)
+.sfdx_auth/
+
+# ----------------------------------------------------------------------------
+# Docker / Compose
+# ----------------------------------------------------------------------------
+# Compose override files for local-only adjustments
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Docker volumes when bind-mounted into the project (the lakehouse, dev
+# Postgres data, etc.) — never commit user data
+data/lake/
+data/postgres/
+data/loki/
+data/prometheus/
+data/grafana/
+.docker/
+*.docker.log
+
+# ----------------------------------------------------------------------------
+# Lakehouse / local databases
+# ----------------------------------------------------------------------------
+*.parquet
+*.duckdb
+*.duckdb.wal
+lake/
+/lake/
+*.sqlite
+*.sqlite3
+*.db
+
+# Allow seed/fixture parquet files explicitly committed for tests
+!api/tests/fixtures/**/*.parquet
+!pipelines/tests/fixtures/**/*.parquet
+
+# OpenSky raw response captures from recording script — large, regeneratable
+api/tests/fixtures/opensky/*.raw.json
+scripts/recordings/
+
+# ----------------------------------------------------------------------------
+# Reference data CSVs (large, downloaded, regeneratable via make db-seed)
+# ----------------------------------------------------------------------------
+# Comment these out if you want to commit the seed CSVs for offline setup
+data/airports.csv
+data/aircraft.csv
+data/runways.csv
+
+# ----------------------------------------------------------------------------
+# Observability runtime data
+# ----------------------------------------------------------------------------
+# Loki, Prometheus, Grafana persist data via Docker volumes; if anyone uses
+# bind mounts, exclude the data dirs.
+infra/observability/loki/data/
+infra/observability/prometheus/data/
+infra/observability/grafana/data/
+infra/observability/grafana/grafana.db
+
+# Exported dashboards from Grafana (during iteration before they're committed
+# as JSON in infra/observability/grafana/dashboards/)
+*.dashboard.draft.json
+
+# ----------------------------------------------------------------------------
+# Logs and runtime artifacts
+# ----------------------------------------------------------------------------
+*.log
+logs/
+log/
+*.log.*
+
+# Dagster local home (development only)
+.dagster_home/
+dagster_home/
+
+# Process IDs, locks
+*.pid
+*.lock
+!package-lock.json
+!pnpm-lock.yaml
+!yarn.lock
+!poetry.lock
+!Cargo.lock
+
+# ----------------------------------------------------------------------------
+# IDE / editor
+# ----------------------------------------------------------------------------
+# VS Code — share extensions/settings recommendations but not user state
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+!.vscode/launch.example.json
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+.#*
+\#*\#
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# ----------------------------------------------------------------------------
+# Operating system
+# ----------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ----------------------------------------------------------------------------
+# AI agent / Claude Code artifacts
+# ----------------------------------------------------------------------------
+# Claude Code may create local state files; exclude unless you want them
+.claude/
+.claude-code/
+CLAUDE.md
+CLAUDE.local.md
+.claude-context/
+
+# Spec library and build instructions are kept local only — they're internal
+# context for Claude Code and not intended for public distribution.
+docs/
+
+# Other AI tool artifacts
+.cursor/
+.aider*
+.continue/
+
+# ----------------------------------------------------------------------------
+# Project-specific runtime
+# ----------------------------------------------------------------------------
+# Loom video drafts before publishing
+docs/screenshots/draft/
+*.loom.draft
+
+# Sensitive demo credentials (never commit; live in 1Password)
+demo-credentials.txt
+demo-credentials.md
+
+# Performance profiling outputs
+*.prof
+*.pprof
+profile_output/
+
+# Backup files from text editors and tools
+*.bak
+*.backup
+*.orig
+*.rej
+
+# Temp directories
+tmp/
+temp/
+.tmp/
+.temp/
+
+# ----------------------------------------------------------------------------
+# Documentation build output
+# ----------------------------------------------------------------------------
+# If we ever add a static docs site (Docusaurus, MkDocs, etc.)
+docs/_site/
+docs/.docusaurus/
+site/
+_build/
+
+# ----------------------------------------------------------------------------
+# CI / local test runner artifacts
+# ----------------------------------------------------------------------------
+.github/_local/
+ci-artifacts/
+test-artifacts/
