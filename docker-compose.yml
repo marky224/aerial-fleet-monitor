@@ -1,7 +1,9 @@
 # Aerial Fleet Monitor — docker-compose stack
 #
-# Phase 00 services: postgres, api, dagster (user-code/webserver/daemon),
-# cloudflared. Observability (Loki/Promtail/Prometheus/Grafana) lands Phase 09.
+# Phase 00 services: postgres, api, dagster (user-code/webserver/daemon).
+# Public API exposure is handled out-of-stack by a host-level reverse
+# tunnel; details live in `_private/docs/build/00_foundations.md`.
+# Observability (Loki/Promtail/Prometheus/Grafana) lands Phase 09.
 #
 # Bring up with:    docker compose up -d
 # Tail logs:        make logs
@@ -138,11 +140,3 @@ services:
     networks:
       - afm
 
-  cloudflared:
-    image: cloudflare/cloudflared:2026.3.0
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}
-    depends_on:
-      - api
-    networks:
-      - afm

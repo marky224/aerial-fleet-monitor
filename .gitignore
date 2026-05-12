@@ -17,19 +17,6 @@
 secrets/
 .secrets/
 
-# Cloudflare Tunnel credentials and configs with tokens baked in
-infra/cloudflared/credentials.json
-infra/cloudflared/*.json
-!infra/cloudflared/*.example.json
-infra/cloudflared/config.yml
-!infra/cloudflared/config.yml.example
-
-# Route 53 change-batches with real tunnel UUIDs substituted in.
-# Keep the .example templates as the source of truth; the substituted
-# file is a local artifact, not version-controlled.
-infra/route53/*.json
-!infra/route53/*.json.example
-
 # Service tokens and JWT keys
 *.jwt
 service-tokens/

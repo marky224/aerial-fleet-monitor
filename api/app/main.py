@@ -47,6 +47,9 @@ app = FastAPI(
     version=settings.service_version,
     description="Real-time fleet operations and customer-success console.",
     lifespan=lifespan,
+    docs_url="/docs" if settings.expose_docs else None,
+    redoc_url="/redoc" if settings.expose_docs else None,
+    openapi_url="/openapi.json" if settings.expose_docs else None,
 )
 
 

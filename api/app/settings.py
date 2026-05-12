@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Phase 01. Tests will pass a test DSN via env override or a test .env.
     database_url: str = Field(...)
 
+    # Whether to expose the FastAPI auto-generated docs (/docs, /redoc,
+    # /openapi.json). Defaults to False — secure by default. Set
+    # EXPOSE_DOCS=true in .env only when running locally without public
+    # exposure, or once Phase 06 lands JWT auth that can gate the routes.
+    expose_docs: bool = Field(default=False)
+
 
 settings = Settings()
 """Module-level singleton. Import as `from app.settings import settings`."""
