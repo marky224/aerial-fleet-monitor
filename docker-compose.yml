@@ -139,4 +139,3 @@ services:
         condition: service_started
     networks:
       - afm
-

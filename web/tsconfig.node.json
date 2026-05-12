@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "composite": true,
     "target": "ES2022",
     "lib": ["ES2023"],
     "module": "ESNext",
@@ -14,7 +15,9 @@
     "noFallthroughCasesInSwitch": true,
 
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+
+    "types": ["node"]
   },
   "include": ["vite.config.ts", "tailwind.config.ts"]
 }
