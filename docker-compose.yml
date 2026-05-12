@@ -24,6 +24,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-afm}
       POSTGRES_USER: ${POSTGRES_USER:-afm}
@@ -46,6 +48,8 @@ services:
       context: ./api
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
     env_file:
       - .env
     volumes:
@@ -71,6 +75,8 @@ services:
       context: ./pipelines
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     env_file:
       - .env
     command: >
@@ -101,6 +107,8 @@ services:
       context: ./pipelines
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     env_file:
       - .env
     environment:
@@ -129,6 +137,8 @@ services:
       context: ./pipelines
       dockerfile: Dockerfile
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     env_file:
       - .env
     environment:
