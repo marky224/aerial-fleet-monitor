@@ -14,6 +14,21 @@ permissions:
   contents: read
 
 jobs:
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        # SHA-pinned to v2.3.9 (latest v2.x as of 2025-04-17) for supply-chain hardening.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   lint-and-test:
     name: Lint + unit tests
     runs-on: ubuntu-24.04
