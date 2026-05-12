@@ -108,6 +108,8 @@ test-unit:
 
 .PHONY: db-migrate
 db-migrate:
+	set -a; . ./.env; set +a; \
+	export DATABASE_URL="$$(echo "$$DATABASE_URL" | sed 's|@postgres:|@127.0.0.1:|')"; \
 	cd api && . .venv/bin/activate && alembic upgrade head
 
 .PHONY: db-shell
