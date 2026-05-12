@@ -283,9 +283,11 @@ CLAUDE.md
 CLAUDE.local.md
 .claude-context/
 
-# Spec library and build instructions are kept local only — they're internal
-# context for Claude Code and not intended for public distribution.
-docs/
+# Private working documents — never commit. Holds full versions of trimmed/
+# stubbed public docs, the build phase library (docs/build/*.md), CLAUDE.md,
+# and the Skydio-specific MAPPING.md. Moving anything out of _private/ into
+# docs/ makes it public; do that deliberately, not by accident.
+_private/
 
 # Other AI tool artifacts
 .cursor/
