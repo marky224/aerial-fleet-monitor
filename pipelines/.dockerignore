@@ -1,0 +1,32 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Dagster local state — runs/event_log/schedule_state belong in the
+# DAGSTER_HOME volume, never in the image.
+dagster_home/
+.dagster/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Anything not needed in the image
+tests/
+*.md
+.env
+.env.*
+!.env.example

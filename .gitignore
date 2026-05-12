@@ -17,13 +17,6 @@
 secrets/
 .secrets/
 
-# Cloudflare Tunnel credentials and configs with tokens baked in
-infra/cloudflared/credentials.json
-infra/cloudflared/*.json
-!infra/cloudflared/*.example.json
-infra/cloudflared/config.yml
-!infra/cloudflared/config.yml.example
-
 # Service tokens and JWT keys
 *.jwt
 service-tokens/

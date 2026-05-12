@@ -1,0 +1,78 @@
+# Aerial Fleet Monitor — pipelines package (Dagster)
+#
+# Phase 00 scope: an empty `Definitions()` object that lets the Dagster
+# webserver/daemon/user-code containers start cleanly. Real assets land
+# in Phase 01 (ingestion) and Phase 05 (case detector).
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "afm-pipelines"
+version = "1.0.0"
+description = "Aerial Fleet Monitor — Dagster pipelines"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+    { name = "Mark Andrew Marquez", email = "me@markandrewmarquez.com" }
+]
+
+dependencies = [
+    "dagster>=1.9,<2",
+    "dagster-webserver>=1.9,<2",
+    "dagster-postgres>=0.25,<0.26",
+    "structlog>=24.4,<25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-cov>=5.0,<6",
+    "ruff>=0.7,<0.8",
+    "mypy>=1.13,<2",
+]
+
+# Flat-layout package: pyproject.toml sits alongside __init__.py and
+# definitions.py. Explicit mapping is required since `find:` mode would
+# scan subdirectories rather than treating the build root as the package.
+[tool.setuptools]
+packages = [
+    "pipelines",
+    # subpackages added in later phases: pipelines.assets, pipelines.jobs,
+    # pipelines.resources. Listed here so a fresh `pip install -e .`
+    # rebuilds cleanly when the matching directory is added.
+]
+package-dir = {"pipelines" = "."}
+
+# Dagster discovers the Definitions object via DAGSTER_CODE_LOCATION /
+# workspace.yaml. The module path is `pipelines.definitions`.
+
+# ----------------------------------------------------------------------------
+# Tooling configs
+# ----------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["dagster.*", "dagster_webserver.*", "dagster_postgres.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
