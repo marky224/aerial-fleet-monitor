@@ -84,6 +84,7 @@ cd aerial-fleet-monitor
 
 cp .env.example .env             # fill in API keys
 make install                     # Python venvs + pnpm
+pre-commit install               # enable gitleaks pre-commit hook (requires `pipx install pre-commit`)
 make db-migrate                  # Postgres schema
 make db-seed                     # reference airport data
 
