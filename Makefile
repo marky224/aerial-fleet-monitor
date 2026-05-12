@@ -12,6 +12,12 @@
 # Detect docker compose v2 vs legacy. Most modern installs ship v2.
 DOCKER_COMPOSE ?= docker compose
 
+# Python interpreter used to create per-package venvs. Override if your
+# system exposes 3.12 under a different name (e.g. `python`, `python3`,
+# a pyenv shim). The venvs themselves still pin to whatever 3.12 this
+# resolves to at install time.
+PYTHON ?= python3.12
+
 # Python venvs per package; pnpm for the web workspace.
 PY_API := api/.venv
 PY_PIPELINES := pipelines/.venv
@@ -61,10 +67,10 @@ help:
 
 .PHONY: install
 install:
-	@echo "→ Installing API Python deps"
-	cd api && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-	@echo "→ Installing pipelines Python deps"
-	cd pipelines && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+	@echo "→ Installing API Python deps (using $(PYTHON))"
+	cd api && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+	@echo "→ Installing pipelines Python deps (using $(PYTHON))"
+	cd pipelines && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing web Node deps"
 	cd web && pnpm install
 
