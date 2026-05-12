@@ -118,9 +118,14 @@ db-seed:
 		echo "data/airports.csv missing — run: python scripts/download_airports.py"; \
 		exit 1; \
 	fi
+	@if [ ! -f data/aircraft.csv ]; then \
+		echo "data/aircraft.csv missing — run: python scripts/download_aircraft.py"; \
+		exit 1; \
+	fi
 	set -a; . ./.env; set +a; \
 	export DATABASE_URL="$$(echo "$$DATABASE_URL" | sed 's|@postgres:|@127.0.0.1:|')"; \
 	export AFM_AIRPORTS_CSV="$$(pwd)/data/airports.csv"; \
+	export AFM_AIRCRAFT_CSV="$$(pwd)/data/aircraft.csv"; \
 	export DAGSTER_HOME="$$(mktemp -d -t afm-db-seed-XXXXXX)"; \
 	venv="$$(pwd)/pipelines/.venv"; \
 	. "$$venv/bin/activate" && cd "$$DAGSTER_HOME" && \

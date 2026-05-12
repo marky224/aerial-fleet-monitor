@@ -1,16 +1,28 @@
-"""`static_reference` — loads `ref.airports` from OurAirports CSV + watchlist.json.
+"""`static_reference` — loads `ref.airports` and `ref.aircraft_registry`.
 
-Reads ``data/airports.csv`` (downloaded via ``scripts/download_airports.py``)
-and the bundled ``pipelines/data/watchlist.json``. Upserts every active US
-airport with scheduled service into ``ref.airports`` and flips ``is_watched``
-+ ``customer_regions`` for the 35 ICAOs named in the watchlist.
+Two reference tables, two CSVs, one asset:
 
-Single transaction, idempotent: re-running yields the same end state. The
-asset is invoked both for first-time setup (``make db-seed``) and on the
-weekly schedule (wired in Phase 01 Step 5).
+* ``ref.airports`` is loaded from OurAirports ``data/airports.csv`` plus the
+  bundled ``pipelines/data/watchlist.json`` (US + scheduled service + large/
+  medium airports; watchlist members get ``is_watched = TRUE`` and a
+  ``customer_regions`` tag). ~500 rows. Idempotent UPSERT via ``execute_values``.
+
+* ``ref.aircraft_registry`` is loaded from OpenSky ``data/aircraft.csv``
+  (~600k rows). Atomic TRUNCATE + ``COPY FROM STDIN`` inside one transaction
+  — much faster than per-row UPSERT at this scale and matches the table's
+  "may be partial" semantics (OpenSky's DB is the only authority; we don't
+  accumulate local state).
+
+The two halves run in **separate transactions**. If the aircraft half fails,
+the airports half has already committed; the next materialization re-runs
+both (each is idempotent) and converges.
+
+Invoked both for first-time setup (``make db-seed``) and on the weekly
+schedule (wired in Phase 01 Step 5).
 """
 
 import csv
+import io
 import json
 import os
 from importlib.resources import files
@@ -23,11 +35,13 @@ from psycopg2.extras import execute_values
 from pipelines.resources.postgres import PostgresResource
 
 AIRPORTS_CSV_PATH = Path("/srv/data/airports.csv")
-"""Container-side path. The Makefile overrides via ``AFM_AIRPORTS_CSV`` for host runs."""
+AIRCRAFT_CSV_PATH = Path("/srv/data/aircraft.csv")
+"""Container-side defaults. The Makefile overrides via ``AFM_AIRPORTS_CSV`` /
+``AFM_AIRCRAFT_CSV`` for host execution."""
 
 ALLOWED_AIRPORT_TYPES = frozenset({"large_airport", "medium_airport"})
 
-UPSERT_SQL = """
+AIRPORTS_UPSERT_SQL = """
 INSERT INTO ref.airports (
     icao, iata, name, city, state, country,
     lat, lon, elevation_ft, timezone,
@@ -47,6 +61,17 @@ ON CONFLICT (icao) DO UPDATE SET
     customer_regions = EXCLUDED.customer_regions
 """
 
+AIRCRAFT_COPY_SQL = (
+    "COPY ref.aircraft_registry "
+    "(icao24, registration, type_code, type_name, operator, operator_icao, country) "
+    "FROM STDIN WITH (FORMAT csv, NULL '')"
+)
+
+
+# ----------------------------------------------------------------------------
+# Airports half
+# ----------------------------------------------------------------------------
+
 
 def _load_watchlist() -> dict[str, list[str]]:
     """Return a mapping of ``ICAO -> customer_regions`` for the 35 watched airports."""
@@ -56,7 +81,6 @@ def _load_watchlist() -> dict[str, list[str]]:
 
 
 def _airports_csv_path() -> Path:
-    """Resolve the on-disk CSV path. The ``AFM_AIRPORTS_CSV`` env var wins when set."""
     override = os.environ.get("AFM_AIRPORTS_CSV")
     return Path(override) if override else AIRPORTS_CSV_PATH
 
@@ -72,10 +96,9 @@ def _parse_int(raw: str) -> int | None:
     return int(raw) if raw not in ("", None) else None
 
 
-def _build_rows(
+def _build_airport_rows(
     csv_path: Path, watchlist: dict[str, list[str]]
 ) -> tuple[list[tuple[Any, ...]], set[str]]:
-    """Read the OurAirports CSV and return (rows-to-upsert, ICAOs-seen-in-watchlist)."""
     rows: list[tuple[Any, ...]] = []
     seen_watched: set[str] = set()
 
@@ -109,7 +132,7 @@ def _build_rows(
                     float(record["latitude_deg"]),
                     float(record["longitude_deg"]),
                     _parse_int(record["elevation_ft"]),
-                    None,  # timezone: not in OurAirports CSV; populated in a later step
+                    None,  # timezone: not in OurAirports CSV
                     is_watched,
                     regions,
                 )
@@ -118,10 +141,9 @@ def _build_rows(
     return rows, seen_watched
 
 
-@asset(group_name="reference")
-def static_reference(
+def _load_airports(
     context: AssetExecutionContext, postgres: PostgresResource
-) -> MaterializeResult:
+) -> dict[str, MetadataValue]:
     csv_path = _airports_csv_path()
     if not csv_path.exists():
         raise FileNotFoundError(
@@ -133,7 +155,7 @@ def static_reference(
     watchlist = _load_watchlist()
     context.log.info("Loaded watchlist with %d ICAOs", len(watchlist))
 
-    rows, seen_watched = _build_rows(csv_path, watchlist)
+    rows, seen_watched = _build_airport_rows(csv_path, watchlist)
     context.log.info("Parsed %d US airports with scheduled service from %s", len(rows), csv_path)
 
     missing = set(watchlist) - seen_watched
@@ -146,24 +168,138 @@ def static_reference(
 
     with postgres.get_conn() as conn:
         with conn.cursor() as cur:
-            execute_values(cur, UPSERT_SQL, rows, page_size=500)
+            execute_values(cur, AIRPORTS_UPSERT_SQL, rows, page_size=500)
             cur.execute("SELECT COUNT(*) FROM ref.airports")
-            total_count = cur.fetchone()[0]
+            total = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM ref.airports WHERE is_watched")
-            watched_count = cur.fetchone()[0]
+            watched = cur.fetchone()[0]
         conn.commit()
 
-    if watched_count != len(watchlist):
+    if watched != len(watchlist):
         raise RuntimeError(
-            f"Post-upsert invariant failed: ref.airports has {watched_count} watched rows, "
+            f"Post-upsert invariant failed: ref.airports has {watched} watched rows, "
             f"expected {len(watchlist)}."
         )
 
-    return MaterializeResult(
-        metadata={
-            "total_airports": MetadataValue.int(total_count),
-            "watched_airports": MetadataValue.int(watched_count),
-            "csv_source": MetadataValue.path(str(csv_path)),
-            "watchlist_size": MetadataValue.int(len(watchlist)),
-        }
+    return {
+        "airports_total": MetadataValue.int(total),
+        "airports_watched": MetadataValue.int(watched),
+        "airports_csv": MetadataValue.path(str(csv_path)),
+        "airports_watchlist_size": MetadataValue.int(len(watchlist)),
+    }
+
+
+# ----------------------------------------------------------------------------
+# Aircraft half
+# ----------------------------------------------------------------------------
+
+
+def _aircraft_csv_path() -> Path:
+    override = os.environ.get("AFM_AIRCRAFT_CSV")
+    return Path(override) if override else AIRCRAFT_CSV_PATH
+
+
+def _stream_aircraft_csv(csv_path: Path) -> tuple[io.StringIO, int, int, int]:
+    """Read OpenSky's aircraft DB CSV and project it into the schema's column set.
+
+    Returns ``(buffer, rows_read, rows_kept, duplicates_skipped)``.
+
+    OpenSky's CSV contains a leading placeholder row with an empty icao24
+    plus a small number of true duplicate icao24 entries (≈1k of ~520k).
+    The first occurrence wins — deterministic and matches the order of the
+    upstream file.
+
+    ``country`` is left NULL for every row: OpenSky's CSV has no country
+    field; the icao24 hex prefix encodes country of registration but
+    mapping it requires a separate range lookup table that's out of scope
+    for this sub-step.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_MINIMAL)
+    seen: set[str] = set()
+    rows_read = 0
+    rows_kept = 0
+    duplicates_skipped = 0
+
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for record in reader:
+            rows_read += 1
+            icao24 = record["icao24"].strip().lower()
+            if not icao24:
+                continue
+            if icao24 in seen:
+                duplicates_skipped += 1
+                continue
+            seen.add(icao24)
+            writer.writerow(
+                [
+                    icao24,
+                    record["registration"].strip() or None,
+                    record["typecode"].strip() or None,
+                    record["model"].strip() or None,
+                    record["operator"].strip() or None,
+                    record["operatoricao"].strip() or None,
+                    None,  # country
+                ]
+            )
+            rows_kept += 1
+
+    buffer.seek(0)
+    return buffer, rows_read, rows_kept, duplicates_skipped
+
+
+def _load_aircraft(
+    context: AssetExecutionContext, postgres: PostgresResource
+) -> dict[str, MetadataValue]:
+    csv_path = _aircraft_csv_path()
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"Aircraft CSV not found at {csv_path}. "
+            "Run `python scripts/download_aircraft.py` first, "
+            "or set AFM_AIRCRAFT_CSV to an explicit path."
+        )
+
+    buffer, rows_read, rows_kept, duplicates_skipped = _stream_aircraft_csv(csv_path)
+    context.log.info(
+        "Parsed %d aircraft rows from %s (kept %d after deduping; %d duplicate icao24s skipped)",
+        rows_read,
+        csv_path,
+        rows_kept,
+        duplicates_skipped,
     )
+
+    with postgres.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE ref.aircraft_registry")
+            cur.copy_expert(AIRCRAFT_COPY_SQL, buffer)
+            cur.execute("SELECT COUNT(*) FROM ref.aircraft_registry")
+            total = cur.fetchone()[0]
+        conn.commit()
+
+    if total != rows_kept:
+        raise RuntimeError(
+            f"Post-load invariant failed: ref.aircraft_registry has {total} rows, "
+            f"expected {rows_kept} (rows fed to COPY)."
+        )
+
+    return {
+        "aircraft_csv_rows_read": MetadataValue.int(rows_read),
+        "aircraft_duplicates_skipped": MetadataValue.int(duplicates_skipped),
+        "aircraft_rows_loaded": MetadataValue.int(total),
+        "aircraft_csv": MetadataValue.path(str(csv_path)),
+    }
+
+
+# ----------------------------------------------------------------------------
+# Asset
+# ----------------------------------------------------------------------------
+
+
+@asset(group_name="reference")
+def static_reference(
+    context: AssetExecutionContext, postgres: PostgresResource
+) -> MaterializeResult:
+    airport_meta = _load_airports(context, postgres)
+    aircraft_meta = _load_aircraft(context, postgres)
+    return MaterializeResult(metadata={**airport_meta, **aircraft_meta})
