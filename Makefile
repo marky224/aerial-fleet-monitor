@@ -104,7 +104,7 @@ db-migrate:
 
 .PHONY: db-shell
 db-shell:
-	$(DOCKER_COMPOSE) exec postgres psql -U $${POSTGRES_USER:-afm} $${POSTGRES_DB:-afm}
+	$(DOCKER_COMPOSE) exec postgres sh -lc 'psql -U "$${POSTGRES_USER:-afm}" "$${POSTGRES_DB:-afm}"'
 
 # ----------------------------------------------------------------------------
 # Stubs — real implementation lands in the noted phase.
