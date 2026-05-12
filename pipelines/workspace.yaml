@@ -1,0 +1,15 @@
+# Dagster workspace — how the webserver and daemon discover user code.
+#
+# Mounted read-only into the dagster-webserver and dagster-daemon
+# containers at /opt/dagster/workspace.yaml.
+#
+# The user-code container runs `dagster api grpc` and registers itself
+# at host=dagster-user-code, port=4000. The webserver/daemon connect to
+# that gRPC endpoint to load AFM's Definitions object — defined in
+# pipelines/definitions.py and exported as `defs`.
+
+load_from:
+  - grpc_server:
+      host: dagster-user-code
+      port: 4000
+      location_name: afm-pipelines

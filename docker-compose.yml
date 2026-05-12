@@ -1,0 +1,138 @@
+# Aerial Fleet Monitor — docker-compose stack
+#
+# Phase 00 services: postgres, api, dagster (user-code/webserver/daemon),
+# cloudflared. Observability (Loki/Promtail/Prometheus/Grafana) lands Phase 09.
+#
+# Bring up with:    docker compose up -d
+# Tail logs:        make logs
+# Healthcheck API:  curl http://localhost:8000/v1/health
+
+name: afm
+
+networks:
+  afm:
+    name: afm
+
+volumes:
+  postgres_data:
+  parquet_lake:
+  dagster_home:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-afm}
+      POSTGRES_USER: ${POSTGRES_USER:-afm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-afm} -d $${POSTGRES_DB:-afm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - afm
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - parquet_lake:/lake
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/v1/health').status==200 else 1)\""
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - afm
+
+  dagster-user-code:
+    build:
+      context: ./pipelines
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: >
+      dagster api grpc
+      -h 0.0.0.0
+      -p 4000
+      -m pipelines.definitions
+    volumes:
+      - parquet_lake:/lake
+    expose:
+      - "4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - afm
+
+  dagster-webserver:
+    build:
+      context: ./pipelines
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    command: >
+      dagster-webserver
+      -h 0.0.0.0
+      -p 3000
+      -w /opt/dagster/workspace.yaml
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./pipelines/workspace.yaml:/opt/dagster/workspace.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - dagster-user-code
+    networks:
+      - afm
+
+  dagster-daemon:
+    build:
+      context: ./pipelines
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    command: dagster-daemon run
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./pipelines/workspace.yaml:/opt/dagster/workspace.yaml:ro
+    depends_on:
+      - dagster-user-code
+    networks:
+      - afm
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - api
+    networks:
+      - afm
