@@ -66,6 +66,13 @@ ignore = [
     "E501",  # line length handled by formatter
 ]
 
+[tool.ruff.lint.isort]
+# `app` is this project's package; `alembic` is the third-party migration
+# tool (the local alembic/ directory is config, not a Python package).
+# Without these hints ruff misclassifies based on the alembic/ directory.
+known-first-party = ["app"]
+known-third-party = ["alembic"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
