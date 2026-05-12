@@ -27,7 +27,7 @@ It uses public aviation data because real drone telemetry isn't available to me,
                                   │ HTTPS
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Data plane (self-hosted on openclaw-pc, exposed via Cloudflare Tunnel) │
+│  Data plane (self-hosted Linux box, public API via reverse tunnel)      │
 │    FastAPI  ←→  Postgres 16  ←→  Parquet lakehouse (DuckDB)             │
 │    Dagster orchestration                                                │
 │    Loki + Prometheus + Grafana (observability)                          │
@@ -72,7 +72,7 @@ Full architecture detail available on request.
 
 **Observability:** Loki · Promtail · Prometheus · Grafana (5 dashboards: Fleet Ops Overview, Salesforce Health, Pipeline Health, Per-Airport SLA Trends, Case Detector Tuning)
 
-**Infrastructure:** Docker Compose on Ubuntu 24.04 · Cloudflare Tunnel · Cloudflare Access · AWS S3 + CloudFront for frontend · Route 53
+**Infrastructure:** Docker Compose on Ubuntu 24.04 · self-hosted reverse tunnel for public API · AWS S3 + CloudFront for frontend · Route 53
 
 **Testing:** pytest · Vitest · Playwright · schemathesis · Apex test framework · GitHub Actions CI
 
