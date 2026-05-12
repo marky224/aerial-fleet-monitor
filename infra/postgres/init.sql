@@ -20,6 +20,13 @@ CREATE SCHEMA IF NOT EXISTS app;
 -- static sources (OurAirports CSV, GitHub) and refreshed infrequently.
 CREATE SCHEMA IF NOT EXISTS ref;
 
+-- Dagster's internal storage (runs, event_log, schedules, plus Dagster's
+-- own alembic_version table) lives in its own database, not in `afm`.
+-- This prevents Dagster's unqualified CREATEs from landing in AFM's `app`
+-- schema and from claiming the alembic_version table ahead of AFM's own
+-- migrations. pipelines/dagster.yaml reads DAGSTER_DATABASE_URL.
+CREATE DATABASE dagster;
+
 -- Default search path so unqualified table names hit `app` first, then `ref`.
 -- Migrations should still qualify tables explicitly; this is a convenience
 -- for ad-hoc psql sessions via `make db-shell`.
