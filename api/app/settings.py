@@ -33,9 +33,7 @@ class Settings(BaseSettings):
     environment: Literal["dev", "prod"] = Field(default="dev")
 
     # Logging
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-        default="INFO"
-    )
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(default="INFO")
     log_format: Literal["json", "console"] = Field(default="console")
 
     # Database — driven by DATABASE_URL in .env. Required (no default) so

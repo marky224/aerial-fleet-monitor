@@ -1,0 +1,39 @@
+# Dagster instance config. Lives at $DAGSTER_HOME/dagster.yaml inside
+# the daemon + webserver containers (bind-mounted from this repo path
+# in docker-compose.yml).
+#
+# Why Postgres instead of the default SQLite: Dagster 1.9.13's bundled
+# alembic migrations declare multiple heads on a fresh SQLite bootstrap,
+# which crashes `dagster-daemon` on first run with
+#   alembic.util.exc.CommandError: Version table 'alembic_version' has
+#   more than one head present
+# This was supposed to land in Phase 01 (per the original Phase 00 build
+# decision in docs/build/00_foundations.md), but the SQLite bug forced
+# the switch earlier. Side benefit: aligns with the long-term target
+# where Dagster shares the operational store with the API.
+#
+# `postgres_url` reads from $DATABASE_URL inside the container — the
+# same env var the API uses. Dagster creates its tables (runs, event_log,
+# schedules, etc.) in the `public` schema, separate from AFM's `app` and
+# `ref` schemas defined in infra/postgres/init.sql.
+
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_url:
+      env: DATABASE_URL
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_url:
+      env: DATABASE_URL
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_url:
+      env: DATABASE_URL

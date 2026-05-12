@@ -22,9 +22,7 @@ from structlog.types import EventDict, Processor
 from app.settings import settings
 
 
-def _drop_color_message_key(
-    _logger: Any, _method_name: str, event_dict: EventDict
-) -> EventDict:
+def _drop_color_message_key(_logger: Any, _method_name: str, event_dict: EventDict) -> EventDict:
     """uvicorn duplicates the message under `color_message`; drop it."""
     event_dict.pop("color_message", None)
     return event_dict
@@ -50,13 +48,18 @@ def configure_logging() -> None:
     else:
         renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
 
+    # Route structlog calls through stdlib so `add_logger_name` (which
+    # reads `logger.name`) has a real stdlib logger to read from. The
+    # final rendering happens in the stdlib StreamHandler below — both
+    # native and foreign log records converge there.
     structlog.configure(
-        processors=[*shared_processors, renderer],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, settings.log_level.upper())
-        ),
+        processors=[
+            *shared_processors,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
 
