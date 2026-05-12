@@ -3,11 +3,9 @@
 Loaded by the user-code gRPC server (`dagster api grpc -m pipelines.definitions`)
 and discovered by the webserver/daemon via `workspace.yaml`.
 
-Phase 00 ships an empty Definitions object — enough for the webserver to
-start, render an empty workspace, and pass health checks. Assets,
-schedules, sensors, and resources are added phase by phase:
+Assets, schedules, sensors, and resources are added phase by phase:
 
-  Phase 01 — OpenSky + NOAA ingestion assets, schedules.
+  Phase 01 — Reference data + OpenSky + NOAA ingestion assets, schedules.
   Phase 05 — Case detector asset and rule-engine resources.
   Phase 07 — Daily brief asset.
   Phase 08 — Runbook → Notion sync asset.
@@ -15,12 +13,17 @@ schedules, sensors, and resources are added phase by phase:
 
 from __future__ import annotations
 
-from dagster import Definitions
+from dagster import Definitions, EnvVar
+
+from pipelines.assets import static_reference
+from pipelines.resources import PostgresResource
 
 defs = Definitions(
-    assets=[],
+    assets=[static_reference],
     schedules=[],
     sensors=[],
     jobs=[],
-    resources={},
+    resources={
+        "postgres": PostgresResource(dsn=EnvVar("DATABASE_URL")),
+    },
 )
