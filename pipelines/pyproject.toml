@@ -22,6 +22,7 @@ dependencies = [
     "dagster>=1.9,<2",
     "dagster-webserver>=1.9,<2",
     "dagster-postgres>=0.25,<0.26",
+    "psycopg2-binary>=2.9,<3",
     "structlog>=24.4,<25",
 ]
 
@@ -39,11 +40,15 @@ dev = [
 [tool.setuptools]
 packages = [
     "pipelines",
-    # subpackages added in later phases: pipelines.assets, pipelines.jobs,
-    # pipelines.resources. Listed here so a fresh `pip install -e .`
-    # rebuilds cleanly when the matching directory is added.
+    "pipelines.assets",
+    "pipelines.data",
+    "pipelines.resources",
+    # subpackages added in later phases: pipelines.jobs.
 ]
 package-dir = {"pipelines" = "."}
+
+[tool.setuptools.package-data]
+"pipelines.data" = ["*.json"]
 
 # Dagster discovers the Definitions object via DAGSTER_CODE_LOCATION /
 # workspace.yaml. The module path is `pipelines.definitions`.
@@ -70,7 +75,7 @@ python_version = "3.12"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["dagster.*", "dagster_webserver.*", "dagster_postgres.*"]
+module = ["dagster.*", "dagster_webserver.*", "dagster_postgres.*", "psycopg2", "psycopg2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
