@@ -26,10 +26,14 @@ RUN apt-get update \
 WORKDIR /build
 
 # Flat-layout package: the package source files sit alongside pyproject.toml.
-# Copying just the metadata first lets the dep-install layer cache across
-# changes to definitions.py and (later) the assets/jobs/resources trees.
+# Copy ALL source before `pip install .` so site-packages ends up with the
+# full package — without this, `dagster api grpc -m pipelines.definitions`
+# fails at container start because definitions.py isn't installed.
+# Phase 01+ will add COPYs for the assets/, jobs/, resources/ subpackages.
+# Trade-off: any source change invalidates the dep-install cache layer.
 COPY pyproject.toml ./
 COPY __init__.py ./
+COPY definitions.py ./
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \

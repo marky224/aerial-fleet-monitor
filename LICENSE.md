@@ -28,4 +28,4 @@ AFM exists to demonstrate the author's engineering, architecture, and product ju
 
 ## No warranty
 
-This code is provided as-is. It runs on the author's home server against real Salesforce orgs and real external APIs. If you choose to run it locally for evaluation, you do so at your own risk; the author isn't responsible for what happens. See the warranty disclaimer in [`LICENSE`](./LICENSE) for the legal version.
+This code is provided as-is. It runs on the author's home server against real Salesforce orgs and real external APIs. Running it locally for evaluation requires prior written permission from the author under [`LICENSE`](./LICENSE); if permission is granted, you do so at your own risk. See the warranty disclaimer in [`LICENSE`](./LICENSE) for the legal version.

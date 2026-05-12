@@ -38,10 +38,10 @@ class Settings(BaseSettings):
     )
     log_format: Literal["json", "console"] = Field(default="console")
 
-    # Database — driven by DATABASE_URL in .env. Required at runtime even
-    # though Phase 00 endpoints don't query yet, so we fail fast on missing
-    # config rather than at first DB call in Phase 01.
-    database_url: str = Field(default="postgresql://afm:@postgres:5432/afm")
+    # Database — driven by DATABASE_URL in .env. Required (no default) so
+    # missing config fails at import time instead of at first DB call in
+    # Phase 01. Tests will pass a test DSN via env override or a test .env.
+    database_url: str = Field(...)
 
 
 settings = Settings()

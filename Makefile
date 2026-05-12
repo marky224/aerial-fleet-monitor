@@ -62,9 +62,9 @@ help:
 .PHONY: install
 install:
 	@echo "→ Installing API Python deps"
-	cd api && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e .
+	cd api && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing pipelines Python deps"
-	cd pipelines && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e .
+	cd pipelines && python3.12 -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing web Node deps"
 	cd web && pnpm install
 

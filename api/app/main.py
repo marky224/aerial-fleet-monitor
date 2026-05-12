@@ -10,7 +10,7 @@ Routers, services, auth, and the QueryService all land in Phase 02+.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from pydantic import BaseModel
