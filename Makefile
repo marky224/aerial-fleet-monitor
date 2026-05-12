@@ -90,6 +90,8 @@ lint:
 	cd api && . .venv/bin/activate && mypy app
 	@echo "→ ruff (pipelines)"
 	cd pipelines && . .venv/bin/activate && ruff check . && ruff format --check .
+	@echo "→ mypy (pipelines)"
+	cd pipelines && . .venv/bin/activate && mypy .
 	@echo "→ eslint (web)"
 	cd web && pnpm lint
 
