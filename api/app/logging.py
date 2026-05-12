@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from structlog.types import EventDict, Processor
@@ -87,4 +87,6 @@ def configure_logging() -> None:
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger. Use module `__name__` as the conventional name."""
-    return structlog.get_logger(name)
+    # structlog.get_logger returns Any in the stubs; runtime type matches our
+    # configured wrapper_class (stdlib.BoundLogger), so the cast is safe.
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
