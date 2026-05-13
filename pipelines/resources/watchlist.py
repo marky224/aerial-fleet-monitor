@@ -29,6 +29,7 @@ sub-50ms in numpy. No KD-tree, no PostGIS, no per-row Python loops.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Lock
 
 import numpy as np
 from dagster import ConfigurableResource
@@ -66,6 +67,7 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
 
     _airports_cache: list[WatchedAirport] | None = PrivateAttr(default=None)
     _coords_cache: np.ndarray | None = PrivateAttr(default=None)
+    _load_lock: Lock = PrivateAttr(default_factory=Lock)
 
     def get_airports(self) -> list[WatchedAirport]:
         """Return the watched-airport list, loading on first call.
@@ -75,7 +77,9 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
         assignments).
         """
         if self._airports_cache is None:
-            self._load()
+            with self._load_lock:
+                if self._airports_cache is None:
+                    self._load()
         assert self._airports_cache is not None
         return list(self._airports_cache)
 
