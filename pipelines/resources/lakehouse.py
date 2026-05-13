@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -114,11 +115,18 @@ class LakehouseResource(ConfigurableResource):  # type: ignore[type-arg]
         )
         partition_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"snapshot_{polled_at_utc.strftime('%H%M%S')}.parquet"
+        # Microsecond suffix + short UUID prevents collisions on retries or
+        # concurrent writes within the same second (a Dagster retry policy
+        # lands in Step 5; manual materializes during a scheduled cycle are
+        # already a possibility today).
+        filename = f"snapshot_{polled_at_utc.strftime('%H%M%S_%f')}_{uuid4().hex[:8]}.parquet"
         final_path = partition_dir / filename
         temp_path = partition_dir / f".{filename}.tmp"
 
-        table = self._build_table(rows)
+        # Enforce ts_polled = polled_at_utc on every row so the column always
+        # matches the partition path, regardless of what the caller passed.
+        normalized_rows = [{**row, "ts_polled": polled_at_utc} for row in rows]
+        table = self._build_table(normalized_rows)
 
         try:
             pq.write_table(table, temp_path, compression=PARQUET_COMPRESSION)

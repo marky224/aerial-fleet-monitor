@@ -99,8 +99,6 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
             raise ValueError(f"expected 1-D arrays, got {lats.ndim}-D")
 
         airports = self.get_airports()
-        if not airports:
-            return [None] * len(lats)
         assert self._coords_cache is not None
 
         # Mask NaN positions; compute haversine for the rest.
@@ -138,6 +136,16 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
             )
             rows = cur.fetchall()
 
+        # Empty result is a bad-setup state, not a valid outcome: zero rows
+        # would silently wipe customer_region across the ingest as
+        # infer_regions() returns None for every position. Fail loud so the
+        # operator runs `make db-seed` before the next try.
+        if not rows:
+            raise RuntimeError(
+                "No watched airports found in ref.airports. Run `make db-seed` "
+                "(materializes the static_reference asset) before ingestion."
+            )
+
         airports: list[WatchedAirport] = []
         coords_list: list[tuple[float, float]] = []
         for icao, lat, lon, regions in rows:
@@ -152,13 +160,7 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
             coords_list.append((float(lat), float(lon)))
 
         self._airports_cache = airports
-        # Empty watchlist still produces a well-shaped (0, 2) array so
-        # downstream haversine never sees an undefined shape.
-        self._coords_cache = (
-            np.asarray(coords_list, dtype=np.float64)
-            if coords_list
-            else np.zeros((0, 2), dtype=np.float64)
-        )
+        self._coords_cache = np.asarray(coords_list, dtype=np.float64)
 
 
 def _haversine_meters_to_airports(
