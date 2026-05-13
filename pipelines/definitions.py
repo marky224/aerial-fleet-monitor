@@ -15,15 +15,29 @@ from __future__ import annotations
 
 from dagster import Definitions, EnvVar
 
-from pipelines.assets import static_reference
-from pipelines.resources import PostgresResource
+from pipelines.assets import opensky_positions, static_reference
+from pipelines.resources import (
+    LakehouseResource,
+    OpenSkyResource,
+    PostgresResource,
+    WatchlistResource,
+)
+
+postgres = PostgresResource(dsn=EnvVar("DATABASE_URL"))
+watchlist = WatchlistResource(postgres=postgres)
 
 defs = Definitions(
-    assets=[static_reference],
+    assets=[opensky_positions, static_reference],
     schedules=[],
     sensors=[],
     jobs=[],
     resources={
-        "postgres": PostgresResource(dsn=EnvVar("DATABASE_URL")),
+        "postgres": postgres,
+        "watchlist": watchlist,
+        "opensky": OpenSkyResource(
+            client_id=EnvVar("OPENSKY_CLIENT_ID"),
+            client_secret=EnvVar("OPENSKY_CLIENT_SECRET"),
+        ),
+        "lakehouse": LakehouseResource(lake_path=EnvVar("AFM_LAKE_PATH")),
     },
 )
