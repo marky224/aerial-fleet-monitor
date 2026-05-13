@@ -1,0 +1,34 @@
+# AFM ICAO24 denylist
+#
+# Aircraft whose icao24 hex matches any prefix below are dropped at
+# ingestion time before being written to Parquet or Postgres.
+#
+# Format:
+#   - One lowercase hex prefix per line, no separators
+#   - Prefix match against the full 6-char icao24 (e.g. "ae" blocks
+#     all 65,536 codes ae0000..aeffff)
+#   - Lines starting with '#' are comments; blank lines are ignored
+#
+# Maintenance policy (per docs/SPEC.md):
+#   This list is intentionally conservative. AFM is a fleet-ops demo,
+#   not a surveillance-deflection tool. Block obvious sensitive
+#   ranges; do not attempt to enumerate every military or government
+#   aircraft. Every entry must cite a public source — if you can't
+#   cite it, don't add it.
+
+# ---- US Department of Defense ----
+# The "ae" block (ae0000..aeffff) is the US DoD's published Mode-S
+# allocation under ICAO Annex 10. Documented in ICAO Doc 9871 and
+# referenced by FAA AC 20-165B. Blocking the entire 2-char prefix is
+# standard practice in open-source flight trackers (dump1090,
+# readsb, adsb.lol).
+ae
+
+# ---- Future additions ----
+# US government VIP transport (VC-25A "Air Force One" airframes,
+# E-4B "Nightwatch", C-32 executive transports) and foreign
+# head-of-state aircraft can be added here with a citation. Left
+# blank in v1 because hand-typed hex codes are easy to get wrong and
+# wrong entries either leak (false negatives) or filter normal
+# traffic (false positives). Cite the source, verify the code, add
+# the line.
