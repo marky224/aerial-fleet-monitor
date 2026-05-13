@@ -102,6 +102,11 @@ class LakehouseResource(ConfigurableResource):  # type: ignore[type-arg]
                 "write_positions_snapshot called with zero rows; "
                 "the asset should skip the write on empty cycles."
             )
+        if polled_at.tzinfo is None or polled_at.utcoffset() is None:
+            raise ValueError(
+                "polled_at must be timezone-aware; a naive datetime would be "
+                "interpreted in the host's local tz and corrupt partition paths."
+            )
 
         polled_at_utc = polled_at.astimezone(UTC)
 
@@ -140,7 +145,7 @@ class LakehouseResource(ConfigurableResource):  # type: ignore[type-arg]
             raise
 
         bytes_written = final_path.stat().st_size
-        return final_path, bytes_written
+        return final_path.resolve(), bytes_written
 
     @staticmethod
     def _build_table(rows: Sequence[dict[str, Any]]) -> pa.Table:

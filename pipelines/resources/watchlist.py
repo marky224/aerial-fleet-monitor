@@ -68,11 +68,16 @@ class WatchlistResource(ConfigurableResource):  # type: ignore[type-arg]
     _coords_cache: np.ndarray | None = PrivateAttr(default=None)
 
     def get_airports(self) -> list[WatchedAirport]:
-        """Return the watched-airport list, loading on first call."""
+        """Return the watched-airport list, loading on first call.
+
+        Returns a shallow copy so external mutation can't desync the order
+        from ``_coords_cache`` (which would silently produce wrong region
+        assignments).
+        """
         if self._airports_cache is None:
             self._load()
         assert self._airports_cache is not None
-        return self._airports_cache
+        return list(self._airports_cache)
 
     def infer_regions(
         self,
