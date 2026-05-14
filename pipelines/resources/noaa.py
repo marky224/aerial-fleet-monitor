@@ -130,7 +130,12 @@ class NoaaResource(ConfigurableResource):  # type: ignore[type-arg]
 
     def _get_json(self, url: str, *, params: dict[str, Any]) -> Any:
         """Issue a GET with one retry on 5xx/network errors. Returns parsed JSON."""
-        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        # See opensky.py for the rationale on the explicit `str | bytes`
+        # value type — keeps mypy happy across types-requests stub variants.
+        headers: dict[str, str | bytes] = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+        }
         last_network_exc: Exception | None = None
 
         for attempt in (1, 2):
