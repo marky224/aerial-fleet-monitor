@@ -16,10 +16,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
 from app.exceptions import AFMException
@@ -142,9 +143,11 @@ _HTTP_CODE_MAP: dict[int, str] = {404: "not_found", 405: "method_not_allowed"}
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    """Reshape FastAPI-auto-issued HTTPExceptions into our envelope.
+    """Reshape framework-issued HTTPExceptions into our envelope.
 
-    Catches things like unmatched routes (404) and method-not-allowed (405).
+    Registered against Starlette's HTTPException (the parent class) so it
+    also catches FastAPI's auto-raised 404/405 for unmatched routes —
+    FastAPI's own HTTPException is a subclass and is caught as well.
     """
     code = _HTTP_CODE_MAP.get(exc.status_code, "http_error")
     return _envelope(request, exc.status_code, code, str(exc.detail))
