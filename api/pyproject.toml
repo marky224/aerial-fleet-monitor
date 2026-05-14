@@ -85,7 +85,7 @@ plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
 
 [[tool.mypy.overrides]]
-module = ["simple_salesforce.*", "duckdb.*"]
+module = ["simple_salesforce.*", "duckdb.*", "psycopg2", "psycopg2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
