@@ -2,7 +2,7 @@
 #
 # Phase 00 scope: skeleton FastAPI app exposing /v1/health only.
 # Runtime deps stay minimal here; phase-specific deps (simple_salesforce,
-# alembic, duckdb, etc.) are added as the matching phase lands.
+# etc.) are added as the matching phase lands.
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -26,6 +26,7 @@ dependencies = [
     "structlog>=24.4,<25",
     "python-json-logger>=2.0,<3",
     "psycopg2-binary>=2.9,<3",
+    "duckdb>=1.1,<2",
 ]
 
 [project.optional-dependencies]
