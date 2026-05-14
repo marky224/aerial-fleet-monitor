@@ -270,7 +270,7 @@ class SiteDetail(BaseModel):
     lat: float
     lon: float
     elevation_ft: int | None
-    timezone: str
+    timezone: str | None
     weather: SiteWeather | None
     inbound_count_60m: int
     outbound_count_60m: int
