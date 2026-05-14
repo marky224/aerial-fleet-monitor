@@ -5,7 +5,8 @@
 # exit non-zero so CI fails loud if a future-phase target is invoked early.
 #
 # Phase 00 real implementations: install, dev, down, logs, lint,
-# db-migrate, db-shell, help, test-unit (no-op pass).
+# db-migrate, db-shell, help. test-unit runs the API pytest suite as
+# of Phase 02.
 
 .DEFAULT_GOAL := help
 
@@ -103,8 +104,8 @@ lint:
 
 .PHONY: test-unit
 test-unit:
-	@echo "→ test-unit: no unit tests yet (Phase 00 stub — real impl in Phase 02)"
-	@echo "  Exiting 0 so CI passes on the empty skeleton."
+	@echo "→ test-unit: running API pytest suite"
+	cd api && . .venv/bin/activate && pytest
 
 .PHONY: db-migrate
 db-migrate:
