@@ -27,6 +27,7 @@ dependencies = [
     "python-json-logger>=2.0,<3",
     "psycopg2-binary>=2.9,<3",
     "duckdb>=1.1,<2",
+    "pytz>=2024.1",  # duckdb soft-requires for materializing TIMESTAMPTZ columns
 ]
 
 [project.optional-dependencies]
