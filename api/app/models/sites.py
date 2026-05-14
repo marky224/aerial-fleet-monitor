@@ -78,7 +78,7 @@ class SiteDetail(BaseModel):
     lat: float = Field(ge=-90, le=90, description="Latitude in decimal degrees (WGS84).")
     lon: float = Field(ge=-180, le=180, description="Longitude in decimal degrees (WGS84).")
     elevation_ft: int | None = Field(description="Field elevation above MSL in feet.")
-    timezone: str = Field(
+    timezone: str | None = Field(
         description=(
             "IANA timezone (e.g. 'America/Los_Angeles'). Always null in v1 — "
             "ref.airports.timezone backfill lands in a later phase."
