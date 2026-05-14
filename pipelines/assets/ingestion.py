@@ -16,10 +16,13 @@ For each polling cycle:
    only when the new ``last_seen_at`` is greater than the existing one;
    ``updated_at`` always bumps.
 
-Step 3 scope leaves ``aircraft_type``, ``origin_icao``, and
-``destination_icao`` NULL in ``current_positions``. They become an
-enrichment pass (registry join + callsign parsing) in a follow-up —
-acceptance criteria for Step 3 don't require them populated.
+``aircraft_type`` is enriched from ``ref.aircraft_registry`` (ICAO
+``type_code``) on UPSERT via COALESCE — first non-NULL wins, so the
+column backfills on the next cycle once the registry has the icao24.
+``origin_icao`` and ``destination_icao`` stay NULL: OpenSky's
+``/states/all`` doesn't carry flight-plan data and the per-aircraft
+``/flights`` endpoint would blow the free-tier credit budget. They're
+deferred to a future flight-plan asset.
 """
 
 import logging
@@ -56,7 +59,8 @@ CURRENT_POSITIONS_UPSERT_SQL = """
 INSERT INTO app.current_positions (
     icao24, callsign, lat, lon,
     altitude_ft, speed_kt, heading_deg, vertical_rate_fpm,
-    on_ground, squawk, customer_region, last_seen_at
+    on_ground, squawk, customer_region, last_seen_at,
+    aircraft_type
 ) VALUES %s
 ON CONFLICT (icao24) DO UPDATE SET
     callsign          = CASE WHEN EXCLUDED.last_seen_at > app.current_positions.last_seen_at
@@ -90,6 +94,7 @@ ON CONFLICT (icao24) DO UPDATE SET
                              THEN EXCLUDED.customer_region
                              ELSE app.current_positions.customer_region END,
     last_seen_at      = GREATEST(EXCLUDED.last_seen_at, app.current_positions.last_seen_at),
+    aircraft_type     = COALESCE(app.current_positions.aircraft_type, EXCLUDED.aircraft_type),
     updated_at        = NOW()
 """
 
@@ -195,9 +200,31 @@ def _convert_states_to_rows(
     return rows
 
 
+def _fetch_aircraft_types(
+    postgres: PostgresResource,
+    icao24s: list[str],
+) -> dict[str, str]:
+    """Look up ICAO ``type_code`` for the given icao24s from the registry.
+
+    Returns only icao24s present in ``ref.aircraft_registry`` with a
+    non-NULL ``type_code`` — callers should treat misses as NULL via
+    ``.get()``. One indexed PK lookup; ~50ms for ~5k inputs.
+    """
+    if not icao24s:
+        return {}
+    with postgres.get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT icao24, type_code FROM ref.aircraft_registry "
+            "WHERE icao24 = ANY(%s) AND type_code IS NOT NULL",
+            (icao24s,),
+        )
+        return dict(cur.fetchall())
+
+
 def _upsert_current_positions(
     postgres: PostgresResource,
     rows: list[dict[str, Any]],
+    aircraft_types: dict[str, str],
 ) -> int:
     """Batch UPSERT into ``app.current_positions``. Returns rows affected."""
     if not rows:
@@ -217,6 +244,7 @@ def _upsert_current_positions(
             row["squawk"],
             row["customer_region"],
             row["ts_position"] or row["ts_polled"],
+            aircraft_types.get(row["icao24"]),
         )
         for row in rows
     ]
@@ -286,7 +314,8 @@ def opensky_positions(
             rows_without_coords,
         )
 
-    postgres_rows = _upsert_current_positions(postgres, rows)
+    aircraft_types = _fetch_aircraft_types(postgres, [row["icao24"] for row in rows])
+    postgres_rows = _upsert_current_positions(postgres, rows, aircraft_types)
 
     lag_seconds = max(0, int(polled_at.timestamp()) - response.api_time)
 
@@ -297,6 +326,7 @@ def opensky_positions(
         "filtered_no_coords": MetadataValue.int(rows_without_coords),
         "parquet_bytes_written": MetadataValue.int(parquet_bytes),
         "postgres_rows_upserted": MetadataValue.int(postgres_rows),
+        "aircraft_type_resolved": MetadataValue.int(len(aircraft_types)),
         "opensky_credits_used": MetadataValue.int(response.credits_used),
         "pipeline_lag_seconds": MetadataValue.int(lag_seconds),
         "polled_at": MetadataValue.text(polled_at.isoformat()),
