@@ -225,7 +225,7 @@ class TrailPoint(BaseModel):
 class TrailResponse(BaseModel):
     icao24: str
     points: list[TrailPoint]
-    lookback: str
+    lookback: Literal['1h', '2h', '4h', 'since_takeoff']
     point_count: int
 ```
 
@@ -246,7 +246,7 @@ class SiteListItem(BaseModel):
     icao: str
     iata: str | None
     name: str
-    state: str
+    state: str | None
     customer_regions: list[str]
     is_in_scope: bool
 
@@ -266,7 +266,7 @@ class SiteDetail(BaseModel):
     iata: str | None
     name: str
     city: str | None
-    state: str
+    state: str | None
     lat: float
     lon: float
     elevation_ft: int | None
@@ -300,7 +300,7 @@ SLA scorecard for a site.
 ```python
 class SiteSla(BaseModel):
     icao: str
-    period: str
+    period: Literal['last_24h', 'last_7d']
     inbound_count: int
     outbound_count: int
     on_time_arrival_pct: float | None
