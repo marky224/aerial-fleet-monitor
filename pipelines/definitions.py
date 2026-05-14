@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from dagster import Definitions, EnvVar
 
-from pipelines.assets import opensky_positions, static_reference
+from pipelines.assets import noaa_weather, opensky_positions, static_reference
 from pipelines.resources import (
     LakehouseResource,
+    NoaaResource,
     OpenSkyResource,
     PostgresResource,
     WatchlistResource,
@@ -27,7 +28,7 @@ postgres = PostgresResource(dsn=EnvVar("DATABASE_URL"))
 watchlist = WatchlistResource(postgres=postgres)
 
 defs = Definitions(
-    assets=[opensky_positions, static_reference],
+    assets=[noaa_weather, opensky_positions, static_reference],
     schedules=[],
     sensors=[],
     jobs=[],
@@ -39,5 +40,6 @@ defs = Definitions(
             client_secret=EnvVar("OPENSKY_CLIENT_SECRET"),
         ),
         "lakehouse": LakehouseResource(lake_path=EnvVar("AFM_LAKE_PATH")),
+        "noaa": NoaaResource(),
     },
 )
