@@ -1,8 +1,8 @@
 # Aerial Fleet Monitor — API Specification
 
-> **Audience:** Claude Code building the FastAPI service and the React client; reviewers of the integration contract.
+> **Audience:** Claude Code building the FastAPI service and the Foundry sync client; reviewers of the integration contract.
 > **Status:** v1, locked. Endpoint additions are allowed; breaking changes require a `/v2/*` prefix.
-> **Companion docs:** `DATA_MODEL.md` for the underlying schemas, `FRONTEND.md` for client patterns.
+> **Companion docs:** `DATA_MODEL.md` for the underlying schemas, `FRONTEND.md` for dashboard (Foundry) patterns.
 
 ---
 
@@ -46,7 +46,7 @@ All non-2xx responses return:
 }
 ```
 
-`code` is a stable string; `message` is human-readable but may evolve. Frontend should switch on `code`, not `message`.
+`code` is a stable string; `message` is human-readable but may evolve. Clients should switch on `code`, not `message`.
 
 ### 1.4 Request/response models
 
@@ -66,7 +66,7 @@ List endpoints accept `cursor` (opaque string) and `limit` (default 50, max 200)
 
 ### 1.6 Timestamps
 
-All timestamps are ISO-8601 in UTC with explicit `Z` suffix: `2026-05-09T14:30:00.123Z`. Frontend converts to user timezone for display.
+All timestamps are ISO-8601 in UTC with explicit `Z` suffix: `2026-05-09T14:30:00.123Z`. Clients convert to user timezone for display (Workshop apps handle this via Foundry's timezone widget config).
 
 ### 1.7 Auth
 
@@ -88,7 +88,7 @@ Anonymous visitors get an auto-issued JWT with `sub: "internal-ops"`, `region: "
 
 CSRF: Use `SameSite=Lax` cookies plus `Origin` header validation on all non-GET endpoints. Demo doesn't include separate CSRF tokens.
 
-Note: `/v1/auth/callback` is a GET, so it is exempt from Origin validation by definition (the redirect originates from Salesforce, not the AFM frontend, so the Origin header would always be wrong). CSRF protection on the callback path uses the OAuth `state` parameter instead — generated at `/v1/auth/login`, persisted in a short-lived `oauth_state` cookie, verified on callback, rejected with 400 on mismatch.
+Note: `/v1/auth/callback` is a GET, so it is exempt from Origin validation by definition (the redirect originates from Salesforce, not the AFM client, so the Origin header would always be wrong). CSRF protection on the callback path uses the OAuth `state` parameter instead — generated at `/v1/auth/login`, persisted in a short-lived `oauth_state` cookie, verified on callback, rejected with 400 on mismatch.
 
 ## 2. Auth endpoints
 
@@ -108,7 +108,7 @@ class MeResponse(BaseModel):
     sites_in_scope: list[str]              # ICAO codes the user can read
 ```
 
-**Response 401** if no cookie. (Frontend handles by issuing the auto-internal-ops session.)
+**Response 401** if no cookie. (Clients without an authenticated session must initiate the OAuth flow; the original auto-internal-ops cold-visit shortcut is deprecated under the Foundry-hosted dashboard — see Phase 04 re-plan.)
 
 ### 2.2 `GET /v1/auth/login`
 
@@ -167,13 +167,13 @@ class PositionsLiveResponse(BaseModel):
     pipeline_lag_seconds: int                       # last successful poll lag
 ```
 
-Polling cadence from frontend: every 30s.
+Polling cadence from the dashboard sync: every 30s.
 
 ### 3.2 `WebSocket /v1/positions/stream`
 
 **Reserved for v2 — currently returns 501 Not Implemented.**
 
-The v1 frontend uses 30s polling against `/v1/positions/live` (see `FRONTEND.md` §4.1), which is sufficient for portfolio-scale read patterns. The WebSocket surface is kept on the spec so the v2 reservation is explicit, mirroring the `/v1/chat/*` reservation in §11.
+The v1 dashboard surface (Foundry positions sync) polls `/v1/positions/live` every 30s, which is sufficient for portfolio-scale read patterns. The WebSocket surface is kept on the spec so the v2 reservation is explicit, mirroring the `/v1/chat/*` reservation in §11.
 
 When implemented, design intent is: plain-JSON server-pushed snapshots every 30s with the same payload shape as `/v1/positions/live`, 25-second `{"type":"ping"}` / `{"type":"pong"}` heartbeat, no binary frames, no per-message compression.
 

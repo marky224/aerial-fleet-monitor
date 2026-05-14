@@ -19,7 +19,7 @@ DOCKER_COMPOSE ?= docker compose
 # resolves to at install time.
 PYTHON ?= python3.12
 
-# Python venvs per package; pnpm for the web workspace.
+# Python venvs per package.
 PY_API := api/.venv
 PY_PIPELINES := pipelines/.venv
 
@@ -32,11 +32,11 @@ help:
 	@echo "Aerial Fleet Monitor — make targets"
 	@echo ""
 	@echo "Setup:"
-	@echo "  install                Install Python (pip) + Node (pnpm) deps for all packages"
+	@echo "  install                Install Python (pip) deps for all packages"
 	@echo "  sf-auth                Authenticate to Salesforce DE org           [Phase 04]"
 	@echo ""
 	@echo "Development:"
-	@echo "  dev                    docker compose up -d + frontend dev server"
+	@echo "  dev                    docker compose up -d (dashboard lives in Foundry)"
 	@echo "  down                   docker compose down"
 	@echo "  logs                   Tail logs from the docker-compose stack"
 	@echo "  api-shell              ipython with FastAPI app context loaded     [Phase 02]"
@@ -47,10 +47,10 @@ help:
 	@echo "  test                   Full suite (unit + integration + contract + e2e) [Phase 10]"
 	@echo "  test-unit              Fast unit tests"
 	@echo "  test-integration       Tests against live SF dev org                [Phase 04]"
-	@echo "  test-e2e               Playwright tests                             [Phase 10]"
+	@echo "  test-e2e               (deprecated; no local frontend)              [n/a]"
 	@echo "  test-contract          API contract tests (schemathesis)            [Phase 02]"
 	@echo "  sf-test                Apex unit tests in DE org                    [Phase 04]"
-	@echo "  lint                   ruff + mypy + eslint"
+	@echo "  lint                   ruff + mypy"
 	@echo "  lint-runbooks          Validate runbook frontmatter + cross-links   [Phase 08]"
 	@echo ""
 	@echo "Database:"
@@ -72,14 +72,11 @@ install:
 	cd api && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing pipelines Python deps (using $(PYTHON))"
 	cd pipelines && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
-	@echo "→ Installing web Node deps"
-	cd web && pnpm install
 
 .PHONY: dev
 dev:
 	$(DOCKER_COMPOSE) up -d
-	@echo "→ Backend up. Starting frontend dev server in web/"
-	cd web && pnpm dev
+	@echo "→ Backend up. Dashboard lives in Foundry — see _private/docs/full/FRONTEND.md"
 
 .PHONY: down
 down:
@@ -99,8 +96,6 @@ lint:
 	cd pipelines && . .venv/bin/activate && ruff check . && ruff format --check .
 	@echo "→ mypy (pipelines)"
 	cd pipelines && . .venv/bin/activate && mypy .
-	@echo "→ eslint (web)"
-	cd web && pnpm lint
 
 .PHONY: test-unit
 test-unit:
@@ -178,7 +173,7 @@ test-integration:
 
 .PHONY: test-e2e
 test-e2e:
-	@echo "Target 'test-e2e' available after Phase 10 — see docs/build/10_testing_ci.md"
+	@echo "Target 'test-e2e' is deprecated — no local frontend after the Foundry pivot (2026-05-14). Workshop apps tested in Foundry's own framework."
 	@exit 1
 
 .PHONY: test

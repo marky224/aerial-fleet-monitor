@@ -7,7 +7,7 @@
 
 ## 1. System topology
 
-AFM is a hybrid edge/local system. The frontend runs on AWS edge infrastructure for global reach and zero-cost-at-rest hosting. The data plane runs on a single self-hosted Linux box using `docker-compose`, exposed publicly via Cloudflare Tunnel. Salesforce is a third independent plane reached over the public internet via OAuth and REST.
+AFM is a hybrid system. The dashboard plane is hosted on Palantir Foundry (developer tier) — Workshop apps over an Ontology populated by sync from the local data plane. The data plane runs on a single self-hosted Linux box using `docker-compose`, exposed publicly via Cloudflare Tunnel. Salesforce is a third independent plane reached over the public internet via OAuth and REST.
 
 ```
                  ┌────────────────────────────────────────────────┐
@@ -18,33 +18,40 @@ AFM is a hybrid edge/local system. The frontend runs on AWS edge infrastructure 
             │                          │                             │
             ▼                          ▼                             ▼
    ┌──────────────────┐      ┌──────────────────────┐      ┌──────────────────────┐
-   │  AWS CloudFront  │      │  Cloudflare Tunnel   │      │  Salesforce DE Org   │
-   │       +S3        │      │  (api.afm.…)         │      │  (Agentforce)        │
-   │  React frontend  │      │  (grafana.afm.…)     │      │                      │
-   └────────┬─────────┘      └──────────┬───────────┘      └──────────┬───────────┘
+   │ Palantir Foundry │      │  Cloudflare Tunnel   │      │  Salesforce DE Org   │
+   │  Workshop apps,  │      │  (api.afm.…)         │      │  (Agentforce)        │
+   │  Ontology,       │      │  (grafana.afm.…)     │      │                      │
+   │  AIP Logic       │      │                      │      │                      │
+   └────────▲─────────┘      └──────────┬───────────┘      └──────────┬───────────┘
             │                           │                              │
-            │ HTTPS                     │ tunnelled                    │ OAuth + REST
-            ▼                           ▼                              ▼
-   ┌──────────────────┐      ┌─────────────────────────────────────────────────────┐
-   │  Browser client  │◀────▶│             <host> (Ubuntu 24.04)              │
-   │  ArcGIS SDK,     │ REST │                                                     │
-   │  shadcn/ui,      │  &   │  ┌──────────────────────────────────────────────┐  │
-   │  Tailwind        │ WSS  │  │ docker-compose stack:                        │  │
-   └──────────────────┘      │  │   FastAPI · Dagster · Postgres 16            │  │
-                             │  │   Parquet lakehouse + DuckDB                 │  │
-                             │  │   Loki · Prometheus · Grafana                │  │
-                             │  │   cloudflared tunnel connector               │  │
-                             │  └──────────────────────────────────────────────┘  │
-                             └─────────────────────────────────────────────────────┘
+            │ Foundry sync              │ tunnelled                    │ OAuth + REST
+            │ (Dagster, every 30s)      ▼                              ▼
+            │                  ┌─────────────────────────────────────────────────────┐
+            └──────────────────│             <host> (Ubuntu 24.04)              │
+                               │                                                     │
+                               │  ┌──────────────────────────────────────────────┐  │
+                               │  │ docker-compose stack:                        │  │
+                               │  │   FastAPI · Dagster · Postgres 16            │  │
+                               │  │   Parquet lakehouse + DuckDB                 │  │
+                               │  │   Loki · Prometheus · Grafana                │  │
+                               │  │   cloudflared tunnel connector               │  │
+                               │  └──────────────────────────────────────────────┘  │
+                               └─────────────────────────────────────────────────────┘
 ```
 
 The hybrid topology is a deliberate cost/realism tradeoff. All-AWS at all-US scale runs ~$15–25/month; the local marginal cost is ~$1–3/month. The lakehouse-on-local-NVMe pattern (Postgres OLTP + Parquet + DuckDB) also better mirrors the operational/analytical separation found in production fleet ops platforms.
 
 ## 2. Component inventory
 
-### Frontend plane (AWS)
+### Dashboard plane (Foundry)
 
-React + ArcGIS Maps SDK + Tailwind + shadcn/ui, built with Vite, served from S3 behind CloudFront with TLS terminating at the edge. Pure static hosting; no runtime backend dependency on AWS.
+Palantir Foundry developer-tier tenant, hosting:
+
+- **Workshop apps** — Fleet Overview (live aircraft map), Site Drilldown (per-airport SLA + weather), Flight Detail (telemetry + trail). Bound to the AFM Ontology.
+- **Ontology** — `Aircraft`, `Flight`, `Site`, `Operator`, `Case` objects with link types. Sourced from local DuckDB marts via Foundry sync (a Dagster asset on `<host>`).
+- **AIP Logic** — natural-language fleet Q&A functions over the Ontology, complementing the Anthropic-Haiku-driven AFM-internal LLM path.
+
+Foundry hosts the dashboard; there is no separate React frontend or AWS hosting. The local stack remains authoritative for data and runs standalone if Foundry is unreachable (sync simply pauses).
 
 ### Data plane (self-hosted)
 
@@ -69,19 +76,19 @@ Three primary flows operate continuously:
 
 2. **Anomaly detection.** Every five minutes, a rules engine reads the last hour of position snapshots via DuckDB plus current weather, applies six anomaly rules (lost signal, diversion, excessive holding, weather impact, go-around, delay), de-duplicates against open cases, and writes new cases to both Postgres (for fast dashboard reads) and Salesforce (as the system of record). The Salesforce Case insert fires a Record-Triggered Flow that invokes the Fleet Anomaly Triage Agentforce agent.
 
-3. **Authentication.** A cold visitor receives an auto-issued read-only `internal-ops` session JWT, rendering the dashboard immediately. Switching into a customer view kicks off a real Salesforce OAuth Web Server Flow; on callback, the backend reads the user's custom permissions from Salesforce, derives a region scope, signs a new AFM JWT, and sets it as an HttpOnly cookie. Subsequent requests carry the cookie automatically; every backend query filters by the JWT's scope claim.
+3. **Authentication.** A user logs into the Foundry workspace; Foundry handles SSO. View-mode and customer-region scoping flows through Foundry's permissions on Ontology objects (replaces the original Salesforce-OAuth-cookie-on-React-frontend chain — see Phase 04 re-plan). Salesforce remains the IdP for the LWC↔API path (Salesforce LWC → Apex → Named Credential → AFM API), and the AFM API still validates per-request scope claims as a defense-in-depth layer.
 
 ## 4. Network topology
 
 | Hostname | Purpose |
 |---|---|
-| `aerial-fleet-monitor.markandrewmarquez.com` | AFM frontend (S3 + CloudFront) |
+| Foundry tenant URL | AFM dashboard (Workshop apps, kept out of public-tree per scrub-infra discipline) |
 | `api.aerial-fleet-monitor.markandrewmarquez.com` | AFM backend API (Cloudflare Tunnel) |
 | `grafana.aerial-fleet-monitor.markandrewmarquez.com` | Observability UI (Cloudflare Access protected) |
 | `dagster.aerial-fleet-monitor.markandrewmarquez.com` | Dagster UI (Cloudflare Access protected) |
 | `alerts.markandrewmarquez.com` | Email sender domain (Resend) |
 
-All public hostnames TLS-terminated at CloudFront or Cloudflare. No direct port exposure from the self-hosted box — only Cloudflare's tunnel connector reaches in.
+All public hostnames TLS-terminated at Cloudflare; Foundry handles its own tenant TLS. No direct port exposure from the self-hosted box — only Cloudflare's tunnel connector reaches in.
 
 ## 5. Runtime characteristics
 
@@ -101,7 +108,11 @@ All public hostnames TLS-terminated at CloudFront or Cloudflare. No direct port 
 ## 6. Service boundaries
 
 ```
-React frontend ──► FastAPI ──► QueryService ──► Postgres + Parquet/DuckDB
+Foundry sync (Dagster asset) ──► FastAPI ──► QueryService ──► Postgres + Parquet/DuckDB
+                              ──► Foundry OSDK ──► Foundry Ontology
+                                                          │
+                                                          ▼
+                                         Foundry Workshop apps + AIP Logic
 
 Dagster pipelines ──► External APIs (OpenSky, NOAA, Anthropic, Salesforce, Notion, Resend, Slack)
                   ──► Postgres + Parquet
@@ -110,7 +121,7 @@ Dagster pipelines ──► External APIs (OpenSky, NOAA, Anthropic, Salesforce,
 Salesforce LWC ──► Apex controller ──► Named Credential ──► AFM API
 ```
 
-Single-direction dependencies make the system tractable to debug. The frontend never talks to Salesforce directly; the Salesforce LWC never talks to Postgres directly; both go through the AFM API.
+Single-direction dependencies make the system tractable to debug. The Foundry sync never talks to Salesforce directly; the Salesforce LWC never talks to Postgres directly; both go through the AFM API.
 
 ## 7. Storage layout
 
@@ -122,7 +133,7 @@ The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so D
 
 **Backend** is built into a Docker image by GitHub Actions, pushed to GHCR, and pulled by the <host> compose stack on each merge to `main`. Database migrations run before the API container starts.
 
-**Frontend** is built with Vite, synced to S3 by GitHub Actions, and the CloudFront distribution is invalidated to flush the edge cache.
+**Foundry assets** (Ontology object definitions, Workshop app exports) are version-controlled in `foundry/ontology/*.yaml` and `foundry/workshop/*.json`. Tenant updates are applied via the Foundry CLI; CI verifies Ontology shapes match the local API contract.
 
 **Salesforce metadata** is deployed via `sf project deploy start --target-org afm-dev`. Agent script changes trigger a separate workflow that runs `sf agent validate && sf agent publish && sf agent activate`.
 
