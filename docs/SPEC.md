@@ -10,9 +10,9 @@ The full specification is the project's locked v1 constitution: scope, architect
   - Hybrid edge/local architecture
   - Lakehouse pattern (Postgres OLTP + Parquet/DuckDB analytical)
   - Salesforce as IdP via OAuth Web Server Flow
-  - ArcGIS Maps SDK choice
+  - Foundry-hosted dashboard (Workshop apps + Ontology) replacing a local React/ArcGIS frontend
   - BaselineProvider abstraction (OpenSky vs local Parquet baseline swap point)
-  - LLM strategy (Anthropic Haiku for AFM, Agentforce default for the agent)
+  - LLM strategy (Anthropic Haiku for AFM, Agentforce default for the SF agent, Foundry default for AIP Logic)
   - Notification channel separation (in-app, Salesforce, out-of-band)
   - Self-hosted observability stack
   - License and visibility decisions

@@ -65,7 +65,7 @@ def list_live(
 ) -> PositionsLiveResponse:
     """All in-scope live positions. Optional bbox + region filters.
 
-    Polling cadence from frontend: every 30 s (API.md §3.1).
+    Polling cadence from the dashboard sync: every 30 s (API.md §3.1).
     """
     return query_service.list_live_positions(scope=scope, bbox=bbox, region=region)
 
