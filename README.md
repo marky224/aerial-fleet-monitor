@@ -18,11 +18,12 @@ The project demonstrates a complete fleet operations toolchain — telemetry vis
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Frontend plane (AWS edge)                                              │
-│    React + ArcGIS Maps SDK + Tailwind + shadcn/ui                       │
-│    S3 + CloudFront                                                      │
+│  Dashboard plane (Palantir Foundry)                                     │
+│    Workshop apps: Fleet Overview · Site Drilldown · Flight Detail       │
+│    Ontology: Aircraft · Flight · Site · Operator · Case                 │
+│    AIP Logic: natural-language fleet Q&A                                │
 └─────────────────────────────────────────────────────────────────────────┘
-                                  │ HTTPS
+                                  │ Foundry sync (Dagster asset, 30s)
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Data plane (self-hosted Linux box, public API via reverse tunnel)      │
@@ -58,7 +59,7 @@ Full architecture detail available on request.
 
 ## Tech stack
 
-**Frontend:** React 18 · TypeScript · Vite · Tailwind CSS · shadcn/ui · TanStack Query · Zustand · ArcGIS Maps SDK 4.x
+**Dashboard:** Palantir Foundry (developer tier) · Workshop apps · Ontology SDK (Python) · AIP Logic
 
 **Backend:** FastAPI · Pydantic v2 · Postgres 16 · DuckDB over Parquet · Alembic migrations · structlog
 
@@ -66,13 +67,13 @@ Full architecture detail available on request.
 
 **CRM:** Salesforce Agentforce Developer Edition · Apex · Lightning Web Components · Agentforce agents · SFDX
 
-**AI:** Anthropic Claude (Sonnet for case triage rationale, Haiku for case summaries and daily briefs); Agentforce Atlas LLM for the triage agent itself
+**AI:** Anthropic Claude (Sonnet for case triage rationale, Haiku for case summaries and daily briefs); Agentforce Atlas LLM for the SF triage agent; Foundry default LLM for AIP Logic functions
 
 **Observability:** Loki · Promtail · Prometheus · Grafana (5 dashboards: Fleet Ops Overview, Salesforce Health, Pipeline Health, Per-Airport SLA Trends, Case Detector Tuning)
 
-**Infrastructure:** Docker Compose on Ubuntu 24.04 · self-hosted reverse tunnel for public API · AWS S3 + CloudFront for frontend · Route 53
+**Infrastructure:** Docker Compose on Ubuntu 24.04 · self-hosted reverse tunnel for public API · Foundry-hosted dashboard (no separate frontend hosting)
 
-**Testing:** pytest · Vitest · Playwright · schemathesis · Apex test framework · GitHub Actions CI
+**Testing:** pytest · schemathesis · Apex test framework · GitHub Actions CI
 
 ## Local development
 
@@ -81,19 +82,19 @@ git clone https://github.com/marky224/aerial-fleet-monitor.git
 cd aerial-fleet-monitor
 
 cp .env.example .env             # fill in API keys
-make install                     # Python venvs + pnpm
+make install                     # Python venvs
 pre-commit install               # enable gitleaks pre-commit hook (requires `pipx install pre-commit`)
 make db-migrate                  # Postgres schema
 make db-seed                     # reference airport data
 
-make dev                         # docker compose up -d + frontend dev server
+make dev                         # docker compose up -d (dashboard lives in Foundry)
 ```
 
 Then:
-- Dashboard: [http://localhost:5173](http://localhost:5173)
 - API: [http://localhost:8000/v1/docs](http://localhost:8000/v1/docs) (Swagger UI)
 - Dagster: [http://localhost:3000](http://localhost:3000)
 - Grafana: [http://localhost:3001](http://localhost:3001) (login `admin` / your `.env` password)
+- Dashboard: Foundry workspace (separate developer-tier tenant; tenant URL in `_private/foundry/.env`)
 
 For Salesforce: a separate Agentforce Developer Edition org is required.
 
@@ -102,12 +103,11 @@ Tests:
 make test-unit           # ~30 seconds
 make test-integration    # ~3 minutes (needs SF dev org credentials)
 make test-contract       # ~1 minute
-make test-e2e            # ~5 minutes (Playwright against staging)
 ```
 
 ## Documentation
 
-Detailed design docs (architecture, data model, API contracts, Salesforce setup, pipelines, frontend patterns, runbooks, observability, testing strategy) are maintained privately. Available on request for technical evaluation — `mark@markandrewmarquez.com`.
+Detailed design docs (architecture, data model, API contracts, Salesforce setup, pipelines, dashboard / Foundry integration, runbooks, observability, testing strategy) are maintained privately. Available on request for technical evaluation — `mark@markandrewmarquez.com`.
 
 ## License
 

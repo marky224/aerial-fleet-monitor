@@ -56,8 +56,8 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 
 - **Freshness.** Live aircraft positions stay no more than 60 seconds stale under normal operation; staleness is explicitly labeled in the UI rather than silently presented as fresh.
 - **Latency.** A new anomaly results in a Salesforce Case within 30 seconds of detection; the dashboard reflects the case within 60 seconds.
-- **Availability.** The frontend remains reachable when the backend is degraded (cached map, "backend unavailable" banner, no broken UI). The system tolerates one upstream component being down without cascading failure.
-- **Cost discipline.** Ongoing operating cost stays at ~$5/month, by deliberate architectural choice (self-hosted data plane plus cloud-edge frontend).
+- **Availability.** The Foundry-hosted dashboard remains accessible when the local backend is degraded; cached Ontology data continues to render with a sync-staleness indicator. The system tolerates one upstream component being down without cascading failure.
+- **Cost discipline.** Ongoing operating cost stays at ~$5/month, by deliberate architectural choice (self-hosted data plane plus free Foundry developer-tier tenant for the dashboard).
 - **Scope enforcement.** Customer-region scoping is enforced at every layer — UI, API, and Salesforce-side — not just one.
 - **Auditability.** Every case state change produces a structured timeline event with `request_id` correlation; every Salesforce write produces a structured log line.
 - **Reproducibility.** The entire system (excluding the Salesforce dev org) is reproducible from a fresh `git clone` with a single `make install && docker compose up -d`.
@@ -66,7 +66,7 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 
 The system spans three planes:
 
-- **Frontend plane** — React + ArcGIS Maps SDK, hosted on AWS S3 + CloudFront for global edge delivery
+- **Dashboard plane** — Palantir Foundry (developer tier): Workshop apps + Ontology + AIP Logic, replacing what would otherwise be a custom React frontend
 - **Data plane** — FastAPI + Dagster + Postgres + Parquet lakehouse, running in Docker Compose on a self-hosted Linux server, exposed publicly via Cloudflare Tunnel
 - **CRM plane** — Salesforce Agentforce Developer Edition with custom data model, Apex callouts, Lightning Web Components, Agentforce agent, Record-Triggered Flow
 
@@ -76,7 +76,7 @@ Auth flows through Salesforce as the IdP via OAuth 2.0 Web Server Flow. Region s
 
 The system is successful when:
 
-- A cold visitor lands on the dashboard, understands what they're seeing within 30 seconds, and successfully switches into a customer view within 60 seconds.
+- An authorized user logs into the Foundry workspace, opens the Fleet Overview Workshop app, understands what they're seeing within 30 seconds, and successfully switches view-mode (internal-ops vs customer scope) within 60 seconds.
 - A real anomaly triggers a Case in Salesforce, the Agentforce agent runs all five actions, and the resulting state is visible in both the dashboard and the Service Console within 90 seconds end-to-end.
 - A reviewer reading the BRD, README, and one technical doc can answer: what does it do, who is it for, why does it exist, how does it work, what does success look like, what's next.
 - A hiring manager opening Grafana sees five dashboards with real data, a pipeline lag under 30 seconds, and a Salesforce sync queue at zero. The system looks like it's running at production discipline.
@@ -93,7 +93,7 @@ Real-time visibility, anomaly detection, Agentforce triage, scoped customer view
 - **Additional customer regions** — license headroom exists; mainly a config and permissions change.
 - **Read-write Salesforce sync via Platform Events** — replaces the polling loop with sub-second sync.
 - **Predictive delay model** — small ML model trained on rolling Parquet history.
-- **Mobile-responsive layout** — dashboard at tablet and phone widths.
+- **Mobile-tuned Workshop layouts** — dashboard at tablet and phone widths (Foundry default is desktop).
 
 ### Beyond v2
 
