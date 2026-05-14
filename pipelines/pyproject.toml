@@ -22,7 +22,12 @@ dependencies = [
     "dagster>=1.9,<2",
     "dagster-webserver>=1.9,<2",
     "dagster-postgres>=0.25,<0.26",
+    "psycopg2-binary>=2.9,<3",
     "structlog>=24.4,<25",
+    # Phase 01 Step 3 — OpenSky ingestion.
+    "pyarrow>=17,<20",
+    "requests>=2.32,<3",
+    "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +36,14 @@ dev = [
     "pytest-cov>=5.0,<6",
     "ruff>=0.7,<0.8",
     "mypy>=1.13,<2",
+    # Stubs for the `requests` runtime dep. Without this, mypy locally
+    # treats `requests.*` as Any (via the override below) and silently
+    # passes — but CI was historically pulling in older stubs that flag
+    # `dict[str, str]` headers as incompatible with the stricter
+    # `MutableMapping[str, str | bytes]` parameter type. Pinning the stub
+    # explicitly + the corresponding code annotation keeps local and CI
+    # in lockstep.
+    "types-requests>=2.32",
 ]
 
 # Flat-layout package: pyproject.toml sits alongside __init__.py and
@@ -39,11 +52,15 @@ dev = [
 [tool.setuptools]
 packages = [
     "pipelines",
-    # subpackages added in later phases: pipelines.assets, pipelines.jobs,
-    # pipelines.resources. Listed here so a fresh `pip install -e .`
-    # rebuilds cleanly when the matching directory is added.
+    "pipelines.assets",
+    "pipelines.data",
+    "pipelines.resources",
+    # subpackages added in later phases: pipelines.jobs.
 ]
 package-dir = {"pipelines" = "."}
+
+[tool.setuptools.package-data]
+"pipelines.data" = ["*.json", "*.txt"]
 
 # Dagster discovers the Definitions object via DAGSTER_CODE_LOCATION /
 # workspace.yaml. The module path is `pipelines.definitions`.
@@ -70,7 +87,17 @@ python_version = "3.12"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["dagster.*", "dagster_webserver.*", "dagster_postgres.*"]
+module = [
+    "dagster.*",
+    "dagster_webserver.*",
+    "dagster_postgres.*",
+    "psycopg2",
+    "psycopg2.*",
+    "pyarrow",
+    "pyarrow.*",
+    "requests",
+    "requests.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

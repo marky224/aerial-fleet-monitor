@@ -54,7 +54,7 @@ help:
 	@echo ""
 	@echo "Database:"
 	@echo "  db-migrate             alembic upgrade head"
-	@echo "  db-seed                Seed reference data                          [Phase 01]"
+	@echo "  db-seed                Seed reference data (run download_airports.py first)"
 	@echo "  db-shell               psql into the running postgres container"
 	@echo ""
 	@echo "Salesforce + Ops:"
@@ -108,7 +108,28 @@ test-unit:
 
 .PHONY: db-migrate
 db-migrate:
+	set -a; . ./.env; set +a; \
+	export DATABASE_URL="$$(echo "$$DATABASE_URL" | sed 's|@postgres:|@127.0.0.1:|')"; \
 	cd api && . .venv/bin/activate && alembic upgrade head
+
+.PHONY: db-seed
+db-seed:
+	@if [ ! -f data/airports.csv ]; then \
+		echo "data/airports.csv missing — run: python scripts/download_airports.py"; \
+		exit 1; \
+	fi
+	@if [ ! -f data/aircraft.csv ]; then \
+		echo "data/aircraft.csv missing — run: python scripts/download_aircraft.py"; \
+		exit 1; \
+	fi
+	set -a; . ./.env; set +a; \
+	export DATABASE_URL="$$(echo "$$DATABASE_URL" | sed 's|@postgres:|@127.0.0.1:|')"; \
+	export AFM_AIRPORTS_CSV="$$(pwd)/data/airports.csv"; \
+	export AFM_AIRCRAFT_CSV="$$(pwd)/data/aircraft.csv"; \
+	export DAGSTER_HOME="$$(mktemp -d -t afm-db-seed-XXXXXX)"; \
+	venv="$$(pwd)/pipelines/.venv"; \
+	. "$$venv/bin/activate" && cd "$$DAGSTER_HOME" && \
+	dagster asset materialize -m pipelines.definitions --select static_reference
 
 .PHONY: db-shell
 db-shell:
@@ -162,11 +183,6 @@ test-e2e:
 .PHONY: test
 test:
 	@echo "Target 'test' available after Phase 10 — see docs/build/10_testing_ci.md"
-	@exit 1
-
-.PHONY: db-seed
-db-seed:
-	@echo "Target 'db-seed' available after Phase 01 — see docs/build/01_ingestion.md"
 	@exit 1
 
 .PHONY: afm-issue-service-token
