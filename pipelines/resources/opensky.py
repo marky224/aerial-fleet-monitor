@@ -155,7 +155,12 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
 
     def _get_with_retry(self, url: str, *, params: dict[str, Any]) -> requests.Response:
         token = self._get_token()
-        headers = {
+        # Annotated explicitly so the dict satisfies the (invariant)
+        # `MutableMapping[str, str | bytes]` param in the `types-requests`
+        # stub used by some CI environments. `dict[str, str]` is fine for
+        # newer stubs that loosened to `Mapping[str, str | bytes | None]`,
+        # but the wider annotation here is a subtype of both.
+        headers: dict[str, str | bytes] = {
             "User-Agent": USER_AGENT,
             "Authorization": f"Bearer {token}",
         }

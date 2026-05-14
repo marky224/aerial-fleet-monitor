@@ -36,6 +36,14 @@ dev = [
     "pytest-cov>=5.0,<6",
     "ruff>=0.7,<0.8",
     "mypy>=1.13,<2",
+    # Stubs for the `requests` runtime dep. Without this, mypy locally
+    # treats `requests.*` as Any (via the override below) and silently
+    # passes — but CI was historically pulling in older stubs that flag
+    # `dict[str, str]` headers as incompatible with the stricter
+    # `MutableMapping[str, str | bytes]` parameter type. Pinning the stub
+    # explicitly + the corresponding code annotation keeps local and CI
+    # in lockstep.
+    "types-requests>=2.32",
 ]
 
 # Flat-layout package: pyproject.toml sits alongside __init__.py and
