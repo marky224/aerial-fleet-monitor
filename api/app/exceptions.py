@@ -51,3 +51,17 @@ class ConflictError(AFMException):
 
     status_code = 409
     code = "conflict"
+
+
+class BadRequest(AFMException):
+    """Malformed input (query param, path param, or request body shape)."""
+
+    status_code = 400
+    code = "bad_request"
+
+
+class NotImplementedYet(AFMException):
+    """Endpoint exists in the spec but is reserved for a future version."""
+
+    status_code = 501
+    code = "not_implemented"
