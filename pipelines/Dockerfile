@@ -55,8 +55,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Non-root user. UID/GID match the API image's pattern for consistency.
 RUN groupadd --system --gid 10001 afm \
     && useradd --system --uid 10001 --gid afm --no-create-home afm \
-    && mkdir -p /opt/dagster/dagster_home \
-    && chown -R afm:afm /opt/dagster
+    && mkdir -p /opt/dagster/dagster_home /lake \
+    && chown -R afm:afm /opt/dagster /lake
 
 COPY --from=builder /opt/venv /opt/venv
 
