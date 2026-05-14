@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # Phase 01. Tests will pass a test DSN via env override or a test .env.
     database_url: str = Field(...)
 
+    # Parquet lakehouse root. `/lake` in the docker-compose `parquet_lake`
+    # volume; same env var name (AFM_LAKE_PATH) pipelines uses, so a single
+    # value in .env covers both services.
+    afm_lake_path: str = Field(default="/lake")
+
     # Whether to expose the FastAPI auto-generated docs (/docs, /redoc,
     # /openapi.json). Defaults to False — secure by default. Set
     # EXPOSE_DOCS=true in .env only when running locally without public
