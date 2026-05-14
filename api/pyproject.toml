@@ -25,6 +25,7 @@ dependencies = [
     "pydantic-settings>=2.6,<3",
     "structlog>=24.4,<25",
     "python-json-logger>=2.0,<3",
+    "psycopg2-binary>=2.9,<3",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ dev = [
     "httpx>=0.27,<0.28",          # FastAPI TestClient transport
     "ruff>=0.7,<0.8",
     "mypy>=1.13,<2",
+    "alembic>=1.13,<2",
 ]
 
 [tool.setuptools.packages.find]
@@ -63,6 +65,13 @@ select = [
 ignore = [
     "E501",  # line length handled by formatter
 ]
+
+[tool.ruff.lint.isort]
+# `app` is this project's package; `alembic` is the third-party migration
+# tool (the local alembic/ directory is config, not a Python package).
+# Without these hints ruff misclassifies based on the alembic/ directory.
+known-first-party = ["app"]
+known-third-party = ["alembic"]
 
 [tool.ruff.format]
 quote-style = "double"

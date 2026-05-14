@@ -29,11 +29,14 @@ WORKDIR /build
 # Copy ALL source before `pip install .` so site-packages ends up with the
 # full package — without this, `dagster api grpc -m pipelines.definitions`
 # fails at container start because definitions.py isn't installed.
-# Phase 01+ will add COPYs for the assets/, jobs/, resources/ subpackages.
+# Phase 01+ will add COPYs for the jobs/ subpackage.
 # Trade-off: any source change invalidates the dep-install cache layer.
 COPY pyproject.toml ./
 COPY __init__.py ./
 COPY definitions.py ./
+COPY assets ./assets
+COPY data ./data
+COPY resources ./resources
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -52,8 +55,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Non-root user. UID/GID match the API image's pattern for consistency.
 RUN groupadd --system --gid 10001 afm \
     && useradd --system --uid 10001 --gid afm --no-create-home afm \
-    && mkdir -p /opt/dagster/dagster_home \
-    && chown -R afm:afm /opt/dagster
+    && mkdir -p /opt/dagster/dagster_home /lake \
+    && chown -R afm:afm /opt/dagster /lake
 
 COPY --from=builder /opt/venv /opt/venv
 
@@ -63,8 +66,11 @@ WORKDIR /srv/pipelines
 # (except files explicitly excluded by .dockerignore) lands here.
 COPY --chown=afm:afm __init__.py ./
 COPY --chown=afm:afm definitions.py ./
+COPY --chown=afm:afm assets ./assets
+COPY --chown=afm:afm data ./data
+COPY --chown=afm:afm resources ./resources
 
-# Phase 01+ will add: assets/, jobs/, resources/, tests/
+# Phase 01+ will add: jobs/, tests/
 
 USER afm
 
