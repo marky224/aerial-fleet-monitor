@@ -95,10 +95,14 @@ def seeded_lakehouse(tmp_path: Path) -> Iterator:  # type: ignore[type-arg]
     parquet_path = partition_dir / "data.parquet"
 
     with duckdb.connect(":memory:") as conn:
+        # Explicit casts so DuckDB stores lat/lon as DOUBLE, not DECIMAL —
+        # matches the production Parquet schema written by Dagster.
         conn.execute(
             "CREATE TABLE seed AS SELECT * FROM (VALUES "
-            "('a2024b', TIMESTAMPTZ '2026-05-14 12:00:00+00', 37.6, -122.4, 17025, 259), "
-            "('a2024b', TIMESTAMPTZ '2026-05-14 12:01:00+00', 37.7, -122.3, 17050, 260)"
+            "('a2024b', TIMESTAMPTZ '2026-05-14 12:00:00+00', "
+            "37.6::DOUBLE, -122.4::DOUBLE, 17025, 259), "
+            "('a2024b', TIMESTAMPTZ '2026-05-14 12:01:00+00', "
+            "37.7::DOUBLE, -122.3::DOUBLE, 17050, 260)"
             ") AS t(icao24, ts_polled, lat, lon, altitude_ft, speed_kt)"
         )
         conn.execute(f"COPY seed TO '{parquet_path}' (FORMAT PARQUET)")
