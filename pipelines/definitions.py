@@ -32,7 +32,13 @@ from dagster import (
     sensor,
 )
 
-from pipelines.assets import noaa_weather, opensky_positions, static_reference
+from pipelines.assets import (
+    foundry_positions_sync,
+    foundry_sites_sync,
+    noaa_weather,
+    opensky_positions,
+    static_reference,
+)
 from pipelines.resources import (
     LakehouseResource,
     NoaaResource,
@@ -64,6 +70,16 @@ static_reference_job = define_asset_job(
     selection=AssetSelection.assets(static_reference),
 )
 
+foundry_positions_sync_job = define_asset_job(
+    name="foundry_positions_sync_job",
+    selection=AssetSelection.assets(foundry_positions_sync),
+)
+
+foundry_sites_sync_job = define_asset_job(
+    name="foundry_sites_sync_job",
+    selection=AssetSelection.assets(foundry_sites_sync),
+)
+
 
 # Dagster's cron schedules are minute-resolution at the finest. OpenSky's
 # spec-mandated 30s cadence (PIPELINES.md §5) needs a sensor with
@@ -78,6 +94,21 @@ static_reference_job = define_asset_job(
     description="Fires opensky_positions every 30s (sub-minute cadence not supported by Dagster schedules).",
 )
 def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Foundry Aircraft sync mirrors OpenSky's 30s cadence (it consumes the same
+# /v1/positions/live snapshot), so it's a sensor for the same sub-minute
+# reason. Independent failure domain: a Foundry-unreachable run materializes
+# as a skip, not a failure, so this never blocks the local pipeline.
+@sensor(
+    job=foundry_positions_sync_job,
+    name="foundry_positions_sync_sensor",
+    minimum_interval_seconds=30,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Upserts Aircraft to the Foundry Ontology every 30s.",
+)
+def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
@@ -101,11 +132,37 @@ static_reference_schedule = ScheduleDefinition(
 )
 
 
+foundry_sites_sync_schedule = ScheduleDefinition(
+    name="foundry_sites_sync_schedule",
+    job=foundry_sites_sync_job,
+    cron_schedule="*/5 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Full-refresh upsert of Site to the Foundry Ontology every 5 minutes.",
+)
+
+
 defs = Definitions(
-    assets=[noaa_weather, opensky_positions, static_reference],
-    jobs=[opensky_positions_job, noaa_weather_job, static_reference_job],
-    schedules=[noaa_weather_schedule, static_reference_schedule],
-    sensors=[opensky_positions_sensor],
+    assets=[
+        noaa_weather,
+        opensky_positions,
+        static_reference,
+        foundry_positions_sync,
+        foundry_sites_sync,
+    ],
+    jobs=[
+        opensky_positions_job,
+        noaa_weather_job,
+        static_reference_job,
+        foundry_positions_sync_job,
+        foundry_sites_sync_job,
+    ],
+    schedules=[
+        noaa_weather_schedule,
+        static_reference_schedule,
+        foundry_sites_sync_schedule,
+    ],
+    sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],
     resources={
         "postgres": postgres,
         "watchlist": watchlist,

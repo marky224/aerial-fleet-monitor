@@ -46,6 +46,11 @@ dev = [
 where = ["src"]
 include = ["afm_foundry_sync*"]
 
+# PEP 561 — ship the py.typed marker so downstream packages (e.g. the
+# Dagster pipelines venv) get this package's types instead of `Any`.
+[tool.setuptools.package-data]
+afm_foundry_sync = ["py.typed"]
+
 # ----------------------------------------------------------------------------
 # Tooling configs (mirror api/ conventions for cross-package consistency)
 # ----------------------------------------------------------------------------
