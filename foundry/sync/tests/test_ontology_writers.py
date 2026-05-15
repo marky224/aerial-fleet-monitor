@@ -1,0 +1,218 @@
+"""Unit tests for ``FoundryWriter`` using respx to mock the Action API."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+
+import httpx
+import pytest
+import respx
+
+from afm_foundry_sync import ontology_writers
+from afm_foundry_sync.models import Aircraft, Site, SparklinePoint
+from afm_foundry_sync.ontology_writers import (
+    FoundryWriter,
+    aircraft_params,
+    site_params,
+)
+from afm_foundry_sync.settings import FoundrySettings
+
+_AIRCRAFT_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-aircraft/applyBatch"
+_SITE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
+
+_LAST_SEEN = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+
+
+def _aircraft(icao24: str = "a12345", **overrides: object) -> Aircraft:
+    base = dict(
+        icao24=icao24,
+        callsign="UAL1234",
+        lat=37.62,
+        lon=-122.37,
+        altitude_ft=12000,
+        speed_kt=300,
+        heading_deg=270,
+        vertical_rate_fpm=0,
+        on_ground=False,
+        customer_region="west",
+        last_seen_at=_LAST_SEEN,
+        staleness="fresh",
+    )
+    base.update(overrides)
+    return Aircraft(**base)  # type: ignore[arg-type]
+
+
+def _site(icao: str = "KSFO", **overrides: object) -> Site:
+    base = dict(
+        icao=icao,
+        iata="SFO",
+        name="San Francisco Intl",
+        city="San Francisco",
+        state="CA",
+        lat=37.62,
+        lon=-122.37,
+        elevation_ft=13,
+        timezone=None,
+        customer_regions=["west", "all"],
+        inbound_count_60m=4,
+        outbound_count_60m=7,
+        active_case_count=0,
+        metar_raw="KSFO 151200Z ...",
+        metar_plain_english=None,
+        wind_kt=12,
+        visibility_sm=10.0,
+        ceiling_ft=None,
+        weather_observed_at=_LAST_SEEN,
+        flight_category="VFR",
+        sla_period="last_24h",
+        sla_inbound_count=0,
+        sla_outbound_count=0,
+        on_time_arrival_pct=None,
+        on_time_departure_pct=None,
+        avg_arrival_delay_min=None,
+        avg_departure_delay_min=None,
+        weather_impact="low",
+        sla_sparkline_7d=[],
+    )
+    base.update(overrides)
+    return Site(**base)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Serialization units
+# ---------------------------------------------------------------------------
+
+
+def test_aircraft_params_pk_written_twice_and_geopoint_order() -> None:
+    p = aircraft_params(_aircraft())
+    assert p["icao24"] == "a12345"
+    assert p["aircraft"] == "a12345"  # locator param = bare PK string
+    # GeoJSON axis order is [lon, lat].
+    assert p["position"] == {"type": "Point", "coordinates": [-122.37, 37.62]}
+    assert p["last_seen_at"] == "2026-05-15T12:00:00Z"
+
+
+def test_aircraft_params_omits_none_optionals() -> None:
+    p = aircraft_params(_aircraft(callsign=None, altitude_ft=None, customer_region=None))
+    assert "callsign" not in p
+    assert "altitude_ft" not in p
+    assert "customer_region" not in p
+    # Required params remain.
+    assert p["on_ground"] is False
+    assert p["staleness"] == "fresh"
+
+
+def test_site_params_arrays_are_json_strings() -> None:
+    p = site_params(
+        _site(
+            sla_sparkline_7d=[
+                SparklinePoint(day=date(2026, 5, 15), on_time_pct=91.2, avg_delay_min=7.4)
+            ]
+        )
+    )
+    assert p["site"] == "KSFO"
+    assert p["customer_regions"] == '["west", "all"]'
+    # Struct array serialized as JSON; date rendered ISO via model_dump(mode=json).
+    assert p["sla_sparkline_7d"] == (
+        '[{"day": "2026-05-15", "on_time_pct": 91.2, "avg_delay_min": 7.4}]'
+    )
+    assert p["location"] == {"type": "Point", "coordinates": [-122.37, 37.62]}
+
+
+def test_site_params_empty_sparkline_is_empty_json_array() -> None:
+    p = site_params(_site(sla_sparkline_7d=[]))
+    assert p["sla_sparkline_7d"] == "[]"
+
+
+def test_site_params_omits_none_optionals_keeps_required() -> None:
+    p = site_params(_site(timezone=None, on_time_arrival_pct=None, ceiling_ft=None))
+    assert "timezone" not in p
+    assert "on_time_arrival_pct" not in p
+    assert "ceiling_ft" not in p
+    assert p["inbound_count_60m"] == 4
+    assert p["weather_observed_at"] == "2026-05-15T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# applyBatch behavior
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_upsert_aircraft_batch_posts_expected_envelope(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_AIRCRAFT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_aircraft_batch([_aircraft("a1"), _aircraft("a2")])
+
+    assert route.called
+    assert route.call_count == 1
+    sent = route.calls.last.request
+    assert sent.headers["authorization"] == "Bearer t-test-token"
+    payload = json.loads(sent.content)
+    assert [r["parameters"]["icao24"] for r in payload["requests"]] == ["a1", "a2"]
+    assert payload["requests"][0]["parameters"]["aircraft"] == "a1"
+    assert result == ontology_writers.BatchResult(attempted=2, succeeded=2)
+
+
+@respx.mock
+async def test_empty_batch_makes_no_http_call(settings: FoundrySettings) -> None:
+    route = respx.post(_AIRCRAFT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_aircraft_batch([])
+
+    assert not route.called
+    assert result == ontology_writers.BatchResult(attempted=0, succeeded=0)
+
+
+@respx.mock
+async def test_chunking_splits_into_multiple_posts(
+    settings: FoundrySettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ontology_writers, "_MAX_BATCH", 2)
+    route = respx.post(_SITE_URL).mock(return_value=httpx.Response(200, json={}))
+
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_site_batch([_site(f"K{i:03d}") for i in range(5)])
+
+    # 5 items, chunk size 2 -> 3 POSTs (2 + 2 + 1).
+    assert route.call_count == 3
+    assert result == ontology_writers.BatchResult(attempted=5, succeeded=5)
+
+
+@respx.mock
+async def test_retries_on_503_then_succeeds(settings: FoundrySettings) -> None:
+    route = respx.post(_AIRCRAFT_URL).mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, json={})]
+    )
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_aircraft_batch([_aircraft()])
+
+    assert route.call_count == 2
+    assert result.succeeded == 1
+
+
+@respx.mock
+async def test_does_not_retry_on_400(settings: FoundrySettings) -> None:
+    route = respx.post(_AIRCRAFT_URL).mock(
+        return_value=httpx.Response(400, json={"errorCode": "INVALID_ARGUMENT"})
+    )
+    async with FoundryWriter(settings) as w:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await w.upsert_aircraft_batch([_aircraft()])
+
+    assert exc_info.value.response.status_code == 400
+    assert route.call_count == 1  # 4xx is a real signal, never retried
+
+
+@respx.mock
+async def test_exhausts_retries_on_persistent_503(settings: FoundrySettings) -> None:
+    route = respx.post(_SITE_URL).mock(return_value=httpx.Response(503))
+    async with FoundryWriter(settings) as w:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await w.upsert_site_batch([_site()])
+
+    assert exc_info.value.response.status_code == 503
+    assert route.call_count == 3

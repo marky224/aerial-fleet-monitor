@@ -63,6 +63,16 @@ class FoundrySettings(BaseSettings):
         min_length=1,
         description="Resource identifier (rid) of the AFM Ontology.",
     )
+    FOUNDRY_ACTION_UPSERT_AIRCRAFT: str = Field(
+        ...,
+        min_length=1,
+        description="apiName of the modify-or-create Action that upserts Aircraft objects.",
+    )
+    FOUNDRY_ACTION_UPSERT_SITE: str = Field(
+        ...,
+        min_length=1,
+        description="apiName of the modify-or-create Action that upserts Site objects.",
+    )
     AFM_API_BASE: str = Field(
         default="http://localhost:8000",
         description="Base URL of the local AFM /v1 API the sync reads from.",
