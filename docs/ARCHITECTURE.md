@@ -109,7 +109,7 @@ All public hostnames TLS-terminated at Cloudflare; Foundry handles its own tenan
 
 ```
 Foundry sync (Dagster asset) ──► FastAPI ──► QueryService ──► Postgres + Parquet/DuckDB
-                              ──► Foundry OSDK ──► Foundry Ontology
+                              ──► Foundry Action API (HTTPS) ──► Foundry Ontology
                                                           │
                                                           ▼
                                          Foundry Workshop apps + AIP Logic
