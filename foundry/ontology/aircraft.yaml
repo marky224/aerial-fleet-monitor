@@ -1,0 +1,109 @@
+# AFM Foundry Ontology — Aircraft object type
+#
+# Source of truth: foundry/sync/src/afm_foundry_sync/models.py (class Aircraft)
+# Build doc: _private/docs/build/03_foundry_dashboard.md
+# Design notes: _private/docs/foundry/ONTOLOGY.md (§ Aircraft)
+#
+# Apply to the AFM Foundry tenant. If the tenant supports direct YAML import,
+# this file is the canonical schema. Otherwise treat it as the click-by-click
+# spec for provisioning Aircraft through Ontology Manager.
+
+objectType:
+  apiName: Aircraft
+  displayName: Aircraft
+  pluralDisplayName: Aircraft
+  description: |
+    A physical airframe identified by its 24-bit ICAO transponder address.
+    Carries the current observed position from /v1/positions/live.
+
+    Identity-side fields (registration, aircraft_type, operator_icao) live
+    on FlightDetail and are intentionally NOT on this object — populating
+    them would force a per-icao24 fanout from the 30s positions sync.
+
+source:
+  endpoint: GET /v1/positions/live
+  refreshCadence: 30s incremental
+  upsertKey: icao24
+
+primaryKey: icao24
+
+properties:
+  icao24:
+    type: string
+    nullable: false
+    description: Lowercase 24-bit ICAO transponder address (6 hex characters).
+
+  callsign:
+    type: string
+    nullable: true
+    description: Callsign reported by Mode S (e.g. 'UAL1234').
+
+  lat:
+    type: double
+    nullable: false
+    constraints: { min: -90, max: 90 }
+    description: Latitude in decimal degrees (WGS84).
+
+  lon:
+    type: double
+    nullable: false
+    constraints: { min: -180, max: 180 }
+    description: Longitude in decimal degrees (WGS84).
+
+  position:
+    type: geopoint
+    nullable: false
+    description: |
+      Foundry-native geopoint derived from (lat, lon). Constructed at write
+      time by ontology_writers.py; not present on the upstream /v1/positions/live
+      payload. The Fleet Overview Workshop Map widget binds to this field.
+
+  altitude_ft:
+    type: integer
+    nullable: true
+    description: Barometric altitude above MSL in feet.
+
+  speed_kt:
+    type: integer
+    nullable: true
+    description: Ground speed in knots.
+
+  heading_deg:
+    type: integer
+    nullable: true
+    description: True track over ground in degrees (0-360).
+
+  vertical_rate_fpm:
+    type: integer
+    nullable: true
+    description: Climb (+) / descent (-) rate in feet per minute.
+
+  on_ground:
+    type: boolean
+    nullable: false
+    description: True when the aircraft reports squat-switch on.
+
+  customer_region:
+    type: string
+    nullable: true
+    enum: [west, east, all]
+    description: Region attribution if inside a customer-defined zone; null otherwise.
+
+  last_seen_at:
+    type: timestamp
+    nullable: false
+    description: UTC timestamp of the most recent observation for this aircraft.
+
+  staleness:
+    type: string
+    nullable: false
+    enum: [fresh, stale, lost]
+    description: Bucket derived from last_seen_at — fresh <60s, stale <5min, lost otherwise.
+
+links:
+  # Outbound links FROM Aircraft. Inbound links (Operator —operates→ Aircraft)
+  # are declared on the source object type's YAML when written.
+  - apiName: aircraft_flights
+    target: Flight
+    cardinality: one-to-many
+    description: This aircraft's flight history (Flight objects keyed by icao24 + takeoff_ts).
