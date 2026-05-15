@@ -26,12 +26,6 @@ from typing import Any, Self
 
 import httpx
 import structlog
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from afm_foundry_sync.models import (
     FlightDetail,
@@ -45,21 +39,12 @@ from afm_foundry_sync.models import (
     TrailLookback,
     TrailResponse,
 )
+from afm_foundry_sync.retry import transient_retry
 from afm_foundry_sync.settings import FoundrySettings
 
 logger = structlog.get_logger(__name__)
 
-_RETRIABLE_STATUSES = frozenset({502, 503, 504})
 _REQUEST_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
-
-
-def _should_retry(exc: BaseException) -> bool:
-    """Tenacity retry predicate: transient transport errors and 5xx-retriable statuses."""
-    if isinstance(exc, httpx.TransportError):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in _RETRIABLE_STATUSES
-    return False
 
 
 class AfmApiClient:
@@ -87,12 +72,7 @@ class AfmApiClient:
     ) -> None:
         await self._client.aclose()
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=2.0),
-        retry=retry_if_exception(_should_retry),
-        reraise=True,
-    )
+    @transient_retry
     async def _get_json(self, path: str, *, params: dict[str, str] | None = None) -> Any:
         logger.info("afm_api_request", path=path, params=params or {})
         response = await self._client.get(path, params=params)

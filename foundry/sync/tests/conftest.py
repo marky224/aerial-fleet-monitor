@@ -19,5 +19,7 @@ def settings() -> FoundrySettings:
         FOUNDRY_TOKEN="t-test-token",
         FOUNDRY_ONTOLOGY_API_NAME="afm",
         FOUNDRY_ONTOLOGY_RID="ri.ontology.test.afm",
+        FOUNDRY_ACTION_UPSERT_AIRCRAFT="upsert-aircraft",
+        FOUNDRY_ACTION_UPSERT_SITE="upsert-site",
         AFM_API_BASE="http://api.test",
     )

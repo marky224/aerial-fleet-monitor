@@ -7,6 +7,14 @@
 # Apply to the AFM Foundry tenant. Site is deliberately flat — weather and
 # SLA fields are top-level so the Workshop Map widget and SLA scorecard
 # each bind to a single Site row instead of walking nested sub-objects.
+#
+# CANONICAL SCHEMA IS snake_case (below). The provisioned tenant's object-type
+# *property* API names are camelCase (Foundry auto-generates them); accepted,
+# NOT reconciled. The sync writes via the `upsert-site` Action whose snake_case
+# *parameter* names match this file verbatim — that is the stable contract.
+# In-tenant, `customer_regions` and `sla_sparkline_7d` are `string` (not
+# array/struct): the writer JSON-encodes them. Decisions locked 2026-05-15
+# (see _private/docs/foundry/ONTOLOGY.md).
 
 objectType:
   apiName: Site
@@ -75,6 +83,9 @@ properties:
     nullable: true
     description: IANA timezone (e.g. 'America/Los_Angeles'). Always null in v1.
   customer_regions:
+    # Logical type array<string>; stored in-tenant as a JSON-encoded `string`
+    # (e.g. '["west","all"]'). ontology_writers.py json.dumps the list.
+    # Decision 2026-05-15 — see header + _private/docs/foundry/ONTOLOGY.md.
     type: array<string>
     nullable: false
     description: Regions this site covers (subset of west/east/all).
@@ -160,10 +171,12 @@ properties:
     enum: [low, medium, high]
     description: Qualitative weather-impact bucket. Derived from flight_category in v1.
   sla_sparkline_7d:
-    # Open question: Foundry may or may not support array<struct> directly.
-    # If not, this becomes a separate SiteSlaDay object type linked to Site,
-    # or three parallel arrays (days[], on_time_pcts[], avg_delays[]).
-    type: array<struct>
+    # RESOLVED 2026-05-15: stored in-tenant as a JSON-encoded `string` (the
+    # array<struct> below is the LOGICAL shape; ontology_writers.py sends
+    # json.dumps(list[...]), "[]" in v1). array<struct> is unsupported as a
+    # Foundry Action parameter; the field is empty until Phase 05 so there is
+    # no fidelity loss. Workshop/AIP parses the JSON when rendering the trend.
+    type: array<struct>          # logical; serialized as JSON string on the wire
     nullable: false
     schema:
       day: date
