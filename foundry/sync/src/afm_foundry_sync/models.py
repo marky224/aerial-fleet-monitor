@@ -178,3 +178,83 @@ class FlightSummary(BaseModel):
 class SiteFlightListResponse(BaseModel):
     items: list[FlightSummary]
     count: int
+
+
+# ---------------------------------------------------------------------------
+# Ontology objects (Foundry-side shapes — targets of transforms.py)
+# ---------------------------------------------------------------------------
+
+
+class Aircraft(BaseModel):
+    """Foundry Ontology object: a physical airframe identified by icao24.
+
+    Carries the current observed position. Identity-side fields
+    (registration, aircraft_type, operator_icao) come from FlightDetail and
+    are intentionally NOT populated by the 30s positions sync — adding them
+    would require a per-icao24 fanout to /v1/flights/{icao24}.
+    """
+
+    icao24: str
+    callsign: str | None
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    altitude_ft: int | None
+    speed_kt: int | None
+    heading_deg: int | None
+    vertical_rate_fpm: int | None
+    on_ground: bool
+    customer_region: CustomerRegion
+    last_seen_at: datetime
+    staleness: Staleness
+
+
+class Site(BaseModel):
+    """Foundry Ontology object: watched airport (flat union of SiteDetail + SiteSla + SiteWeather).
+
+    Weather fields are None when SiteDetail.weather is None (no recent
+    METAR). SLA fields are None when no SiteSla was fetched. ``flight_category``
+    prefers the SLA value when present (its semantic is "current at this
+    site"), else the weather block's value (METAR-derived), else None.
+
+    See ``transforms.site_to_site`` for the construction contract.
+    """
+
+    # Identity (from SiteDetail)
+    icao: str
+    iata: str | None
+    name: str
+    city: str | None
+    state: str
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    elevation_ft: int | None
+    timezone: str | None
+    customer_regions: list[str]
+
+    # Live counts (from SiteDetail)
+    inbound_count_60m: int
+    outbound_count_60m: int
+    active_case_count: int
+
+    # Weather (from SiteDetail.weather)
+    metar_raw: str | None
+    metar_plain_english: str | None
+    wind_kt: int | None
+    visibility_sm: float | None
+    ceiling_ft: int | None
+    weather_observed_at: datetime | None
+
+    # Current flight category (SLA preferred, weather fallback)
+    flight_category: FlightCategory | None
+
+    # SLA scorecard (from SiteSla; SiteSla.active_cases is intentionally
+    # dropped — SiteDetail.active_case_count is the source of truth)
+    sla_period: SlaPeriod | None
+    sla_inbound_count: int | None
+    sla_outbound_count: int | None
+    on_time_arrival_pct: float | None
+    on_time_departure_pct: float | None
+    avg_arrival_delay_min: float | None
+    avg_departure_delay_min: float | None
+    weather_impact: WeatherImpact | None
+    sla_sparkline_7d: list[SparklinePoint]
