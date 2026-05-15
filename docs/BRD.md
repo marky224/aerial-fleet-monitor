@@ -67,7 +67,7 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 The system spans three planes:
 
 - **Dashboard plane** — Palantir Foundry (developer tier): Workshop apps + Ontology + AIP Logic, replacing what would otherwise be a custom React frontend
-- **Data plane** — FastAPI + Dagster + Postgres + Parquet lakehouse, running in Docker Compose on a self-hosted Linux server, exposed publicly via Cloudflare Tunnel
+- **Data plane** — FastAPI + Dagster + Postgres + Parquet lakehouse, running in Docker Compose on a self-hosted Linux server, with the API exposed publicly via a self-hosted reverse tunnel (observability UIs and Postgres stay private)
 - **CRM plane** — Salesforce Agentforce Developer Edition with custom data model, Apex callouts, Lightning Web Components, Agentforce agent, Record-Triggered Flow
 
 Auth flows through Salesforce as the IdP via OAuth 2.0 Web Server Flow. Region scoping flows from real Salesforce custom permissions through to the AFM JWT and into every backend query.
@@ -107,7 +107,7 @@ Real-time visibility, anomaly detection, Agentforce triage, scoped customer view
 | OpenSky API rate-limited | medium | medium | Polling cadence stays well under daily credit cap; Grafana alerts at 90%; fallback to slower polling |
 | Salesforce DE org storage fills | low | medium | Test cleanup discipline; lifecycle on `app_logs`; 5MB storage is plenty for a demo |
 | Agentforce LLM latency | medium | low | Async Flow invocation; user doesn't wait on agent latency for the Case creation |
-| Cloudflare Tunnel disconnects | low | low | Cloudflare retries automatically; Docker `restart: unless-stopped` |
+| Reverse tunnel disconnects | low | low | Tunnel connector auto-reconnects; Docker `restart: unless-stopped` |
 | Case detector false positives | medium | low | Each rule has explicit dedup window; Grafana dashboard highlights rule-level rates; runbooks explicitly note "not all triggers are issues" |
 
 ## Out-of-scope and explicit non-goals
