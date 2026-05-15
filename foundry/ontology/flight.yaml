@@ -1,0 +1,197 @@
+# AFM Foundry Ontology — Flight object type
+#
+# Source of truth: foundry/sync/src/afm_foundry_sync/models.py (class FlightDetail
+#   + sync_jobs.synthesize_flight_id / TakeoffDetector)
+# Build doc: _private/docs/build/03_foundry_dashboard.md
+# Design notes: _private/docs/foundry/ONTOLOGY.md (§ Flight)
+#
+# Apply to the AFM Foundry tenant. If the tenant supports direct YAML import,
+# this file is the canonical schema. Otherwise treat it as the click-by-click
+# spec for provisioning Flight through Ontology Manager.
+#
+# CANONICAL SCHEMA IS snake_case (below) — the logical schema. The provisioned
+# tenant's object-type properties AND Action parameters are camelCase (Foundry
+# auto-derives a camelCase param per property; manual snake renames get undone
+# whenever the action rules are touched). The sync serializes camelCase via
+# `ontology_writers._camel` — that is the stable contract boundary. Reversed
+# 2026-05-15 (see _private/docs/foundry/ONTOLOGY.md § REVERSAL). As with Site's
+# `customer_regions`/`sla_sparkline_7d`, the array fields below are stored
+# in-tenant as JSON-encoded `string` (array<struct>/array<string> is not a
+# usable Foundry Action parameter type); the writer json.dumps them.
+#
+# Write is DEFERRED until `upsert-flight` is provisioned (see ONTOLOGY.md
+# § Flight). TakeoffDetector + synthesize_flight_id already exist in
+# sync_jobs.py; this schema unblocks the write + the detector wiring.
+
+objectType:
+  apiName: Flight
+  displayName: Flight
+  pluralDisplayName: Flights
+  description: |
+    A single flight leg, keyed by a synthesized id. The PK is minted by
+    sync_jobs.TakeoffDetector on the first observed on-ground -> airborne
+    edge for an airframe; identity/routing/status fields are enriched from
+    /v1/flights/{icao24} and the position trail.
+
+    Created with the synthesized identity (flight_id, icao24, takeoff_ts)
+    on the 30s positions cadence; all enrichment fields are nullable and
+    populated by a later modify-or-create re-upsert. Identity-side fields
+    (registration, aircraft_type, operator_icao) live HERE, not on
+    Aircraft — see foundry/ontology/aircraft.yaml.
+
+source:
+  endpoints:
+    - derived: positions-stream on-ground->airborne edge (TakeoffDetector)
+    - GET /v1/flights/{icao24}            # enrichment (FlightDetail)
+    - GET /v1/flights/{icao24}/trail      # trail; deferred with the write
+  refreshCadence: |
+    PK created on the 30s positions cadence; enrichment re-upsert is
+    per-flight (exact enrichment cadence is a sync_jobs wiring decision,
+    not a schema constraint).
+  upsertKey: flight_id
+
+primaryKey: flight_id
+
+properties:
+  # ---- Identity / synthesis (the only non-null fields — minted at takeoff) ----
+  flight_id:
+    type: string
+    nullable: false
+    description: |
+      Synthesized PK `{icao24}-{unix_takeoff_ts}`. MUST match
+      sync_jobs.synthesize_flight_id verbatim (it is the upsert key).
+  icao24:
+    type: string
+    nullable: false
+    description: Lowercase 24-bit ICAO address of the airframe (FK to Aircraft.icao24).
+  takeoff_ts:
+    type: timestamp
+    nullable: false
+    description: UTC time of the on-ground->airborne edge; the synthesis input.
+
+  # ---- Identity (enriched from FlightDetail; null until first enrichment) ----
+  landed_at:
+    type: timestamp
+    nullable: true
+    description: UTC time the status timeline reached `landed`; null while airborne.
+  callsign:
+    type: string
+    nullable: true
+    description: Callsign reported by Mode S (e.g. 'UAL1234').
+  registration:
+    type: string
+    nullable: true
+    description: Tail number. Lives on Flight, not Aircraft (see aircraft.yaml).
+  aircraft_type:
+    type: string
+    nullable: true
+    description: ICAO aircraft type designator (e.g. 'B738').
+  operator_icao:
+    type: string
+    nullable: true
+    description: |
+      Operating airline's ICAO code. Scalar only in v1 — the Operator
+      object type is deferred (ONTOLOGY.md § Operator stays TBD).
+  customer_region:
+    type: string
+    nullable: true
+    enum: [west, east, all]
+    description: Region attribution if the flight is in a customer zone; null otherwise.
+
+  # ---- Routing (enriched; FKs to Site) ----
+  origin_icao:
+    type: string
+    nullable: true
+    description: Departure airport ICAO (FK to Site.icao). Null until resolved.
+  destination_icao:
+    type: string
+    nullable: true
+    description: Arrival airport ICAO (FK to Site.icao). Null until resolved.
+  eta_minutes:
+    type: integer
+    nullable: true
+    description: Estimated minutes to destination; null when not enroute/known.
+
+  # ---- Current status (denormalized scalars so Workshop binds without JSON parse) ----
+  status:
+    type: string
+    nullable: true
+    enum: [scheduled, departed, enroute, approaching, landed, unknown]
+    description: Latest FlightStatus. Denormalized from status_timeline's tail.
+  current_stage:
+    type: string
+    nullable: true
+    enum: [departed, climb, cruise, descent, approach, landed]
+    description: Latest FlightStage from the status_timeline tail.
+
+  # ---- Position (current / last known; geopoint built at write time) ----
+  lat:
+    type: double
+    nullable: true
+    constraints: { min: -90, max: 90 }
+  lon:
+    type: double
+    nullable: true
+    constraints: { min: -180, max: 180 }
+  position:
+    type: geopoint
+    nullable: true
+    description: |
+      Foundry-native geopoint derived from (lat, lon) by ontology_writers.py
+      at write time; null until the first enrichment supplies a position.
+      The Flight Detail Workshop app binds to this field.
+
+  # ---- Open cases (Phase 05; mirrors Site.active_case_count pattern) ----
+  open_case_count:
+    type: integer
+    nullable: false
+    description: Open AFM cases concerning this flight. Always 0 until Phase 05.
+  open_case_ids:
+    # Logical array<string>; stored in-tenant as a JSON-encoded `string`
+    # (e.g. '["CASE-1"]'). ontology_writers.py json.dumps the list; "[]" in v1.
+    type: array<string>
+    nullable: false
+    description: Open case ids concerning this flight. Empty list until Phase 05.
+
+  # ---- History (logical array<struct>; serialized as JSON string on the wire,
+  #      exactly like Site.sla_sparkline_7d — array<struct> is unsupported as a
+  #      Foundry Action parameter) ----
+  status_timeline:
+    type: array<struct>          # logical; serialized as JSON string on the wire
+    nullable: false
+    schema:
+      stage: string              # enum: departed|climb|cruise|descent|approach|landed
+      occurred_at: timestamp
+    description: |
+      Ordered stage-transition events from FlightDetail.status_timeline.
+      Empty list until the enrichment write is wired.
+  trail_2h:
+    type: array<struct>          # logical; serialized as JSON string on the wire
+    nullable: false
+    schema:
+      ts: timestamp
+      lat: double
+      lon: double
+      altitude_ft: integer | null
+      speed_kt: integer | null
+    description: |
+      Position trail, 2h lookback (Flight Detail app §3.3 / acceptance #7),
+      from /v1/flights/{icao24}/trail. Empty list until the trail fetch is
+      wired (deferred with the Flight write).
+
+links:
+  # Outbound links FROM Flight. The inbound Aircraft —aircraft_flights→ Flight
+  # link is declared on aircraft.yaml. Operator —operates→ Flight is deferred
+  # with the Operator object type (ONTOLOGY.md § Operator stays TBD).
+  - apiName: flight_origin
+    target: Site
+    cardinality: many-to-one
+    via: origin_icao
+    nullable: true
+    description: Departure airport; null until origin resolved.
+  - apiName: flight_destination
+    target: Site
+    cardinality: many-to-one
+    via: destination_icao
+    nullable: true
+    description: Arrival airport; null until destination resolved.
