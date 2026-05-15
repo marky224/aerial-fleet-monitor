@@ -62,6 +62,9 @@ _MAX_BATCH = 100
 class BatchResult:
     """Outcome of an upsert batch. ``attempted == succeeded`` on full success.
 
+    Live round-trip (2026-05-15) confirmed the success envelope is HTTP 200
+    with an empty body ``{}`` — there is no per-item result to parse, so
+    ``_post_chunk``'s ``raise_for_status()`` + counting the chunk is exact.
     applyBatch is all-or-nothing per chunk (any invalid request 400s the whole
     chunk), so a partial chunk failure surfaces as an ``httpx.HTTPStatusError``
     raised out of the writer, not as a non-zero ``failed`` here. ``failed`` is
