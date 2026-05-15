@@ -8,13 +8,13 @@
 # SLA fields are top-level so the Workshop Map widget and SLA scorecard
 # each bind to a single Site row instead of walking nested sub-objects.
 #
-# CANONICAL SCHEMA IS snake_case (below). The provisioned tenant's object-type
-# *property* API names are camelCase (Foundry auto-generates them); accepted,
-# NOT reconciled. The sync writes via the `upsert-site` Action whose snake_case
-# *parameter* names match this file verbatim — that is the stable contract.
-# In-tenant, `customer_regions` and `sla_sparkline_7d` are `string` (not
-# array/struct): the writer JSON-encodes them. Decisions locked 2026-05-15
-# (see _private/docs/foundry/ONTOLOGY.md).
+# CANONICAL SCHEMA IS snake_case (below) — the logical schema. The provisioned
+# tenant's object-type properties AND Action parameters are camelCase (Foundry
+# auto-derives them; manual snake renames get undone when action rules change).
+# The sync serializes camelCase via `ontology_writers._camel` — that is the
+# stable contract boundary (reversed 2026-05-15; was snake_case). In-tenant,
+# `customer_regions`/`sla_sparkline_7d` are `string` (not array/struct): the
+# writer JSON-encodes them. See _private/docs/foundry/ONTOLOGY.md § REVERSAL.
 
 objectType:
   apiName: Site

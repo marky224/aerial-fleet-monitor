@@ -8,13 +8,13 @@
 # this file is the canonical schema. Otherwise treat it as the click-by-click
 # spec for provisioning Aircraft through Ontology Manager.
 #
-# CANONICAL SCHEMA IS snake_case (below). The provisioned tenant's object-type
-# *property* API names are camelCase (Foundry auto-generates them, e.g.
-# altitude_ft -> altitudeFt); this is accepted and NOT reconciled by renaming.
-# The sync writes via the `upsert-aircraft` Action whose *parameter* API names
-# are snake_case and match this file verbatim — that parameter layer is the
-# stable contract; object property naming is internal to Foundry. Decision
-# locked 2026-05-15 (see _private/docs/foundry/ONTOLOGY.md).
+# CANONICAL SCHEMA IS snake_case (below) — the logical schema. The provisioned
+# tenant's object-type properties AND Action parameters are camelCase (Foundry
+# auto-derives a camelCase param per property; manual snake renames get undone
+# whenever the action rules are touched). The sync serializes camelCase via
+# `ontology_writers._camel` (mechanical snake→camel, verified to reproduce every
+# property name) — that is the stable contract boundary. Reversed 2026-05-15
+# (was snake_case; see _private/docs/foundry/ONTOLOGY.md § REVERSAL).
 
 objectType:
   apiName: Aircraft

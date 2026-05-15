@@ -13,6 +13,7 @@ from afm_foundry_sync import ontology_writers
 from afm_foundry_sync.models import Aircraft, Site, SparklinePoint
 from afm_foundry_sync.ontology_writers import (
     FoundryWriter,
+    _camel,
     aircraft_params,
     site_params,
 )
@@ -79,6 +80,31 @@ def _site(icao: str = "KSFO", **overrides: object) -> Site:
     return Site(**base)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("snake", "expected"),
+    [
+        # Single-token names are identity (PK, locator, geopoint).
+        ("icao24", "icao24"),
+        ("icao", "icao"),
+        ("aircraft", "aircraft"),
+        ("site", "site"),
+        ("position", "position"),
+        ("location", "location"),
+        # Multi-token: must reproduce the recon'd tenant property names verbatim.
+        ("last_seen_at", "lastSeenAt"),
+        ("on_ground", "onGround"),
+        ("vertical_rate_fpm", "verticalRateFpm"),
+        ("customer_regions", "customerRegions"),
+        ("inbound_count_60m", "inboundCount60m"),
+        ("metar_plain_english", "metarPlainEnglish"),
+        ("on_time_arrival_pct", "onTimeArrivalPct"),
+        ("sla_sparkline_7d", "slaSparkline7d"),
+    ],
+)
+def test_camel_matches_recon_property_names(snake: str, expected: str) -> None:
+    assert _camel(snake) == expected
+
+
 # ---------------------------------------------------------------------------
 # Serialization units
 # ---------------------------------------------------------------------------
@@ -90,16 +116,17 @@ def test_aircraft_params_pk_written_twice_and_geopoint_order() -> None:
     assert p["aircraft"] == "a12345"  # locator param = bare PK string
     # GeoJSON axis order is [lon, lat].
     assert p["position"] == {"type": "Point", "coordinates": [-122.37, 37.62]}
-    assert p["last_seen_at"] == "2026-05-15T12:00:00Z"
+    # Keys are camelCase (the Foundry action-param contract).
+    assert p["lastSeenAt"] == "2026-05-15T12:00:00Z"
 
 
 def test_aircraft_params_omits_none_optionals() -> None:
     p = aircraft_params(_aircraft(callsign=None, altitude_ft=None, customer_region=None))
     assert "callsign" not in p
-    assert "altitude_ft" not in p
-    assert "customer_region" not in p
+    assert "altitudeFt" not in p
+    assert "customerRegion" not in p
     # Required params remain.
-    assert p["on_ground"] is False
+    assert p["onGround"] is False
     assert p["staleness"] == "fresh"
 
 
@@ -112,9 +139,9 @@ def test_site_params_arrays_are_json_strings() -> None:
         )
     )
     assert p["site"] == "KSFO"
-    assert p["customer_regions"] == '["west", "all"]'
+    assert p["customerRegions"] == '["west", "all"]'
     # Struct array serialized as JSON; date rendered ISO via model_dump(mode=json).
-    assert p["sla_sparkline_7d"] == (
+    assert p["slaSparkline7d"] == (
         '[{"day": "2026-05-15", "on_time_pct": 91.2, "avg_delay_min": 7.4}]'
     )
     assert p["location"] == {"type": "Point", "coordinates": [-122.37, 37.62]}
@@ -122,16 +149,16 @@ def test_site_params_arrays_are_json_strings() -> None:
 
 def test_site_params_empty_sparkline_is_empty_json_array() -> None:
     p = site_params(_site(sla_sparkline_7d=[]))
-    assert p["sla_sparkline_7d"] == "[]"
+    assert p["slaSparkline7d"] == "[]"
 
 
 def test_site_params_omits_none_optionals_keeps_required() -> None:
     p = site_params(_site(timezone=None, on_time_arrival_pct=None, ceiling_ft=None))
     assert "timezone" not in p
-    assert "on_time_arrival_pct" not in p
-    assert "ceiling_ft" not in p
-    assert p["inbound_count_60m"] == 4
-    assert p["weather_observed_at"] == "2026-05-15T12:00:00Z"
+    assert "onTimeArrivalPct" not in p
+    assert "ceilingFt" not in p
+    assert p["inboundCount60m"] == 4
+    assert p["weatherObservedAt"] == "2026-05-15T12:00:00Z"
 
 
 # ---------------------------------------------------------------------------
