@@ -28,6 +28,11 @@ dependencies = [
     "pyarrow>=17,<20",
     "requests>=2.32,<3",
     "numpy>=1.26,<3",
+    # Phase 03 — the Foundry sync assets import `afm_foundry_sync`. It is a
+    # sibling monorepo package with its own venv/pyproject, not on PyPI, so
+    # it is editable-installed by `make install` (see Makefile) rather than
+    # declared here as a PEP 508 path dependency (relative paths aren't
+    # portably expressible in `dependencies`). httpx/tenacity come in transitively.
 ]
 
 [project.optional-dependencies]
@@ -85,6 +90,15 @@ indent-style = "space"
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+# Type-gate source only, matching the repo convention (api runs
+# `mypy app`, foundry/sync runs `mypy src/`). The pipelines lint target
+# is `mypy .`, so tests are excluded here instead. Dagster's `@asset`
+# decorator erases the wrapped return type, making strict-mode test
+# assertions on `MaterializeResult` metadata noisy without adding signal.
+[[tool.mypy.overrides]]
+module = ["pipelines.tests.*"]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = [
