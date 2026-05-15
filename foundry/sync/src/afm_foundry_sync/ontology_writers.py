@@ -9,14 +9,22 @@ primary key. Endpoint (verified against the tenant 2026-05-15)::
 
 Contract specifics established by dry-run probing the live Action:
 
-  - The PK value is sent **twice**: once as the PK property param
-    (``icao24`` / ``icao``) and once as the auto-generated object-locator
-    param (``aircraft`` / ``site``), which is ``required`` with an
-    ``objectQueryResult`` constraint and takes the bare PK string.
+  - **Parameter API names are camelCase.** Foundry's declarative
+    object-edit actions auto-derive a parameter per object property, named
+    after the (camelCase) property. Manual snake_case renames get undone
+    whenever the action's rules are touched, so the durable contract is
+    camelCase: ``_camel`` transforms each field name at serialization time
+    and the result matches the property API names verbatim. (Reverses the
+    earlier snake_case decision — see _private/docs/foundry/ONTOLOGY.md.)
+  - The PK value is sent **twice**: once as the PK param (``icao24`` /
+    ``icao``) and once as the object-locator param (``aircraft`` /
+    ``site``), which is ``required`` with an ``objectQueryResult``
+    constraint and takes the bare PK string. Both names are single-token,
+    so ``_camel`` leaves them unchanged.
   - ``position`` / ``location`` geopoints are GeoJSON Points with
     ``coordinates: [lon, lat]`` (GeoJSON axis order — locked decision).
     They are NOT on the upstream payloads; constructed here from lat/lon.
-  - ``customer_regions`` and ``sla_sparkline_7d`` are JSON-encoded strings
+  - ``customerRegions`` and ``slaSparkline7d`` are JSON-encoded strings
     (the tenant models them as ``string``; ``"[]"`` sparkline in v1).
   - Optional params are omitted when None (absent optionals validate clean).
 
@@ -65,6 +73,17 @@ class BatchResult:
     failed: int = 0
 
 
+def _camel(name: str) -> str:
+    """snake_case → camelCase. Identity for single-token names (icao24, position).
+
+    Verified to reproduce every recon'd Aircraft/Site property API name
+    exactly (e.g. sla_sparkline_7d → slaSparkline7d, inbound_count_60m →
+    inboundCount60m), so it is a safe mechanical transform, not a guess.
+    """
+    head, *rest = name.split("_")
+    return head + "".join(p[:1].upper() + p[1:] for p in rest)
+
+
 def _iso_utc(dt: datetime) -> str:
     """ISO-8601 with a trailing ``Z`` (the form the live Action validated against)."""
     return dt.isoformat().replace("+00:00", "Z")
@@ -100,7 +119,7 @@ def aircraft_params(a: Aircraft) -> dict[str, Any]:
     _put_optional(params, "heading_deg", a.heading_deg)
     _put_optional(params, "vertical_rate_fpm", a.vertical_rate_fpm)
     _put_optional(params, "customer_region", a.customer_region)
-    return params
+    return {_camel(k): v for k, v in params.items()}
 
 
 def site_params(s: Site) -> dict[str, Any]:
@@ -146,7 +165,7 @@ def site_params(s: Site) -> dict[str, Any]:
     _put_optional(params, "avg_arrival_delay_min", s.avg_arrival_delay_min)
     _put_optional(params, "avg_departure_delay_min", s.avg_departure_delay_min)
     _put_optional(params, "weather_impact", s.weather_impact)
-    return params
+    return {_camel(k): v for k, v in params.items()}
 
 
 def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
