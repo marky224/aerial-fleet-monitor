@@ -21,5 +21,6 @@ def settings() -> FoundrySettings:
         FOUNDRY_ONTOLOGY_RID="ri.ontology.test.afm",
         FOUNDRY_ACTION_UPSERT_AIRCRAFT="upsert-aircraft",
         FOUNDRY_ACTION_UPSERT_SITE="upsert-site",
+        FOUNDRY_ACTION_UPSERT_FLIGHT="upsert-flight",
         AFM_API_BASE="http://api.test",
     )

@@ -73,6 +73,11 @@ class FoundrySettings(BaseSettings):
         min_length=1,
         description="apiName of the modify-or-create Action that upserts Site objects.",
     )
+    FOUNDRY_ACTION_UPSERT_FLIGHT: str = Field(
+        ...,
+        min_length=1,
+        description="apiName of the modify-or-create Action that upserts Flight objects.",
+    )
     AFM_API_BASE: str = Field(
         default="http://localhost:8000",
         description="Base URL of the local AFM /v1 API the sync reads from.",

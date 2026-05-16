@@ -10,19 +10,29 @@ import pytest
 import respx
 
 from afm_foundry_sync import ontology_writers
-from afm_foundry_sync.models import Aircraft, Site, SparklinePoint
+from afm_foundry_sync.models import (
+    Aircraft,
+    Flight,
+    FlightStatusEvent,
+    Site,
+    SparklinePoint,
+    TrailPoint,
+)
 from afm_foundry_sync.ontology_writers import (
     FoundryWriter,
     _camel,
     aircraft_params,
+    flight_params,
     site_params,
 )
 from afm_foundry_sync.settings import FoundrySettings
 
 _AIRCRAFT_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-aircraft/applyBatch"
 _SITE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
+_FLIGHT_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-flight/applyBatch"
 
 _LAST_SEEN = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+_TAKEOFF = datetime(2026, 5, 16, 11, 30, 0, tzinfo=UTC)
 
 
 def _aircraft(icao24: str = "a12345", **overrides: object) -> Aircraft:
@@ -78,6 +88,35 @@ def _site(icao: str = "KSFO", **overrides: object) -> Site:
     )
     base.update(overrides)
     return Site(**base)  # type: ignore[arg-type]
+
+
+def _flight(flight_id: str = "a12345-1747308600", **overrides: object) -> Flight:
+    """Enriched Flight by default (lat/lon set). Pass lat=None, lon=None for
+    the takeoff-create shape."""
+    base = dict(
+        flight_id=flight_id,
+        icao24="a12345",
+        takeoff_ts=_TAKEOFF,
+        landed_at=None,
+        callsign="UAL1234",
+        registration="N12345",
+        aircraft_type="B738",
+        operator_icao="UAL",
+        customer_region="west",
+        origin_icao="KSFO",
+        destination_icao="KLAX",
+        eta_minutes=42,
+        status="enroute",
+        current_stage="cruise",
+        lat=37.62,
+        lon=-122.37,
+        open_case_count=0,
+        open_case_ids=[],
+        status_timeline=[FlightStatusEvent(stage="departed", occurred_at=_TAKEOFF)],
+        trail_2h=[],
+    )
+    base.update(overrides)
+    return Flight(**base)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -161,6 +200,82 @@ def test_site_params_omits_none_optionals_keeps_required() -> None:
     assert p["weatherObservedAt"] == "2026-05-15T12:00:00Z"
 
 
+def test_flight_params_pk_written_twice_and_camel_keys() -> None:
+    p = flight_params(_flight())
+    assert p["flightId"] == "a12345-1747308600"
+    assert p["flight"] == "a12345-1747308600"  # locator param = bare PK string
+    assert p["icao24"] == "a12345"
+    assert p["takeoffTs"] == "2026-05-16T11:30:00Z"
+    assert p["status"] == "enroute"
+    assert p["currentStage"] == "cruise"
+
+
+def test_flight_params_list_fields_are_json_strings() -> None:
+    p = flight_params(
+        _flight(
+            open_case_ids=["CASE-1", "CASE-2"],
+            status_timeline=[FlightStatusEvent(stage="departed", occurred_at=_TAKEOFF)],
+            trail_2h=[
+                TrailPoint(
+                    ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280
+                )
+            ],
+        )
+    )
+    assert p["openCaseIds"] == '["CASE-1", "CASE-2"]'
+    assert p["statusTimeline"] == (
+        '[{"stage": "departed", "occurred_at": "2026-05-16T11:30:00Z"}]'
+    )
+    assert p["trail2h"] == (
+        '[{"ts": "2026-05-16T11:30:00Z", "lat": 37.7, "lon": -122.4,'
+        ' "altitude_ft": 8000, "speed_kt": 280}]'
+    )
+
+
+def test_flight_params_empty_collections_are_empty_json_arrays() -> None:
+    p = flight_params(_flight(open_case_ids=[], status_timeline=[], trail_2h=[]))
+    assert p["openCaseIds"] == "[]"
+    assert p["statusTimeline"] == "[]"
+    assert p["trail2h"] == "[]"
+
+
+def test_flight_params_geopoint_only_when_both_coords_present() -> None:
+    enriched = flight_params(_flight(lat=37.62, lon=-122.37))
+    assert enriched["position"] == {"type": "Point", "coordinates": [-122.37, 37.62]}
+    # Takeoff-create shape: no lat/lon -> no position/lat/lon keys at all.
+    takeoff = flight_params(_flight(lat=None, lon=None))
+    assert "position" not in takeoff
+    assert "lat" not in takeoff
+    assert "lon" not in takeoff
+    # Required params still present on the bare create payload.
+    assert takeoff["flightId"] == "a12345-1747308600"
+    assert takeoff["flight"] == "a12345-1747308600"
+    assert takeoff["openCaseCount"] == 0
+    # statusTimeline is the seeded "departed" event (takeoff_to_flight never
+    # emits an empty timeline) — present and JSON-encoded.
+    assert isinstance(takeoff["statusTimeline"], str)
+    assert "departed" in takeoff["statusTimeline"]
+
+
+def test_flight_params_omits_none_optionals_keeps_required() -> None:
+    p = flight_params(
+        _flight(callsign=None, landed_at=None, eta_minutes=None, operator_icao=None)
+    )
+    assert "callsign" not in p
+    assert "landedAt" not in p
+    assert "etaMinutes" not in p
+    assert "operatorIcao" not in p
+    # Required params remain.
+    assert p["icao24"] == "a12345"
+    assert p["openCaseCount"] == 0
+
+
+def test_flight_params_landed_at_iso_utc_when_present() -> None:
+    landed = datetime(2026, 5, 16, 12, 15, 0, tzinfo=UTC)
+    p = flight_params(_flight(landed_at=landed))
+    assert p["landedAt"] == "2026-05-16T12:15:00Z"
+
+
 # ---------------------------------------------------------------------------
 # applyBatch behavior
 # ---------------------------------------------------------------------------
@@ -182,6 +297,34 @@ async def test_upsert_aircraft_batch_posts_expected_envelope(
     assert [r["parameters"]["icao24"] for r in payload["requests"]] == ["a1", "a2"]
     assert payload["requests"][0]["parameters"]["aircraft"] == "a1"
     assert result == ontology_writers.BatchResult(attempted=2, succeeded=2)
+
+
+@respx.mock
+async def test_upsert_flight_batch_posts_expected_envelope(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_flight_batch([_flight("f-1"), _flight("f-2")])
+
+    assert route.called
+    assert route.call_count == 1
+    payload = json.loads(route.calls.last.request.content)
+    assert [r["parameters"]["flightId"] for r in payload["requests"]] == ["f-1", "f-2"]
+    assert payload["requests"][0]["parameters"]["flight"] == "f-1"
+    assert result == ontology_writers.BatchResult(attempted=2, succeeded=2)
+
+
+@respx.mock
+async def test_upsert_flight_empty_batch_makes_no_http_call(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_flight_batch([])
+
+    assert not route.called
+    assert result == ontology_writers.BatchResult(attempted=0, succeeded=0)
 
 
 @respx.mock
