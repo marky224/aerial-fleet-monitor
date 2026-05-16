@@ -19,12 +19,14 @@
 # in-tenant as JSON-encoded `string` (array<struct>/array<string> is not a
 # usable Foundry Action parameter type); the writer json.dumps them.
 #
-# Write is LIVE — the `upsert-flight` Action is provisioned and the
-# create+modify+delete round-trip is proven (2026-05-16) via the real
-# writer path (FoundryWriter.upsert_flight_batch + flight_params). The
-# only remaining Flight work is wiring TakeoffDetector -> the write in
-# sync_jobs.py/foundry_sync.py; the detector + synthesize_flight_id
-# already exist in sync_jobs.py.
+# Write is LIVE and fully wired (2026-05-16). `upsert-flight` provisioned;
+# create+modify+delete round-trip proven via the real writer path
+# (FoundryWriter.upsert_flight_batch + flight_params). TakeoffDetector is
+# wired into the foundry_positions_sync Dagster asset: a detected
+# on-ground->airborne edge triggers a create-only Flight upsert, with
+# detector state persisted across ticks via materialization metadata.
+# FlightDetail/trail enrichment is deferred (a per-icao24 /v1/flights
+# fanout off a slower cadence — out of scope for the 30s positions tick).
 
 objectType:
   apiName: Flight
