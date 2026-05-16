@@ -9,10 +9,11 @@ test the asset boundary, so ``run_*_sync`` is stubbed.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
-from afm_foundry_sync.sync_jobs import FoundrySyncSkipped, SyncResult
+from afm_foundry_sync.sync_jobs import FoundrySyncSkipped, SyncResult, TakeoffDetector
 from dagster import MaterializeResult, build_asset_context
 
 from pipelines.assets import foundry_sync
@@ -67,6 +68,62 @@ def test_positions_sync_success_surfaces_counts_and_cursor(
     assert md["succeeded"].value == 3
     assert "skip_reason" not in md
     assert md["cursor"].value == cursor.isoformat()
+
+
+def test_positions_sync_surfaces_flights_written_and_detector_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok(**_kw: object) -> SyncResult:
+        return SyncResult(
+            attempted=5,
+            succeeded=5,
+            cursor=datetime(2026, 5, 16, 1, 0, 0, tzinfo=UTC),
+            takeoffs_detected=2,
+            flights_written=2,
+            detector_state={"abc123": False, "def456": True},
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_positions_sync", _ok)
+
+    md = foundry_sync.foundry_positions_sync(build_asset_context()).metadata or {}
+    assert md["takeoffs_detected"].value == 2
+    assert md["flights_written"].value == 2
+    # detector_state persisted as a JSON string (same access path as cursor).
+    assert json.loads(md["detector_state"].value) == {"abc123": False, "def456": True}
+
+
+def test_positions_sync_seeds_a_detector_into_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The asset must construct + pass a TakeoffDetector (seeded from prior
+    metadata) so cross-tick edges are observable."""
+    captured: dict[str, object] = {}
+
+    async def _capture(**kw: object) -> SyncResult:
+        captured.update(kw)
+        return SyncResult(attempted=0, succeeded=0)
+
+    monkeypatch.setattr(foundry_sync, "run_positions_sync", _capture)
+
+    foundry_sync.foundry_positions_sync(build_asset_context())
+
+    assert isinstance(captured.get("detector"), TakeoffDetector)
+
+
+def test_sites_sync_does_not_emit_detector_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Site sync has no detector — detector_state must be absent (the
+    metadata writer guards on None)."""
+
+    async def _ok() -> SyncResult:
+        return SyncResult(attempted=1, succeeded=1)
+
+    monkeypatch.setattr(foundry_sync, "run_sites_sync", _ok)
+
+    md = foundry_sync.foundry_sites_sync(build_asset_context()).metadata or {}
+    assert "detector_state" not in md
+    assert md["flights_written"].value == 0
 
 
 def test_real_defect_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
