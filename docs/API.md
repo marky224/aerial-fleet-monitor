@@ -140,6 +140,13 @@ Clear the cookie. If the cookie holds a Salesforce-issued session, also call SF'
 ### 3.1 `GET /v1/positions/live`
 
 Return all currently airborne aircraft within the caller's scope.
+"Currently airborne" = aircraft observed within the last **15 minutes**
+(`last_seen_at >= now() - 15m`). The backing `current_positions` store
+keeps a last-known row per aircraft indefinitely, so this recency bound
+is what makes the result "live"; without it the endpoint returns
+long-landed traffic. Each returned row still carries a `staleness`
+bucket (`fresh` < 60 s, `stale` < 5 min, `lost` otherwise) so the
+recently-lost tail inside the window is distinguishable client-side.
 
 **Query params:**
 - `bbox` (optional): `lat_min,lon_min,lat_max,lon_max`. If omitted, returns all in scope.
