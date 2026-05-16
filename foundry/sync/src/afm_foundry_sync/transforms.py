@@ -5,19 +5,33 @@ This module is the contract between the API-side shapes
 shapes (``models.Aircraft``, ``models.Site``). No I/O — fetching lives in
 ``api_readers.py`` and writing lives in ``ontology_writers.py``.
 
-Flight, Operator, and Case transforms are deferred: ``Flight.flight_id``
-synthesis requires takeoff detection, which is stateful logic that belongs
-in ``sync_jobs.py``; Operator is derived from Flight; Case lands in Phase 05.
+Operator and Case transforms remain deferred: Operator is derived from
+Flight (its object type stays TBD); Case lands in Phase 05.
+
+Flight has two construction paths, mirroring the modify-or-create write
+model: ``takeoff_to_flight`` builds the minimal create payload from the
+synthesized identity that ``sync_jobs.TakeoffDetector`` mints (passed as
+primitives, not a ``Takeoff`` object, to keep this module decoupled from
+the sync_jobs orchestration layer); ``flight_detail_to_flight`` builds the
+full enriched payload from a later ``/v1/flights`` + trail fetch.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from afm_foundry_sync.models import (
     Aircraft,
+    Flight,
+    FlightDetail,
+    FlightStage,
+    FlightStatus,
+    FlightStatusEvent,
     Position,
     Site,
     SiteDetail,
     SiteSla,
+    TrailResponse,
 )
 
 
@@ -102,4 +116,110 @@ def site_to_site(detail: SiteDetail, sla: SiteSla | None = None) -> Site:
         avg_departure_delay_min=sla.avg_departure_delay_min if sla else None,
         weather_impact=sla.weather_impact if sla else None,
         sla_sparkline_7d=sla.sparkline_7d if sla else [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flight
+# ---------------------------------------------------------------------------
+
+# FlightDetail carries a FlightStage timeline, not a FlightStatus. The
+# Ontology denormalizes both: current_stage = the timeline tail's stage;
+# status = that stage mapped to the coarser FlightStatus the Workshop app
+# binds. Empty timeline => ("unknown", None).
+_STAGE_TO_STATUS: dict[FlightStage, FlightStatus] = {
+    "departed": "departed",
+    "climb": "enroute",
+    "cruise": "enroute",
+    "descent": "enroute",
+    "approach": "approaching",
+    "landed": "landed",
+}
+
+
+def takeoff_to_flight(flight_id: str, icao24: str, takeoff_ts: datetime) -> Flight:
+    """Build the minimal create payload from a detected takeoff edge.
+
+    Takes the synthesized identity as primitives (the values
+    ``sync_jobs.TakeoffDetector`` produces) rather than importing the
+    ``Takeoff`` type, so transforms stays a leaf module under sync_jobs.
+
+    A detected on-ground->airborne edge *is* a departure at ``takeoff_ts``,
+    so the timeline is seeded with that one truthful event and the status
+    scalars reflect it — the object is meaningful in the Workshop app
+    before any /v1/flights enrichment arrives. The seed is overwritten
+    wholesale by ``flight_detail_to_flight`` on the next re-upsert.
+    """
+    return Flight(
+        flight_id=flight_id,
+        icao24=icao24,
+        takeoff_ts=takeoff_ts,
+        landed_at=None,
+        callsign=None,
+        registration=None,
+        aircraft_type=None,
+        operator_icao=None,
+        customer_region=None,
+        origin_icao=None,
+        destination_icao=None,
+        eta_minutes=None,
+        status="departed",
+        current_stage="departed",
+        lat=None,
+        lon=None,
+        open_case_count=0,
+        open_case_ids=[],
+        status_timeline=[FlightStatusEvent(stage="departed", occurred_at=takeoff_ts)],
+        trail_2h=[],
+    )
+
+
+def flight_detail_to_flight(
+    flight_id: str,
+    takeoff_ts: datetime,
+    detail: FlightDetail,
+    trail: TrailResponse | None = None,
+) -> Flight:
+    """Build the full enriched Flight from a /v1/flights fetch (+ optional trail).
+
+    ``flight_id`` and ``takeoff_ts`` are the synthesized identity (not
+    present on ``FlightDetail``) carried over from the create. The full
+    object is re-upserted (modify-or-create), so every field is set from
+    the fresh fetch.
+
+    Denormalization: ``current_stage`` is the status-timeline tail;
+    ``status`` is that stage mapped via ``_STAGE_TO_STATUS`` (``unknown``
+    when the timeline is empty); ``landed_at`` is the ``occurred_at`` of
+    the first ``landed`` event, else None (still airborne).
+    """
+    timeline = detail.status_timeline
+    current_stage = timeline[-1].stage if timeline else None
+    status: FlightStatus = (
+        _STAGE_TO_STATUS[current_stage] if current_stage is not None else "unknown"
+    )
+    landed_at = next(
+        (e.occurred_at for e in timeline if e.stage == "landed"),
+        None,
+    )
+    return Flight(
+        flight_id=flight_id,
+        icao24=detail.icao24,
+        takeoff_ts=takeoff_ts,
+        landed_at=landed_at,
+        callsign=detail.callsign,
+        registration=detail.registration,
+        aircraft_type=detail.aircraft_type,
+        operator_icao=detail.operator_icao,
+        customer_region=detail.customer_region,
+        origin_icao=detail.origin_icao,
+        destination_icao=detail.destination_icao,
+        eta_minutes=detail.eta_minutes,
+        status=status,
+        current_stage=current_stage,
+        lat=detail.position.lat,
+        lon=detail.position.lon,
+        open_case_count=len(detail.open_case_ids),
+        open_case_ids=detail.open_case_ids,
+        status_timeline=timeline,
+        trail_2h=trail.points if trail is not None else [],
     )

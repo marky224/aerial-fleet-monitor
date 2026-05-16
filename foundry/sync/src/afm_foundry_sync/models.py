@@ -258,3 +258,57 @@ class Site(BaseModel):
     avg_departure_delay_min: float | None
     weather_impact: WeatherImpact | None
     sla_sparkline_7d: list[SparklinePoint]
+
+
+class Flight(BaseModel):
+    """Foundry Ontology object: a synthesized flight leg.
+
+    The PK is minted by ``sync_jobs.TakeoffDetector`` on the first observed
+    on-ground->airborne edge for an airframe; identity/routing/status are
+    enriched from ``FlightDetail`` (+ trail) via a later modify-or-create
+    re-upsert. Only the three takeoff-synthesized fields are non-optional;
+    every enrichment field is Optional so the create-at-takeoff payload is
+    valid before enrichment (mirrors the Flight YAML nullability contract).
+
+    ``status``/``current_stage`` are denormalized from the status timeline
+    tail so Workshop binds scalars without parsing JSON. The geopoint
+    ``position`` is built by ``ontology_writers`` from (lat, lon) at write
+    time and is intentionally absent here, exactly like Aircraft/Site.
+
+    See ``transforms.takeoff_to_flight`` (create) and
+    ``transforms.flight_detail_to_flight`` (enrich).
+    """
+
+    # Synthesis (non-null; minted at the takeoff edge)
+    flight_id: str
+    icao24: str
+    takeoff_ts: datetime
+
+    # Identity (enriched)
+    landed_at: datetime | None
+    callsign: str | None
+    registration: str | None
+    aircraft_type: str | None
+    operator_icao: str | None
+    customer_region: CustomerRegion
+
+    # Routing (enriched)
+    origin_icao: str | None
+    destination_icao: str | None
+    eta_minutes: int | None
+
+    # Current status (denormalized from the status_timeline tail)
+    status: FlightStatus | None
+    current_stage: FlightStage | None
+
+    # Position (last known; geopoint built at write time, not modeled)
+    lat: float | None = Field(ge=-90, le=90)
+    lon: float | None = Field(ge=-180, le=180)
+
+    # Open cases (Phase 05)
+    open_case_count: int
+    open_case_ids: list[str]
+
+    # History (serialized as JSON strings on the wire by ontology_writers)
+    status_timeline: list[FlightStatusEvent]
+    trail_2h: list[TrailPoint]
