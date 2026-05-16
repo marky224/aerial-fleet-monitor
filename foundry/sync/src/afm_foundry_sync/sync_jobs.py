@@ -17,18 +17,24 @@ writes) into runnable jobs. It owns:
     other exception, is a *defect* and propagates unchanged.
   - ``incremental_sync_positions`` / ``full_sync_sites`` — the two jobs.
   - ``TakeoffDetector`` — stateful on-ground→airborne edge detection that
-    synthesizes ``Flight`` primary keys. **The Flight Ontology write is
-    deferred** until the Flight schema is locked in ONTOLOGY.md and an
-    ``upsert-flight`` Action is provisioned (mirrors the Aircraft/Site
-    code-then-provision order). The state machine itself is built and
-    tested now because it is pure, cross-cutting logic the build doc and
-    ``transforms`` docstring explicitly home in this module.
+    synthesizes ``Flight`` primary keys. **Now wired** (Flight schema +
+    ``upsert-flight`` proven 2026-05-16): a detected takeoff triggers a
+    *create-only* ``upsert_flight_batch`` of the takeoff-shaped Flight
+    (``transforms.takeoff_to_flight``). FlightDetail/trail **enrichment is
+    deferred** — it needs a per-icao24 ``/v1/flights`` fanout off a slower
+    cadence, out of scope for the 30s positions tick.
 
-Cursor & detector state are *returned*, never persisted here: this module
-stays I/O-pure for unit testing. The Dagster asset owns persistence (run
-cursor / asset metadata) and owns the long-lived ``TakeoffDetector``
-across ticks — an in-process detector resets on restart, which is why its
-state is externally owned, not module-global.
+Cursor & detector state are *returned* (``SyncResult.cursor`` /
+``SyncResult.detector_state``), never persisted here: this module stays
+I/O-pure for unit testing. The Dagster asset owns persistence — it seeds
+a fresh ``TakeoffDetector(prior_state)`` from its prior materialization
+metadata each tick and writes the post-run state back, so detector state
+survives process restarts (an in-process-only detector would reset and
+miss every cross-restart edge). ``state_for`` bounds the persisted map to
+aircraft seen *this run* (a >1-tick absence is treated as a fresh
+sighting — acceptable per the detector's "first sighting only seeds"
+rule, and it keeps the metadata blob proportional to live traffic, not
+to every icao24 ever observed).
 """
 
 from __future__ import annotations
@@ -46,7 +52,11 @@ from afm_foundry_sync.api_readers import AfmApiClient
 from afm_foundry_sync.models import Position
 from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
-from afm_foundry_sync.transforms import position_to_aircraft, site_to_site
+from afm_foundry_sync.transforms import (
+    position_to_aircraft,
+    site_to_site,
+    takeoff_to_flight,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -70,8 +80,11 @@ class SyncResult:
 
     ``cursor`` is the value the caller should persist and pass back as
     ``since`` next run (positions only; ``None`` for the full site sync).
-    ``takeoffs_detected`` counts state-machine edges this run — the Flight
-    write is deferred, so it is observability only for now.
+    ``takeoffs_detected`` counts state-machine edges this run;
+    ``flights_written`` is the create-only Flight upsert count from those
+    edges (≤ takeoffs_detected; equal on full success). ``detector_state``
+    is the post-run on-ground map the caller persists and seeds next
+    tick's detector with (positions w/ detector only; ``None`` otherwise).
     """
 
     attempted: int
@@ -79,6 +92,8 @@ class SyncResult:
     failed: int = 0
     cursor: datetime | None = None
     takeoffs_detected: int = 0
+    flights_written: int = 0
+    detector_state: dict[str, bool] | None = None
 
 
 @contextlib.asynccontextmanager
@@ -140,12 +155,23 @@ class TakeoffDetector:
     ``on_ground=False`` is a takeoff; ``takeoff_ts`` is that row's
     ``last_seen_at``. First sighting of an aircraft only seeds state (no
     edge — we cannot infer a transition without a prior sample). State is
-    in-process and caller-owned (see module docstring): the Dagster asset
-    holds one instance across ticks.
+    caller-owned (see module docstring): the Dagster asset seeds a fresh
+    instance from persisted state each tick and writes the post-run state
+    back, so edges survive process restarts.
     """
 
-    def __init__(self) -> None:
-        self._on_ground: dict[str, bool] = {}
+    def __init__(self, prior_on_ground: dict[str, bool] | None = None) -> None:
+        # Copy: callers pass deserialized metadata we must not alias/mutate.
+        self._on_ground: dict[str, bool] = dict(prior_on_ground or {})
+
+    def state_for(self, icao24s: Iterable[str]) -> dict[str, bool]:
+        """On-ground state restricted to the given icao24s (the run's batch).
+
+        Bounds the persisted blob to live traffic: aircraft absent this run
+        are dropped, so a >1-tick gap re-seeds as a first sighting (no
+        edge) rather than growing the map unboundedly.
+        """
+        return {k: self._on_ground[k] for k in set(icao24s) if k in self._on_ground}
 
     def observe(self, positions: Iterable[Position]) -> list[Takeoff]:
         takeoffs: list[Takeoff] = []
@@ -175,8 +201,11 @@ async def incremental_sync_positions(
     ``since`` is the previous run's cursor; the v1 API returns the full
     live set (no server-side delta), so it is advisory/logged for now and
     the cursor returned is the response ``server_time``. If a ``detector``
-    is supplied its takeoff edges are counted into the result;
-    ``Flight``-object writes are deferred (see module docstring).
+    is supplied, its on-ground→airborne edges trigger a *create-only*
+    ``upsert_flight_batch`` (takeoff-shaped Flight per
+    ``takeoff_to_flight``; FlightDetail enrichment is deferred — see module
+    docstring) and the post-run detector state is returned for the caller
+    to persist and re-seed next tick.
     """
     response = await client.fetch_positions_live()
     deduped = _dedupe_latest(response.items)
@@ -195,12 +224,23 @@ async def incremental_sync_positions(
     batch: BatchResult = await writer.upsert_aircraft_batch(
         [position_to_aircraft(p) for p in deduped]
     )
+    # Create-only Flight write off detected takeoffs. Empty list → no-op
+    # (upsert_flight_batch short-circuits), so this is safe with no detector.
+    flight_batch: BatchResult = await writer.upsert_flight_batch(
+        [takeoff_to_flight(t.flight_id, t.icao24, t.takeoff_ts) for t in takeoffs]
+    )
     return SyncResult(
         attempted=batch.attempted,
         succeeded=batch.succeeded,
         failed=batch.failed,
         cursor=response.server_time,
         takeoffs_detected=len(takeoffs),
+        flights_written=flight_batch.succeeded,
+        detector_state=(
+            detector.state_for(p.icao24 for p in deduped)
+            if detector is not None
+            else None
+        ),
     )
 
 

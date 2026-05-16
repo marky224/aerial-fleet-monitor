@@ -39,6 +39,9 @@ _AIRCRAFT_BATCH = (
 _SITE_BATCH = (
     "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
 )
+_FLIGHT_BATCH = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-flight/applyBatch"
+)
 
 
 def _pos(icao24: str, *, on_ground: bool, seen: datetime, **kw: object) -> Position:
@@ -120,6 +123,36 @@ def test_no_edge_when_staying_airborne_or_landing() -> None:
     assert det.observe([_pos("def456", on_ground=True, seen=_T1)]) == []  # lands
 
 
+def test_takeoff_detector_seeds_from_prior_state() -> None:
+    """A detector seeded with prior on-ground state detects an edge on the
+    very first observe (the cross-restart path the asset relies on)."""
+    det = TakeoffDetector({"abc123": True})
+    takeoffs = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    assert len(takeoffs) == 1
+    assert takeoffs[0].flight_id == synthesize_flight_id("abc123", _T1)
+
+
+def test_takeoff_detector_does_not_alias_prior_state() -> None:
+    prior = {"abc123": True}
+    det = TakeoffDetector(prior)
+    det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    assert prior == {"abc123": True}  # caller's dict untouched
+
+
+def test_takeoff_detector_state_for_bounds_to_given_icao24s() -> None:
+    det = TakeoffDetector()
+    det.observe(
+        [
+            _pos("abc123", on_ground=True, seen=_T0),
+            _pos("def456", on_ground=False, seen=_T0),
+        ]
+    )
+    # Only the requested, known icao24s survive (bounds the persisted blob).
+    assert det.state_for(["abc123"]) == {"abc123": True}
+    assert det.state_for(["abc123", "def456"]) == {"abc123": True, "def456": False}
+    assert det.state_for(["ghost"]) == {}  # absent → dropped, not error
+
+
 # --------------------------------------------------------------------------- #
 # guarded_sync
 # --------------------------------------------------------------------------- #
@@ -190,6 +223,9 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
     batch_route = respx.post(_AIRCRAFT_BATCH).mock(
         return_value=httpx.Response(200, json={})
     )
+    flight_route = respx.post(_FLIGHT_BATCH).mock(
+        return_value=httpx.Response(200, json={})
+    )
     det = TakeoffDetector()
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -218,6 +254,14 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
     assert r1.takeoffs_detected == 0
     assert r2.takeoffs_detected == 1
     assert batch_route.call_count == 2
+    # Create-only Flight write fired exactly once — only on the edge tick
+    # (tick 1 had no takeoff → upsert_flight_batch([]) short-circuits).
+    assert flight_route.call_count == 1
+    assert r1.flights_written == 0
+    assert r2.flights_written == 1
+    # Post-run detector state is returned, bounded to the run's batch.
+    assert r2.detector_state == {"abc123": False}
+    assert b"abc123-" in flight_route.calls.last.request.content  # synthesized PK
 
 
 @respx.mock

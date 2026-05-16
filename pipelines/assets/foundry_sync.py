@@ -21,24 +21,31 @@ run. The v1 API returns the full live snapshot (no server-side delta), so
 delta endpoint needs no asset change.
 
 Takeoff detection (``afm_foundry_sync.sync_jobs.TakeoffDetector``) is
-intentionally **not** wired here yet: the ``Flight`` Ontology object is
-unprovisioned so its write is deferred, and a per-run detector cannot see
-cross-run on-ground→airborne edges. The detector and its cross-run state
-persistence are co-delivered with the Flight Ontology work.
+wired into ``foundry_positions_sync``: a detected on-ground→airborne edge
+triggers a create-only ``Flight`` upsert. The detector is stateful across
+ticks but a per-process instance would reset on restart and miss every
+cross-restart edge, so its on-ground map is persisted to this asset's
+materialization metadata (same mechanism as the cursor, stored as a JSON
+string) and a fresh ``TakeoffDetector`` is seeded from it each run.
+FlightDetail enrichment is deferred (a per-icao24 fanout off a slower
+cadence — out of scope for the 30s tick).
 """
 
 import asyncio
+import json
 from datetime import datetime
 
 from afm_foundry_sync.sync_jobs import (
     FoundrySyncSkipped,
     SyncResult,
+    TakeoffDetector,
     run_positions_sync,
     run_sites_sync,
 )
 from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, asset
 
 _CURSOR_KEY = "cursor"
+_DETECTOR_STATE_KEY = "detector_state"
 
 
 def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
@@ -56,6 +63,27 @@ def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
         return datetime.fromisoformat(str(entry.value))
     except (ValueError, AttributeError) as exc:
         context.log.warning("could not read prior cursor: %s", exc)
+        return None
+
+
+def _prior_detector_state(context: AssetExecutionContext) -> dict[str, bool] | None:
+    """Read the previous run's TakeoffDetector on-ground map (JSON string)
+    from this asset's latest materialization metadata. Any miss returns
+    None — the detector then starts empty (first sightings only seed).
+    """
+    try:
+        event = context.instance.get_latest_materialization_event(context.asset_key)
+        if event is None or event.asset_materialization is None:
+            return None
+        entry = event.asset_materialization.metadata.get(_DETECTOR_STATE_KEY)
+        if entry is None:
+            return None
+        raw = json.loads(str(entry.value))
+        if not isinstance(raw, dict):
+            return None
+        return {str(k): bool(v) for k, v in raw.items()}
+    except (ValueError, AttributeError) as exc:
+        context.log.warning("could not read prior detector state: %s", exc)
         return None
 
 
@@ -77,9 +105,14 @@ def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
         "succeeded": MetadataValue.int(result.succeeded),
         "failed": MetadataValue.int(result.failed),
         "takeoffs_detected": MetadataValue.int(result.takeoffs_detected),
+        "flights_written": MetadataValue.int(result.flights_written),
     }
     if result.cursor is not None:
         meta[_CURSOR_KEY] = MetadataValue.text(result.cursor.isoformat())
+    if result.detector_state is not None:
+        # JSON string (not MetadataValue.json) so read-back uses the same
+        # entry.value access path as the cursor — no Dagster-version risk.
+        meta[_DETECTOR_STATE_KEY] = MetadataValue.text(json.dumps(result.detector_state))
     return meta
 
 
@@ -90,8 +123,9 @@ def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
 )
 def foundry_positions_sync(context: AssetExecutionContext) -> MaterializeResult:
     since = _prior_cursor(context)
+    detector = TakeoffDetector(_prior_detector_state(context))
     try:
-        result = asyncio.run(run_positions_sync(since=since))
+        result = asyncio.run(run_positions_sync(since=since, detector=detector))
     except FoundrySyncSkipped as exc:
         return _skipped(context, exc.reason)
     return MaterializeResult(metadata=_result_metadata(result))
