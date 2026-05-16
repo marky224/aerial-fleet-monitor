@@ -37,6 +37,7 @@ from pipelines.assets import (
     foundry_sites_sync,
     noaa_weather,
     opensky_positions,
+    prune_stale_positions,
     static_reference,
 )
 from pipelines.resources import (
@@ -78,6 +79,11 @@ foundry_positions_sync_job = define_asset_job(
 foundry_sites_sync_job = define_asset_job(
     name="foundry_sites_sync_job",
     selection=AssetSelection.assets(foundry_sites_sync),
+)
+
+prune_stale_positions_job = define_asset_job(
+    name="prune_stale_positions_job",
+    selection=AssetSelection.assets(prune_stale_positions),
 )
 
 
@@ -142,6 +148,16 @@ foundry_sites_sync_schedule = ScheduleDefinition(
 )
 
 
+prune_stale_positions_schedule = ScheduleDefinition(
+    name="prune_stale_positions_schedule",
+    job=prune_stale_positions_job,
+    cron_schedule="0 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Hourly: evict app.current_positions rows older than the retention window.",
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -149,6 +165,7 @@ defs = Definitions(
         static_reference,
         foundry_positions_sync,
         foundry_sites_sync,
+        prune_stale_positions,
     ],
     jobs=[
         opensky_positions_job,
@@ -156,11 +173,13 @@ defs = Definitions(
         static_reference_job,
         foundry_positions_sync_job,
         foundry_sites_sync_job,
+        prune_stale_positions_job,
     ],
     schedules=[
         noaa_weather_schedule,
         static_reference_schedule,
         foundry_sites_sync_schedule,
+        prune_stale_positions_schedule,
     ],
     sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],
     resources={
