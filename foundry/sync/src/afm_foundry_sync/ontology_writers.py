@@ -17,15 +17,19 @@ Contract specifics established by dry-run probing the live Action:
     and the result matches the property API names verbatim. (Reverses the
     earlier snake_case decision — see _private/docs/foundry/ONTOLOGY.md.)
   - The PK value is sent **twice**: once as the PK param (``icao24`` /
-    ``icao``) and once as the object-locator param (``aircraft`` /
-    ``site``), which is ``required`` with an ``objectQueryResult``
-    constraint and takes the bare PK string. Both names are single-token,
-    so ``_camel`` leaves them unchanged.
+    ``icao`` / ``flightId``) and once as the object-locator param
+    (``aircraft`` / ``site`` / ``flight``), which is ``required`` with an
+    ``objectQueryResult`` constraint and takes the bare PK string. The
+    locator names are single-token, so ``_camel`` leaves them unchanged.
   - ``position`` / ``location`` geopoints are GeoJSON Points with
     ``coordinates: [lon, lat]`` (GeoJSON axis order — locked decision).
     They are NOT on the upstream payloads; constructed here from lat/lon.
-  - ``customerRegions`` and ``slaSparkline7d`` are JSON-encoded strings
-    (the tenant models them as ``string``; ``"[]"`` sparkline in v1).
+    Flight's lat/lon are nullable (null until enrichment), so its
+    ``position`` is sent only when both are present.
+  - JSON-encoded-string params (the tenant models them as ``string``):
+    Site ``customerRegions`` / ``slaSparkline7d``; Flight ``openCaseIds``
+    / ``statusTimeline`` / ``trail2h``. Empty collections serialize to
+    ``"[]"`` (the v1 state for all of Flight's array fields).
   - Optional params are omitted when None (absent optionals validate clean).
 
 Retry/error model is shared with ``api_readers`` via ``retry.transient_retry``.
@@ -45,7 +49,7 @@ from typing import Any, Self
 import httpx
 import structlog
 
-from afm_foundry_sync.models import Aircraft, Site
+from afm_foundry_sync.models import Aircraft, Flight, Site
 from afm_foundry_sync.retry import transient_retry
 from afm_foundry_sync.settings import FoundrySettings
 
@@ -171,6 +175,52 @@ def site_params(s: Site) -> dict[str, Any]:
     return {_camel(k): v for k, v in params.items()}
 
 
+def flight_params(f: Flight) -> dict[str, Any]:
+    """Serialize a Flight to the upsert-flight parameter map.
+
+    Same contract as Aircraft/Site: PK written twice (``flight_id`` param +
+    ``flight`` locator), camelCase keys via ``_camel``. Unlike Aircraft,
+    Flight's lat/lon are nullable, so ``position`` is emitted only when
+    both are present (the takeoff-create payload has neither). The three
+    list fields are JSON-encoded strings, exactly like Site's array fields.
+    """
+    params: dict[str, Any] = {
+        "flight_id": f.flight_id,
+        # Object-locator param: the bare PK string (verified contract).
+        "flight": f.flight_id,
+        "icao24": f.icao24,
+        "takeoff_ts": _iso_utc(f.takeoff_ts),
+        "open_case_count": f.open_case_count,
+        # array<string>/array<struct> are `string` in-tenant — JSON-encode.
+        "open_case_ids": json.dumps(f.open_case_ids),
+        "status_timeline": json.dumps(
+            [e.model_dump(mode="json") for e in f.status_timeline]
+        ),
+        "trail_2h": json.dumps([t.model_dump(mode="json") for t in f.trail_2h]),
+    }
+    _put_optional(
+        params,
+        "landed_at",
+        _iso_utc(f.landed_at) if f.landed_at is not None else None,
+    )
+    _put_optional(params, "callsign", f.callsign)
+    _put_optional(params, "registration", f.registration)
+    _put_optional(params, "aircraft_type", f.aircraft_type)
+    _put_optional(params, "operator_icao", f.operator_icao)
+    _put_optional(params, "customer_region", f.customer_region)
+    _put_optional(params, "origin_icao", f.origin_icao)
+    _put_optional(params, "destination_icao", f.destination_icao)
+    _put_optional(params, "eta_minutes", f.eta_minutes)
+    _put_optional(params, "status", f.status)
+    _put_optional(params, "current_stage", f.current_stage)
+    # Geopoint only when both coordinates are known (null until enrichment).
+    if f.lat is not None and f.lon is not None:
+        params["lat"] = f.lat
+        params["lon"] = f.lon
+        params["position"] = _geopoint(f.lat, f.lon)
+    return {_camel(k): v for k, v in params.items()}
+
+
 def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
@@ -186,6 +236,7 @@ class FoundryWriter:
         self._ontology = settings.FOUNDRY_ONTOLOGY_API_NAME
         self._action_aircraft = settings.FOUNDRY_ACTION_UPSERT_AIRCRAFT
         self._action_site = settings.FOUNDRY_ACTION_UPSERT_SITE
+        self._action_flight = settings.FOUNDRY_ACTION_UPSERT_FLIGHT
         self._client = httpx.AsyncClient(
             base_url=str(settings.FOUNDRY_TENANT_URL).rstrip("/"),
             timeout=_REQUEST_TIMEOUT,
@@ -239,4 +290,12 @@ class FoundryWriter:
             return BatchResult(attempted=0, succeeded=0)
         return await self._apply_batch(
             self._action_site, [site_params(s) for s in sites]
+        )
+
+    async def upsert_flight_batch(self, flights: list[Flight]) -> BatchResult:
+        """Upsert a batch of Flights. No-op (no HTTP call) on an empty list."""
+        if not flights:
+            return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(
+            self._action_flight, [flight_params(f) for f in flights]
         )
