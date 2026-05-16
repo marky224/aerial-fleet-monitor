@@ -19,9 +19,12 @@
 # in-tenant as JSON-encoded `string` (array<struct>/array<string> is not a
 # usable Foundry Action parameter type); the writer json.dumps them.
 #
-# Write is DEFERRED until `upsert-flight` is provisioned (see ONTOLOGY.md
-# § Flight). TakeoffDetector + synthesize_flight_id already exist in
-# sync_jobs.py; this schema unblocks the write + the detector wiring.
+# Write is LIVE — the `upsert-flight` Action is provisioned and the
+# create+modify+delete round-trip is proven (2026-05-16) via the real
+# writer path (FoundryWriter.upsert_flight_batch + flight_params). The
+# only remaining Flight work is wiring TakeoffDetector -> the write in
+# sync_jobs.py/foundry_sync.py; the detector + synthesize_flight_id
+# already exist in sync_jobs.py.
 
 objectType:
   apiName: Flight
