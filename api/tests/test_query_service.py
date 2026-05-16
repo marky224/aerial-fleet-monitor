@@ -74,6 +74,18 @@ def test_list_live_positions_bbox_adds_params(
     assert params["lon_max"] == -114.0
 
 
+def test_list_live_positions_bounds_by_recency_window(
+    query_service: QueryService, mock_postgres: MagicMock, internal_scope: Scope
+) -> None:
+    """The 'currently airborne' contract (API.md §3.1) requires a recency
+    filter — current_positions is an eviction-free last-known store, so
+    without this the endpoint returns long-landed traffic."""
+    mock_postgres.fetchall.return_value = []
+    query_service.list_live_positions(scope=internal_scope)
+    sql, _ = mock_postgres.fetchall.call_args[0]
+    assert "last_seen_at >= NOW() - INTERVAL '15 minutes'" in sql
+
+
 def test_list_live_positions_region_override_rejected_for_narrow_scope(
     query_service: QueryService, west_scope: Scope
 ) -> None:
