@@ -4,11 +4,11 @@ The full dashboard specification documents AFM's Foundry-hosted operator UI: the
 
 ## Topics covered in the full specification
 
-- Foundry workspace setup (developer-tier tenant, OAuth client, OSDK installation)
+- Foundry workspace setup (developer-tier tenant, user-scoped bearer-token auth — no OSDK)
 - Ontology object shapes (`Aircraft`, `Flight`, `Site`, `Operator`, `Case`) and link types
 - Local→Foundry sync architecture:
   - Dagster assets (`foundry_positions_sync` every 30s, `foundry_sites_sync` every 5min)
-  - Service-to-service OAuth credentials grant with in-memory token cache
+  - Bearer-token auth against the Foundry Action `applyBatch` API (httpx; OSDK deliberately deferred)
   - Independent failure-domain design (Foundry unreachable → sync skip, never breaks local pipeline)
 - Workshop app inventory:
   - **Fleet Overview** — Map widget bound to `Aircraft` Ontology, KPI strip, cases panel

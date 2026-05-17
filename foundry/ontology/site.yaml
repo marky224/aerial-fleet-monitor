@@ -1,0 +1,190 @@
+# AFM Foundry Ontology — Site object type
+#
+# Source of truth: foundry/sync/src/afm_foundry_sync/models.py (class Site)
+# Build doc: _private/docs/build/03_foundry_dashboard.md
+# Design notes: _private/docs/foundry/ONTOLOGY.md (§ Site)
+#
+# Apply to the AFM Foundry tenant. Site is deliberately flat — weather and
+# SLA fields are top-level so the Workshop Map widget and SLA scorecard
+# each bind to a single Site row instead of walking nested sub-objects.
+#
+# CANONICAL SCHEMA IS snake_case (below) — the logical schema. The provisioned
+# tenant's object-type properties AND Action parameters are camelCase (Foundry
+# auto-derives them; manual snake renames get undone when action rules change).
+# The sync serializes camelCase via `ontology_writers._camel` — that is the
+# stable contract boundary (reversed 2026-05-15; was snake_case). In-tenant,
+# `customer_regions`/`sla_sparkline_7d` are `string` (not array/struct): the
+# writer JSON-encodes them. See _private/docs/foundry/ONTOLOGY.md § REVERSAL.
+
+objectType:
+  apiName: Site
+  displayName: Site
+  pluralDisplayName: Sites
+  description: |
+    A watched airport. Flat union of SiteDetail + SiteWeather + SiteSla
+    folded into one Ontology row by transforms.site_to_site.
+
+    flight_category resolution: prefer the SLA value (semantic: "current at
+    this site"), fall back to the weather block's METAR-derived value, else
+    null. active_case_count comes from SiteDetail only — SiteSla.active_cases
+    is treated as a duplicate and ignored.
+
+source:
+  endpoints:
+    - GET /v1/sites/{icao}
+    - GET /v1/sites/{icao}/sla   # optional
+  refreshCadence: 5min full
+  upsertKey: icao
+
+primaryKey: icao
+
+properties:
+  # ---- Identity (from SiteDetail) ----
+  icao:
+    type: string
+    nullable: false
+    description: 4-char ICAO identifier (e.g. 'KSFO').
+  iata:
+    type: string
+    nullable: true
+    description: 3-char IATA code if assigned (e.g. 'SFO').
+  name:
+    type: string
+    nullable: false
+    description: Airport name from the FAA registry.
+  city:
+    type: string
+    nullable: true
+  state:
+    type: string
+    nullable: false
+    description: 2-char US state postal abbreviation.
+  lat:
+    type: double
+    nullable: false
+    constraints: { min: -90, max: 90 }
+  lon:
+    type: double
+    nullable: false
+    constraints: { min: -180, max: 180 }
+  location:
+    type: geopoint
+    nullable: false
+    description: |
+      Foundry-native geopoint derived from (lat, lon). Constructed at write
+      time by ontology_writers.py; not present on the upstream /v1/sites/{icao}
+      payload. The Site Drilldown Workshop app binds to this field for map context.
+  elevation_ft:
+    type: integer
+    nullable: true
+    description: Field elevation above MSL in feet.
+  timezone:
+    type: string
+    nullable: true
+    description: IANA timezone (e.g. 'America/Los_Angeles'). Always null in v1.
+  customer_regions:
+    # Logical type array<string>; stored in-tenant as a JSON-encoded `string`
+    # (e.g. '["west","all"]'). ontology_writers.py json.dumps the list.
+    # Decision 2026-05-15 — see header + _private/docs/foundry/ONTOLOGY.md.
+    type: array<string>
+    nullable: false
+    description: Regions this site covers (subset of west/east/all).
+
+  # ---- Live counts (from SiteDetail) ----
+  inbound_count_60m:
+    type: integer
+    nullable: false
+    description: Aircraft inbound within the next 60 minutes.
+  outbound_count_60m:
+    type: integer
+    nullable: false
+    description: Aircraft that departed within the last 60 minutes.
+  active_case_count:
+    type: integer
+    nullable: false
+    description: Open AFM cases against this site. Always 0 until Phase 05.
+
+  # ---- Weather (from SiteDetail.weather; all null when no recent METAR) ----
+  metar_raw:
+    type: string
+    nullable: true
+    description: Raw METAR text as published by the station.
+  metar_plain_english:
+    type: string
+    nullable: true
+    description: Plain-English METAR translation. Always null in v1.
+  wind_kt:
+    type: integer
+    nullable: true
+  visibility_sm:
+    type: double
+    nullable: true
+  ceiling_ft:
+    type: integer
+    nullable: true
+    description: Ceiling above ground in feet. Null when CAVU.
+  weather_observed_at:
+    type: timestamp
+    nullable: true
+    description: UTC timestamp of the METAR observation.
+
+  # ---- Current flight category (SLA preferred, weather fallback) ----
+  flight_category:
+    type: string
+    nullable: true
+    enum: [VFR, MVFR, IFR, LIFR]
+    description: FAA flight category. Prefer SLA value if SLA fetched, else weather value.
+
+  # ---- SLA scorecard (from SiteSla; null/empty when no SLA fetched) ----
+  sla_period:
+    type: string
+    nullable: true
+    enum: [last_24h, last_7d]
+    description: Aggregation window of the SLA snapshot.
+  sla_inbound_count:
+    type: integer
+    nullable: true
+    description: Inbound arrivals in sla_period. Always 0 until Phase 05.
+  sla_outbound_count:
+    type: integer
+    nullable: true
+    description: Outbound departures in sla_period. Always 0 until Phase 05.
+  on_time_arrival_pct:
+    type: double
+    nullable: true
+    description: Arrival on-time percentage (0-100). Null until Phase 05.
+  on_time_departure_pct:
+    type: double
+    nullable: true
+    description: Departure on-time percentage (0-100). Null until Phase 05.
+  avg_arrival_delay_min:
+    type: double
+    nullable: true
+    description: Average arrival delay in minutes. Null until Phase 05.
+  avg_departure_delay_min:
+    type: double
+    nullable: true
+    description: Average departure delay in minutes. Null until Phase 05.
+  weather_impact:
+    type: string
+    nullable: true
+    enum: [low, medium, high]
+    description: Qualitative weather-impact bucket. Derived from flight_category in v1.
+  sla_sparkline_7d:
+    # RESOLVED 2026-05-15: stored in-tenant as a JSON-encoded `string` (the
+    # array<struct> below is the LOGICAL shape; ontology_writers.py sends
+    # json.dumps(list[...]), "[]" in v1). array<struct> is unsupported as a
+    # Foundry Action parameter; the field is empty until Phase 05 so there is
+    # no fidelity loss. Workshop/AIP parses the JSON when rendering the trend.
+    type: array<struct>          # logical; serialized as JSON string on the wire
+    nullable: false
+    schema:
+      day: date
+      on_time_pct: double | null
+      avg_delay_min: double | null
+    description: Seven daily points for trend rendering. Empty list in v1.
+
+links:
+  # No outbound links FROM Site in v1. Inbound links (Flight —origin→ Site,
+  # Flight —destination→ Site) are declared on Flight's YAML when written.
+  []

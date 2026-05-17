@@ -6,7 +6,7 @@ The full observability specification documents AFM's self-hosted Loki + Promtail
 
 - What we observe and why (logs vs metrics vs traces — and why no traces in v1)
 - Stack components (Loki for logs, Promtail for shipping, Prometheus for metrics, Grafana as the unified UI)
-- Public exposure (Cloudflare Access-protected Grafana and Dagster subdomains; metrics endpoint network-scoped only)
+- Exposure model (Grafana and Dagster UIs are private-network only — not publicly reachable; the metrics endpoint is network-scoped and never forwarded by the public reverse tunnel)
 - Log shape standard (structured JSON via `structlog`, dotted event names, `request_id` correlation across components)
 - Metrics catalogue:
   - Counters (`afm_opensky_credits_used_total`, `afm_cases_created_total`, `afm_sf_sync_failures_total`, etc.)

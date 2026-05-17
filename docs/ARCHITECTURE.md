@@ -7,7 +7,7 @@
 
 ## 1. System topology
 
-AFM is a hybrid system. The dashboard plane is hosted on Palantir Foundry (developer tier) — Workshop apps over an Ontology populated by sync from the local data plane. The data plane runs on a single self-hosted Linux box using `docker-compose`, exposed publicly via Cloudflare Tunnel. Salesforce is a third independent plane reached over the public internet via OAuth and REST.
+AFM is a hybrid system. The dashboard plane is hosted on Palantir Foundry (developer tier) — Workshop apps over an Ontology populated by sync from the local data plane. The data plane runs on a single self-hosted Linux box using `docker-compose`, with **only the API** exposed publicly via a self-hosted reverse tunnel; the observability UIs and Postgres stay on the private network. Salesforce is a third independent plane reached over the public internet via OAuth and REST.
 
 ```
                  ┌────────────────────────────────────────────────┐
@@ -18,23 +18,23 @@ AFM is a hybrid system. The dashboard plane is hosted on Palantir Foundry (devel
             │                          │                             │
             ▼                          ▼                             ▼
    ┌──────────────────┐      ┌──────────────────────┐      ┌──────────────────────┐
-   │ Palantir Foundry │      │  Cloudflare Tunnel   │      │  Salesforce DE Org   │
-   │  Workshop apps,  │      │  (api.afm.…)         │      │  (Agentforce)        │
-   │  Ontology,       │      │  (grafana.afm.…)     │      │                      │
+   │ Palantir Foundry │      │  Reverse tunnel      │      │  Salesforce DE Org   │
+   │  Workshop apps,  │      │  (public API only)   │      │  (Agentforce)        │
+   │  Ontology,       │      │                      │      │                      │
    │  AIP Logic       │      │                      │      │                      │
    └────────▲─────────┘      └──────────┬───────────┘      └──────────┬───────────┘
             │                           │                              │
             │ Foundry sync              │ tunnelled                    │ OAuth + REST
             │ (Dagster, every 30s)      ▼                              ▼
             │                  ┌─────────────────────────────────────────────────────┐
-            └──────────────────│             openclaw-pc (Ubuntu 24.04)              │
+            └──────────────────│        self-hosted Linux box (Ubuntu 24.04)         │
                                │                                                     │
                                │  ┌──────────────────────────────────────────────┐  │
                                │  │ docker-compose stack:                        │  │
                                │  │   FastAPI · Dagster · Postgres 16            │  │
                                │  │   Parquet lakehouse + DuckDB                 │  │
-                               │  │   Loki · Prometheus · Grafana                │  │
-                               │  │   cloudflared tunnel connector               │  │
+                               │  │   Loki · Prometheus · Grafana (private)      │  │
+                               │  │   reverse-tunnel connector (public API only) │  │
                                │  └──────────────────────────────────────────────┘  │
                                └─────────────────────────────────────────────────────┘
 ```
@@ -48,7 +48,7 @@ The hybrid topology is a deliberate cost/realism tradeoff. All-AWS at all-US sca
 Palantir Foundry developer-tier tenant, hosting:
 
 - **Workshop apps** — Fleet Overview (live aircraft map), Site Drilldown (per-airport SLA + weather), Flight Detail (telemetry + trail). Bound to the AFM Ontology.
-- **Ontology** — `Aircraft`, `Flight`, `Site`, `Operator`, `Case` objects with link types. Sourced from local DuckDB marts via Foundry sync (a Dagster asset on `openclaw-pc`).
+- **Ontology** — `Aircraft`, `Flight`, `Site`, `Operator`, `Case` objects with link types. Sourced from local DuckDB marts via Foundry sync (a Dagster asset on the self-hosted box).
 - **AIP Logic** — natural-language fleet Q&A functions over the Ontology, complementing the Anthropic-Haiku-driven AFM-internal LLM path.
 
 Foundry hosts the dashboard; there is no separate React frontend or AWS hosting. The local stack remains authoritative for data and runs standalone if Foundry is unreachable (sync simply pauses).
@@ -62,7 +62,7 @@ A single `docker-compose` stack runs the operational backbone:
 - **Postgres 16** — operational store (cases, timelines, site metrics, briefs, audit, reference data)
 - **Parquet lakehouse on NVMe** — historical position snapshots, queried in-process via DuckDB
 - **Loki + Promtail + Prometheus + Grafana** — observability stack
-- **cloudflared** — tunnel connector exposing the public API and Grafana subdomains
+- **Reverse-tunnel connector** — exposes the public API only; observability UIs and Postgres remain network-scoped (not publicly reachable)
 
 ### CRM plane (Salesforce Agentforce DE org)
 
@@ -80,15 +80,17 @@ Three primary flows operate continuously:
 
 ## 4. Network topology
 
-| Hostname | Purpose |
-|---|---|
-| Foundry tenant URL | AFM dashboard (Workshop apps, kept out of public-tree per scrub-infra discipline) |
-| `api.aerial-fleet-monitor.markandrewmarquez.com` | AFM backend API (Cloudflare Tunnel) |
-| `grafana.aerial-fleet-monitor.markandrewmarquez.com` | Observability UI (Cloudflare Access protected) |
-| `dagster.aerial-fleet-monitor.markandrewmarquez.com` | Dagster UI (Cloudflare Access protected) |
-| `alerts.markandrewmarquez.com` | Email sender domain (Resend) |
+Concrete hostnames are kept out of the public tree per scrub-infra discipline; endpoints are described by role.
 
-All public hostnames TLS-terminated at Cloudflare; Foundry handles its own tenant TLS. No direct port exposure from the self-hosted box — only Cloudflare's tunnel connector reaches in.
+| Endpoint | Purpose | Exposure |
+|---|---|---|
+| Foundry tenant | AFM dashboard (Workshop apps) | Foundry-hosted (its own TLS) |
+| AFM backend API | `/v1/*` for Salesforce + Foundry sync | public, via the self-hosted reverse tunnel |
+| Observability UI (Grafana) | dashboards/alerts | private network only — not publicly reachable |
+| Dagster UI | pipeline ops | private network only — not publicly reachable |
+| Transactional email | outbound alert/notification sender | provider-hosted |
+
+The public API is TLS-terminated by the reverse tunnel; Foundry handles its own tenant TLS. No direct port exposure from the self-hosted box — only the tunnel connector reaches in, and it forwards the API alone. Observability UIs, Dagster, and Postgres are reachable only on the private network.
 
 ## 5. Runtime characteristics
 
@@ -109,7 +111,7 @@ All public hostnames TLS-terminated at Cloudflare; Foundry handles its own tenan
 
 ```
 Foundry sync (Dagster asset) ──► FastAPI ──► QueryService ──► Postgres + Parquet/DuckDB
-                              ──► Foundry OSDK ──► Foundry Ontology
+                              ──► Foundry Action API (HTTPS) ──► Foundry Ontology
                                                           │
                                                           ▼
                                          Foundry Workshop apps + AIP Logic
@@ -131,7 +133,7 @@ The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so D
 
 ## 8. Deployment process
 
-**Backend** is built into a Docker image by GitHub Actions, pushed to GHCR, and pulled by the openclaw-pc compose stack on each merge to `main`. Database migrations run before the API container starts.
+**Backend** is built into a Docker image by GitHub Actions, pushed to GHCR, and pulled by the self-hosted compose stack on each merge to `main`. Database migrations run before the API container starts.
 
 **Foundry assets** (Ontology object definitions, Workshop app exports) are version-controlled in `foundry/ontology/*.yaml` and `foundry/workshop/*.json`. Tenant updates are applied via the Foundry CLI; CI verifies Ontology shapes match the local API contract.
 

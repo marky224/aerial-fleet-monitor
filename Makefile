@@ -72,6 +72,8 @@ install:
 	cd api && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing pipelines Python deps (using $(PYTHON))"
 	cd pipelines && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
+	@echo "→ Installing afm_foundry_sync into the pipelines venv (Phase 03 Foundry sync assets import it)"
+	cd pipelines && . .venv/bin/activate && pip install -e ../foundry/sync
 
 .PHONY: dev
 dev:
