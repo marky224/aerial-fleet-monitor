@@ -8,6 +8,7 @@ clients are built from the ``settings`` fixture (conftest).
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -26,6 +27,7 @@ from afm_foundry_sync.sync_jobs import (
     full_sync_sites,
     guarded_sync,
     incremental_sync_positions,
+    reconcile_aircraft,
     synthesize_flight_id,
 )
 
@@ -36,12 +38,8 @@ _POS_URL = "http://api.test/v1/positions/live"
 _AIRCRAFT_BATCH = (
     "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-aircraft/applyBatch"
 )
-_SITE_BATCH = (
-    "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
-)
-_FLIGHT_BATCH = (
-    "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-flight/applyBatch"
-)
+_SITE_BATCH = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
+_FLIGHT_BATCH = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-flight/applyBatch"
 
 
 def _pos(icao24: str, *, on_ground: bool, seen: datetime, **kw: object) -> Position:
@@ -196,9 +194,7 @@ async def test_incremental_sync_dedupes_and_returns_server_time_cursor(
     respx.get(_POS_URL).mock(
         return_value=httpx.Response(200, json=_positions_payload(positions, _T1))
     )
-    batch_route = respx.post(_AIRCRAFT_BATCH).mock(
-        return_value=httpx.Response(200, json={})
-    )
+    batch_route = respx.post(_AIRCRAFT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
         result = await incremental_sync_positions(client, writer, since=_T0)
@@ -220,12 +216,8 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
     newest row per icao24, so an edge is only observable run-to-run — which
     is why the detector state lives with the caller, not in this module.
     """
-    batch_route = respx.post(_AIRCRAFT_BATCH).mock(
-        return_value=httpx.Response(200, json={})
-    )
-    flight_route = respx.post(_FLIGHT_BATCH).mock(
-        return_value=httpx.Response(200, json={})
-    )
+    batch_route = respx.post(_AIRCRAFT_BATCH).mock(return_value=httpx.Response(200, json={}))
+    flight_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
     det = TakeoffDetector()
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -233,9 +225,7 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
         respx.get(_POS_URL).mock(
             return_value=httpx.Response(
                 200,
-                json=_positions_payload(
-                    [_pos("abc123", on_ground=True, seen=_T0)], _T0
-                ),
+                json=_positions_payload([_pos("abc123", on_ground=True, seen=_T0)], _T0),
             )
         )
         r1 = await incremental_sync_positions(client, writer, detector=det)
@@ -244,9 +234,7 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
         respx.get(_POS_URL).mock(
             return_value=httpx.Response(
                 200,
-                json=_positions_payload(
-                    [_pos("abc123", on_ground=False, seen=_T1)], _T1
-                ),
+                json=_positions_payload([_pos("abc123", on_ground=False, seen=_T1)], _T1),
             )
         )
         r2 = await incremental_sync_positions(client, writer, detector=det)
@@ -308,12 +296,8 @@ async def test_full_sync_sites_sla_failure_is_non_fatal(
         )
     )
     # SLA endpoint down → must not sink the batch; Site written with null SLA.
-    respx.get("http://api.test/v1/sites/KSFO/sla").mock(
-        return_value=httpx.Response(503)
-    )
-    site_route = respx.post(_SITE_BATCH).mock(
-        return_value=httpx.Response(200, json={})
-    )
+    respx.get("http://api.test/v1/sites/KSFO/sla").mock(return_value=httpx.Response(503))
+    site_route = respx.post(_SITE_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
         result = await full_sync_sites(client, writer)
@@ -336,3 +320,140 @@ async def test_incremental_sync_propagates_skip_on_unreachable_api(
             FoundryWriter(settings) as writer,
         ):
             await incremental_sync_positions(client, writer)
+
+
+# ---------------------------------------------------------------------------
+# reconcile_aircraft (Fix C — tenant-side eviction of departed aircraft)
+# ---------------------------------------------------------------------------
+
+_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Aircraft"
+_DELETE_BATCH = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-aircraft/applyBatch"
+)
+
+
+@respx.mock
+async def test_reconcile_deletes_only_orphans_not_in_live(
+    settings: FoundrySettings,
+) -> None:
+    # live = {abc123, def456}; tenant = those + two departed → orphans = 2.
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [
+                    _pos("abc123", on_ground=False, seen=_T1),
+                    _pos("def456", on_ground=False, seen=_T1),
+                ],
+                _T1,
+            ),
+        )
+    )
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"icao24": x} for x in ("abc123", "def456", "ccc333", "ddd444")]},
+        )
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert (result.live, result.tenant, result.orphans, result.deleted) == (2, 4, 2, 2)
+    assert result.skipped_empty_live is False
+    assert del_route.called
+    body = json.loads(del_route.calls.last.request.content)
+    sent = {r["parameters"]["Aircraft"] for r in body["requests"]}
+    assert sent == {"ccc333", "ddd444"}  # only the departed, PascalCase key
+
+
+@respx.mock
+async def test_reconcile_skips_on_empty_live_without_listing_or_deleting(
+    settings: FoundrySettings,
+) -> None:
+    # The safety guard: an empty feed means "fleet unknown", not "fleet
+    # gone". Reconciling would delete the whole tenant — so it must bail
+    # BEFORE enumerating the tenant and never issue a delete.
+    respx.get(_POS_URL).mock(return_value=httpx.Response(200, json=_positions_payload([], _T1)))
+    list_route = respx.get(_OBJECTS_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert result.skipped_empty_live is True
+    assert (result.live, result.tenant, result.orphans, result.deleted) == (0, 0, 0, 0)
+    assert not list_route.called  # bailed before the expensive enumeration
+    assert not del_route.called  # and never deleted
+
+
+@respx.mock
+async def test_reconcile_no_orphans_makes_no_delete_call(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload([_pos("abc123", on_ground=False, seen=_T1)], _T1),
+        )
+    )
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"icao24": "abc123"}]})
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert (result.orphans, result.deleted) == (0, 0)
+    assert not del_route.called  # empty delete batch → no HTTP call
+
+
+@respx.mock
+async def test_reconcile_paginates_the_tenant_listing(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload([_pos("abc123", on_ground=False, seen=_T1)], _T1),
+        )
+    )
+    list_route = respx.get(_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"icao24": "abc123"}, {"icao24": "ccc333"}],
+                    "nextPageToken": "page2",
+                },
+            ),
+            httpx.Response(200, json={"data": [{"icao24": "ddd444"}]}),  # no token → stop
+        ]
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert list_route.call_count == 2  # followed nextPageToken
+    assert result.tenant == 3  # abc123 + ccc333 + ddd444 across 2 pages
+    assert result.orphans == 2  # ccc333, ddd444 absent from live {abc123}
+    body = json.loads(del_route.calls.last.request.content)
+    assert {r["parameters"]["Aircraft"] for r in body["requests"]} == {"ccc333", "ddd444"}
+
+
+@respx.mock
+async def test_reconcile_propagates_skip_on_unreachable_api(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_POS_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+    with pytest.raises(FoundrySyncSkipped, match="unreachable"):
+        async with (
+            guarded_sync("reconcile"),
+            AfmApiClient(settings) as client,
+            FoundryWriter(settings) as writer,
+        ):
+            await reconcile_aircraft(client, writer)

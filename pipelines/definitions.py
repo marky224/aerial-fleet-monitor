@@ -33,6 +33,7 @@ from dagster import (
 )
 
 from pipelines.assets import (
+    foundry_aircraft_reconcile,
     foundry_positions_sync,
     foundry_sites_sync,
     noaa_weather,
@@ -84,6 +85,11 @@ foundry_sites_sync_job = define_asset_job(
 prune_stale_positions_job = define_asset_job(
     name="prune_stale_positions_job",
     selection=AssetSelection.assets(prune_stale_positions),
+)
+
+foundry_aircraft_reconcile_job = define_asset_job(
+    name="foundry_aircraft_reconcile_job",
+    selection=AssetSelection.assets(foundry_aircraft_reconcile),
 )
 
 
@@ -158,6 +164,19 @@ prune_stale_positions_schedule = ScheduleDefinition(
 )
 
 
+foundry_aircraft_reconcile_schedule = ScheduleDefinition(
+    name="foundry_aircraft_reconcile_schedule",
+    job=foundry_aircraft_reconcile_job,
+    cron_schedule="0 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly (Fix C): evict Foundry Aircraft objects no longer in the "
+        "live feed — mirrors prune_stale_positions on the Ontology side."
+    ),
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -165,6 +184,7 @@ defs = Definitions(
         static_reference,
         foundry_positions_sync,
         foundry_sites_sync,
+        foundry_aircraft_reconcile,
         prune_stale_positions,
     ],
     jobs=[
@@ -173,12 +193,14 @@ defs = Definitions(
         static_reference_job,
         foundry_positions_sync_job,
         foundry_sites_sync_job,
+        foundry_aircraft_reconcile_job,
         prune_stale_positions_job,
     ],
     schedules=[
         noaa_weather_schedule,
         static_reference_schedule,
         foundry_sites_sync_schedule,
+        foundry_aircraft_reconcile_schedule,
         prune_stale_positions_schedule,
     ],
     sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],

@@ -27,7 +27,9 @@ from afm_foundry_sync.ontology_writers import (
 )
 from afm_foundry_sync.settings import FoundrySettings
 
-_AIRCRAFT_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-aircraft/applyBatch"
+_AIRCRAFT_URL = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-aircraft/applyBatch"
+)
 _SITE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-site/applyBatch"
 _FLIGHT_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-flight/applyBatch"
 
@@ -216,16 +218,12 @@ def test_flight_params_list_fields_are_json_strings() -> None:
             open_case_ids=["CASE-1", "CASE-2"],
             status_timeline=[FlightStatusEvent(stage="departed", occurred_at=_TAKEOFF)],
             trail_2h=[
-                TrailPoint(
-                    ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280
-                )
+                TrailPoint(ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280)
             ],
         )
     )
     assert p["openCaseIds"] == '["CASE-1", "CASE-2"]'
-    assert p["statusTimeline"] == (
-        '[{"stage": "departed", "occurred_at": "2026-05-16T11:30:00Z"}]'
-    )
+    assert p["statusTimeline"] == ('[{"stage": "departed", "occurred_at": "2026-05-16T11:30:00Z"}]')
     assert p["trail2h"] == (
         '[{"ts": "2026-05-16T11:30:00Z", "lat": 37.7, "lon": -122.4,'
         ' "altitude_ft": 8000, "speed_kt": 280}]'
@@ -258,9 +256,7 @@ def test_flight_params_geopoint_only_when_both_coords_present() -> None:
 
 
 def test_flight_params_omits_none_optionals_keeps_required() -> None:
-    p = flight_params(
-        _flight(callsign=None, landed_at=None, eta_minutes=None, operator_icao=None)
-    )
+    p = flight_params(_flight(callsign=None, landed_at=None, eta_minutes=None, operator_icao=None))
     assert "callsign" not in p
     assert "landedAt" not in p
     assert "etaMinutes" not in p
@@ -386,3 +382,92 @@ async def test_exhausts_retries_on_persistent_503(settings: FoundrySettings) -> 
 
     assert exc_info.value.response.status_code == 503
     assert route.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Tenant reconcile primitives (Fix C): list_aircraft_pks / delete_aircraft_batch
+# ---------------------------------------------------------------------------
+
+_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Aircraft"
+_DELETE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-aircraft/applyBatch"
+
+
+@respx.mock
+async def test_list_aircraft_pks_follows_pagination(settings: FoundrySettings) -> None:
+    route = respx.get(_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"icao24": "abc123"}, {"icao24": "def456"}],
+                    "nextPageToken": "p2",
+                },
+            ),
+            httpx.Response(200, json={"data": [{"icao24": "ghi789"}]}),  # no token
+        ]
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_aircraft_pks()
+
+    assert pks == {"abc123", "def456", "ghi789"}
+    assert route.call_count == 2  # stopped when nextPageToken absent
+
+
+@respx.mock
+async def test_list_aircraft_pks_falls_back_to_primary_key(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"__primaryKey": "aaa111"}, {"icao24": "bbb222"}]},
+        )
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_aircraft_pks()
+
+    assert pks == {"aaa111", "bbb222"}
+
+
+@respx.mock
+async def test_delete_aircraft_batch_uses_pascalcase_key_and_chunks(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_DELETE_URL).mock(return_value=httpx.Response(200, json={}))
+    icao24s = [f"a{i:05d}" for i in range(250)]  # 3 chunks at _MAX_BATCH=100
+
+    async with FoundryWriter(settings) as w:
+        result = await w.delete_aircraft_batch(icao24s)
+
+    assert result.attempted == 250
+    assert result.succeeded == 250
+    assert route.call_count == 3
+    body = json.loads(route.calls[0].request.content)
+    # PascalCase "Aircraft" key (delete contract), NOT the lowercase locator.
+    assert body["requests"][0]["parameters"] == {"Aircraft": "a00000"}
+
+
+@respx.mock
+async def test_delete_aircraft_batch_empty_makes_no_http_call(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_DELETE_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.delete_aircraft_batch([])
+
+    assert (result.attempted, result.succeeded) == (0, 0)
+    assert not route.called
+
+
+@respx.mock
+async def test_list_aircraft_pks_retries_on_503_then_succeeds(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.get(_OBJECTS_URL).mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, json={"data": []})]
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_aircraft_pks()
+
+    assert pks == set()
+    assert route.call_count == 2  # transient_retry covers the GET too
