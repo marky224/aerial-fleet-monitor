@@ -65,6 +65,11 @@ jobs:
           . .venv/bin/activate
           pip install --upgrade pip
           pip install -e '.[dev]'
+          # Phase 03: the foundry_sync assets import the sibling
+          # afm_foundry_sync package. Mirror `make install` (Makefile)
+          # so lint (mypy) + tests resolve it; it is intentionally not a
+          # PEP 508 dep (see pipelines/pyproject.toml dependencies note).
+          pip install -e ../foundry/sync
 
       # ----------------------------------------------------------------
       # Lint + unit tests
