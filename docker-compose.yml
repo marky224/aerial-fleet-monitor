@@ -72,13 +72,18 @@ services:
 
   dagster-user-code:
     build:
-      context: ./pipelines
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: pipelines/Dockerfile
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
     env_file:
       - .env
+      # Foundry tenant creds (FOUNDRY_*) injected at runtime from their
+      # gitignored single-source-of-truth file — never baked into the
+      # image. pydantic-settings reads these from the container env;
+      # the in-image env_file path is absent and is skipped.
+      - _private/foundry/.env
     command: >
       dagster api grpc
       -h 0.0.0.0
@@ -104,13 +109,18 @@ services:
 
   dagster-webserver:
     build:
-      context: ./pipelines
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: pipelines/Dockerfile
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
     env_file:
       - .env
+      # Foundry tenant creds (FOUNDRY_*) injected at runtime from their
+      # gitignored single-source-of-truth file — never baked into the
+      # image. pydantic-settings reads these from the container env;
+      # the in-image env_file path is absent and is skipped.
+      - _private/foundry/.env
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
     command: >
@@ -134,13 +144,18 @@ services:
 
   dagster-daemon:
     build:
-      context: ./pipelines
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: pipelines/Dockerfile
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
     env_file:
       - .env
+      # Foundry tenant creds (FOUNDRY_*) injected at runtime from their
+      # gitignored single-source-of-truth file — never baked into the
+      # image. pydantic-settings reads these from the container env;
+      # the in-image env_file path is absent and is skipped.
+      - _private/foundry/.env
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
     command: >
