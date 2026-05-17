@@ -78,6 +78,17 @@ class FoundrySettings(BaseSettings):
         min_length=1,
         description="apiName of the modify-or-create Action that upserts Flight objects.",
     )
+    FOUNDRY_ACTION_DELETE_AIRCRAFT: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "apiName of the delete Action for Aircraft objects. Used by the "
+            "tenant-reconcile job (Fix C) to evict departed aircraft the "
+            "upsert-only positions sync never removes. NB: its single "
+            "parameter key is the PascalCase object-type name (``Aircraft``), "
+            "distinct from the lowercase upsert object-locator."
+        ),
+    )
     AFM_API_BASE: str = Field(
         default="http://localhost:8000",
         description="Base URL of the local AFM /v1 API the sync reads from.",
