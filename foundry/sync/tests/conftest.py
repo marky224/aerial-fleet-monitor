@@ -22,5 +22,6 @@ def settings() -> FoundrySettings:
         FOUNDRY_ACTION_UPSERT_AIRCRAFT="upsert-aircraft",
         FOUNDRY_ACTION_UPSERT_SITE="upsert-site",
         FOUNDRY_ACTION_UPSERT_FLIGHT="upsert-flight",
+        FOUNDRY_ACTION_DELETE_AIRCRAFT="delete-aircraft",
         AFM_API_BASE="http://api.test",
     )

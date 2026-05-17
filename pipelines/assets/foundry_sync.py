@@ -4,6 +4,12 @@
 are minute-resolution): reads ``/v1/positions/live`` and upserts the
 ``Aircraft`` Ontology object. ``foundry_sites_sync`` (every 5 min): full
 refresh of the ``Site`` object from ``/v1/sites`` + per-site SLA.
+``foundry_aircraft_reconcile`` (hourly, Fix C): the positions sync is
+upsert-only and never deletes, so departed aircraft persist in the
+Ontology forever — this evicts the Aircraft objects whose icao24 is no
+longer in the live feed (with an empty-live safety guard; see
+``afm_foundry_sync.sync_jobs.reconcile_aircraft``). It mirrors the
+``prune_stale_positions`` (Fix B) pattern on the Foundry side.
 
 Both assets are an **independent failure domain** from the rest of the
 pipeline: AFM's local stack must run with Foundry creds absent or Foundry
@@ -37,8 +43,10 @@ from datetime import datetime
 
 from afm_foundry_sync.sync_jobs import (
     FoundrySyncSkipped,
+    ReconcileResult,
     SyncResult,
     TakeoffDetector,
+    run_aircraft_reconcile,
     run_positions_sync,
     run_sites_sync,
 )
@@ -142,3 +150,39 @@ def foundry_sites_sync(context: AssetExecutionContext) -> MaterializeResult:
     except FoundrySyncSkipped as exc:
         return _skipped(context, exc.reason)
     return MaterializeResult(metadata=_result_metadata(result))
+
+
+def _reconcile_metadata(result: ReconcileResult) -> dict[str, MetadataValue]:
+    return {
+        "live": MetadataValue.int(result.live),
+        "tenant": MetadataValue.int(result.tenant),
+        "orphans": MetadataValue.int(result.orphans),
+        "deleted": MetadataValue.int(result.deleted),
+        "skipped_empty_live": MetadataValue.bool(result.skipped_empty_live),
+    }
+
+
+@asset(
+    group_name="foundry_sync",
+    description=(
+        "Evicts Aircraft Ontology objects no longer in /v1/positions/live "
+        "(Fix C — the upsert-only positions sync never deletes)."
+    ),
+    metadata={"target": "Foundry Ontology: Aircraft", "cadence": "hourly"},
+)
+def foundry_aircraft_reconcile(context: AssetExecutionContext) -> MaterializeResult:
+    try:
+        result = asyncio.run(run_aircraft_reconcile())
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    if result.skipped_empty_live:
+        context.log.warning("reconcile skipped: live feed empty (fleet unknown — not evicting)")
+    else:
+        context.log.info(
+            "reconcile: live=%d tenant=%d orphans=%d deleted=%d",
+            result.live,
+            result.tenant,
+            result.orphans,
+            result.deleted,
+        )
+    return MaterializeResult(metadata=_reconcile_metadata(result))

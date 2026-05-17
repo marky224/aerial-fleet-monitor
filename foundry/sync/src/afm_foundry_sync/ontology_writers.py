@@ -61,6 +61,10 @@ _REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 # a conservative default; tune once the live limit is discovered.
 _MAX_BATCH = 100
 
+# Page size for the objects-list GET used by the tenant reconcile (Fix C).
+# 1000 is the value proven against the live tenant by the interim purge tool.
+_OBJECTS_PAGE_SIZE = 1000
+
 
 @dataclass(frozen=True, slots=True)
 class BatchResult:
@@ -142,9 +146,7 @@ def site_params(s: Site) -> dict[str, Any]:
         "location": _geopoint(s.lat, s.lon),
         # array<string> / array<struct> are `string` in-tenant — JSON-encode.
         "customer_regions": json.dumps(s.customer_regions),
-        "sla_sparkline_7d": json.dumps(
-            [p.model_dump(mode="json") for p in s.sla_sparkline_7d]
-        ),
+        "sla_sparkline_7d": json.dumps([p.model_dump(mode="json") for p in s.sla_sparkline_7d]),
         "inbound_count_60m": s.inbound_count_60m,
         "outbound_count_60m": s.outbound_count_60m,
         "active_case_count": s.active_case_count,
@@ -193,9 +195,7 @@ def flight_params(f: Flight) -> dict[str, Any]:
         "open_case_count": f.open_case_count,
         # array<string>/array<struct> are `string` in-tenant — JSON-encode.
         "open_case_ids": json.dumps(f.open_case_ids),
-        "status_timeline": json.dumps(
-            [e.model_dump(mode="json") for e in f.status_timeline]
-        ),
+        "status_timeline": json.dumps([e.model_dump(mode="json") for e in f.status_timeline]),
         "trail_2h": json.dumps([t.model_dump(mode="json") for t in f.trail_2h]),
     }
     _put_optional(
@@ -237,6 +237,7 @@ class FoundryWriter:
         self._action_aircraft = settings.FOUNDRY_ACTION_UPSERT_AIRCRAFT
         self._action_site = settings.FOUNDRY_ACTION_UPSERT_SITE
         self._action_flight = settings.FOUNDRY_ACTION_UPSERT_FLIGHT
+        self._action_delete_aircraft = settings.FOUNDRY_ACTION_DELETE_AIRCRAFT
         self._client = httpx.AsyncClient(
             base_url=str(settings.FOUNDRY_TENANT_URL).rstrip("/"),
             timeout=_REQUEST_TIMEOUT,
@@ -261,9 +262,7 @@ class FoundryWriter:
         response = await self._client.post(path, json=body)
         response.raise_for_status()
 
-    async def _apply_batch(
-        self, action: str, param_dicts: list[dict[str, Any]]
-    ) -> BatchResult:
+    async def _apply_batch(self, action: str, param_dicts: list[dict[str, Any]]) -> BatchResult:
         succeeded = 0
         for index, chunk in enumerate(_chunks(param_dicts, _MAX_BATCH)):
             logger.info(
@@ -288,14 +287,59 @@ class FoundryWriter:
         """Upsert a batch of Sites. No-op (no HTTP call) on an empty list."""
         if not sites:
             return BatchResult(attempted=0, succeeded=0)
-        return await self._apply_batch(
-            self._action_site, [site_params(s) for s in sites]
-        )
+        return await self._apply_batch(self._action_site, [site_params(s) for s in sites])
 
     async def upsert_flight_batch(self, flights: list[Flight]) -> BatchResult:
         """Upsert a batch of Flights. No-op (no HTTP call) on an empty list."""
         if not flights:
             return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(self._action_flight, [flight_params(f) for f in flights])
+
+    @transient_retry
+    async def _get_objects_page(self, object_type: str, page_token: str | None) -> dict[str, Any]:
+        path = f"/api/v2/ontologies/{self._ontology}/objects/{object_type}"
+        params: dict[str, str] = {"pageSize": str(_OBJECTS_PAGE_SIZE)}
+        if page_token:
+            params["pageToken"] = page_token
+        response = await self._client.get(path, params=params)
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    async def list_aircraft_pks(self) -> set[str]:
+        """Return the icao24 primary key of every Aircraft object in the tenant.
+
+        Paginates ``GET .../objects/Aircraft`` (pageSize ``_OBJECTS_PAGE_SIZE``,
+        following ``nextPageToken``). Each row exposes the PK as the
+        ``icao24`` property; ``__primaryKey`` is the documented fallback. The
+        reconcile job (Fix C) diffs this against the live feed to find the
+        departed-aircraft objects the upsert-only positions sync never
+        removes. Read-only — no Action is applied here.
+        """
+        pks: set[str] = set()
+        page_token: str | None = None
+        while True:
+            body = await self._get_objects_page("Aircraft", page_token)
+            for obj in body.get("data", []):
+                pk = obj.get("icao24") or obj.get("__primaryKey")
+                if pk:
+                    pks.add(str(pk))
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        return pks
+
+    async def delete_aircraft_batch(self, icao24s: list[str]) -> BatchResult:
+        """Delete a batch of Aircraft by icao24. No-op on an empty list.
+
+        The ``delete-aircraft`` Action's single parameter key is the
+        **PascalCase object-type name** ``Aircraft`` (verified against the
+        live tenant) — distinct from the lowercase upsert object-locator, so
+        it is NOT routed through ``_camel``; the literal key is passed
+        through ``_apply_batch`` unchanged.
+        """
+        if not icao24s:
+            return BatchResult(attempted=0, succeeded=0)
         return await self._apply_batch(
-            self._action_flight, [flight_params(f) for f in flights]
+            self._action_delete_aircraft, [{"Aircraft": pk} for pk in icao24s]
         )
