@@ -13,7 +13,12 @@ import json
 from datetime import UTC, datetime
 
 import pytest
-from afm_foundry_sync.sync_jobs import FoundrySyncSkipped, SyncResult, TakeoffDetector
+from afm_foundry_sync.sync_jobs import (
+    FoundrySyncSkipped,
+    ReconcileResult,
+    SyncResult,
+    TakeoffDetector,
+)
 from dagster import MaterializeResult, build_asset_context
 
 from pipelines.assets import foundry_sync
@@ -124,6 +129,49 @@ def test_sites_sync_does_not_emit_detector_state(
     md = foundry_sync.foundry_sites_sync(build_asset_context()).metadata or {}
     assert "detector_state" not in md
     assert md["flights_written"].value == 0
+
+
+def test_reconcile_skip_is_a_materialization_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise() -> ReconcileResult:
+        raise FoundrySyncSkipped("reconcile: foundry config absent")
+
+    monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _raise)
+
+    result = foundry_sync.foundry_aircraft_reconcile(build_asset_context())
+
+    assert isinstance(result, MaterializeResult)
+    assert (result.metadata or {})["skip_reason"].value == "reconcile: foundry config absent"
+
+
+def test_reconcile_success_surfaces_diff_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok() -> ReconcileResult:
+        return ReconcileResult(live=100, tenant=140, orphans=40, deleted=40)
+
+    monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _ok)
+
+    md = foundry_sync.foundry_aircraft_reconcile(build_asset_context()).metadata or {}
+    assert md["live"].value == 100
+    assert md["tenant"].value == 140
+    assert md["orphans"].value == 40
+    assert md["deleted"].value == 40
+    assert md["skipped_empty_live"].value is False
+
+
+def test_reconcile_empty_live_skip_surfaces_in_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _empty() -> ReconcileResult:
+        return ReconcileResult(live=0, tenant=0, orphans=0, deleted=0, skipped_empty_live=True)
+
+    monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _empty)
+
+    md = foundry_sync.foundry_aircraft_reconcile(build_asset_context()).metadata or {}
+    assert md["skipped_empty_live"].value is True
+    assert md["deleted"].value == 0
 
 
 def test_real_defect_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -96,6 +96,30 @@ class SyncResult:
     detector_state: dict[str, bool] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ReconcileResult:
+    """Outcome of one tenant-Aircraft reconcile (Fix C).
+
+    The positions sync is upsert-only, so aircraft that have left the live
+    feed persist in the Ontology forever. This job diffs the tenant's
+    Aircraft set against the live feed and deletes the difference.
+
+    ``live`` / ``tenant`` are the two set sizes; ``orphans`` is
+    ``tenant - live``; ``deleted`` is how many of those the delete batch
+    confirmed (== ``orphans`` on full success). ``skipped_empty_live`` is
+    True when the live feed was empty and the reconcile bailed *without*
+    enumerating the tenant or deleting anything — an empty feed means
+    "fleet unknown right now" (e.g. an upstream OpenSky 429), never "fleet
+    is empty", so evicting on no-knowledge would wipe the whole tenant.
+    """
+
+    live: int
+    tenant: int
+    orphans: int
+    deleted: int
+    skipped_empty_live: bool = False
+
+
 @contextlib.asynccontextmanager
 async def guarded_sync(job: str) -> AsyncIterator[None]:
     """Translate config-absent / Foundry-unreachable into ``FoundrySyncSkipped``.
@@ -237,9 +261,7 @@ async def incremental_sync_positions(
         takeoffs_detected=len(takeoffs),
         flights_written=flight_batch.succeeded,
         detector_state=(
-            detector.state_for(p.icao24 for p in deduped)
-            if detector is not None
-            else None
+            detector.state_for(p.icao24 for p in deduped) if detector is not None else None
         ),
     )
 
@@ -276,6 +298,49 @@ async def full_sync_sites(
     )
 
 
+async def reconcile_aircraft(
+    client: AfmApiClient,
+    writer: FoundryWriter,
+) -> ReconcileResult:
+    """Evict tenant Aircraft objects no longer in the live feed (Fix C).
+
+    The positions sync is upsert-only and never deletes, so aircraft that
+    have departed (icao24 absent from ``/v1/positions/live`` after the
+    API's recency window + the Postgres prune) accumulate in the Ontology
+    indefinitely. This diffs ``tenant - live`` and deletes the orphans via
+    the ``delete-aircraft`` Action.
+
+    **Empty-live safety guard:** if the live feed is empty, bail *before*
+    enumerating the tenant — ``tenant - {}`` is the entire tenant, and an
+    empty feed means the fleet is momentarily unknown (e.g. an upstream
+    OpenSky 429), not that every aircraft has gone. Reconciling on
+    no-knowledge would delete every Aircraft object. The interim manual
+    purge tool runs with a human watching; an automated hourly job must
+    not. Returns a no-op result flagged ``skipped_empty_live``.
+    """
+    response = await client.fetch_positions_live()
+    live = {p.icao24 for p in response.items}
+    if not live:
+        logger.warning("foundry_reconcile_skipped_empty_live")
+        return ReconcileResult(live=0, tenant=0, orphans=0, deleted=0, skipped_empty_live=True)
+
+    tenant = await writer.list_aircraft_pks()
+    orphans = sorted(tenant - live)
+    logger.info(
+        "foundry_reconcile_aircraft",
+        live=len(live),
+        tenant=len(tenant),
+        orphans=len(orphans),
+    )
+    batch = await writer.delete_aircraft_batch(orphans)
+    return ReconcileResult(
+        live=len(live),
+        tenant=len(tenant),
+        orphans=len(orphans),
+        deleted=batch.succeeded,
+    )
+
+
 async def run_positions_sync(
     *,
     since: datetime | None = None,
@@ -290,9 +355,7 @@ async def run_positions_sync(
     async with guarded_sync("positions"):
         settings = FoundrySettings()
         async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
-            return await incremental_sync_positions(
-                client, writer, since=since, detector=detector
-            )
+            return await incremental_sync_positions(client, writer, since=since, detector=detector)
 
 
 async def run_sites_sync() -> SyncResult:
@@ -303,14 +366,30 @@ async def run_sites_sync() -> SyncResult:
             return await full_sync_sites(client, writer)
 
 
+async def run_aircraft_reconcile() -> ReconcileResult:
+    """Entrypoint the Dagster reconcile asset calls (Fix C). Skip-guarded.
+
+    Same standalone discipline as the sync entrypoints: an absent
+    ``_private/foundry/.env`` or an unreachable endpoint surfaces as
+    ``FoundrySyncSkipped``, not a crash.
+    """
+    async with guarded_sync("reconcile"):
+        settings = FoundrySettings()
+        async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+            return await reconcile_aircraft(client, writer)
+
+
 __all__ = [
     "FoundrySyncSkipped",
+    "ReconcileResult",
     "SyncResult",
     "Takeoff",
     "TakeoffDetector",
     "full_sync_sites",
     "guarded_sync",
     "incremental_sync_positions",
+    "reconcile_aircraft",
+    "run_aircraft_reconcile",
     "run_positions_sync",
     "run_sites_sync",
     "synthesize_flight_id",
