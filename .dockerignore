@@ -1,0 +1,64 @@
+# Aerial Fleet Monitor — root build-context ignore
+#
+# Applies to docker builds whose context is the repo root. The pipelines
+# image (Dagster user-code / webserver / daemon) builds from root context
+# so its Dockerfile can COPY both `pipelines/` and the sibling
+# `foundry/sync/` package (the foundry sync assets import afm_foundry_sync).
+#
+# The `api` service builds from `./api` and is unaffected by this file.
+#
+# Two jobs:
+#   1. Security — `_private/` and every `.env*` (except `.env.example`)
+#      must NEVER enter the build context, so the Foundry bearer token
+#      cannot be baked into an image layer. Creds are injected at runtime
+#      via compose `env_file`, never copied.
+#   2. Size — keep the root context lean (no .git, venvs, parquet lake,
+#      Dagster local state, or unrelated top-level trees).
+
+# --- Secrets / private tree (security-critical) ---
+_private/
+.env
+.env.*
+!.env.example
+
+# --- VCS ---
+.git/
+.gitignore
+.github/
+
+# --- Virtual envs (any package) ---
+**/.venv/
+**/venv/
+**/env/
+
+# --- Python build artifacts / caches ---
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+
+# --- Dagster local state — belongs in the DAGSTER_HOME volume, not the image ---
+**/dagster_home/
+**/.dagster/
+
+# --- Tests are not shipped in the runtime image ---
+**/tests/
+
+# --- Top-level trees not needed by the pipelines image ---
+api/
+salesforce/
+infra/
+runbooks/
+scripts/
+docs/
+
+# --- Docs / editor / OS noise ---
+**/*.md
+.DS_Store
+*.swp
+.idea/
+.vscode/
