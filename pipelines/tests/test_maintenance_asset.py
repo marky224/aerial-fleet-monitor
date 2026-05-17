@@ -52,7 +52,8 @@ def test_prune_deletes_by_retention_commits_and_reports() -> None:
     pg = _FakePostgres()
 
     result = maintenance.prune_stale_positions(
-        build_asset_context(), postgres=pg  # type: ignore[arg-type]
+        build_asset_context(),
+        postgres=pg,  # type: ignore[arg-type]
     )
 
     assert isinstance(result, MaterializeResult)
