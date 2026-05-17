@@ -84,6 +84,14 @@ services:
       # image. pydantic-settings reads these from the container env;
       # the in-image env_file path is absent and is skipped.
       - _private/foundry/.env
+    environment:
+      # In-stack, the AFM API is the `api` service on the compose
+      # network — NOT localhost (that's this container). Both env_files
+      # carry the local-dev localhost:8000 default (correct for the
+      # out-of-stack pipelines/.venv tooling), so override here; compose
+      # `environment:` wins over `env_file:`. Without this every foundry
+      # sync/reconcile job FoundrySyncSkips ("api unreachable").
+      AFM_API_BASE: "http://api:8000"
     command: >
       dagster api grpc
       -h 0.0.0.0
@@ -123,6 +131,11 @@ services:
       - _private/foundry/.env
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+      # In-stack the AFM API is the `api` service, not localhost (both
+      # env_files carry the local-dev localhost:8000 default). compose
+      # `environment:` wins over `env_file:`; without this the foundry
+      # jobs FoundrySyncSkip ("api unreachable").
+      AFM_API_BASE: "http://api:8000"
     command: >
       dagster-webserver
       -h 0.0.0.0
@@ -158,6 +171,11 @@ services:
       - _private/foundry/.env
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+      # In-stack the AFM API is the `api` service, not localhost (both
+      # env_files carry the local-dev localhost:8000 default). compose
+      # `environment:` wins over `env_file:`; without this the foundry
+      # jobs FoundrySyncSkip ("api unreachable").
+      AFM_API_BASE: "http://api:8000"
     command: >
       dagster-daemon run
       -w /opt/dagster/workspace.yaml
