@@ -1,0 +1,144 @@
+"""Foundry sync assets — push local /v1 state into the Foundry Ontology.
+
+``foundry_positions_sync`` (every 30 s, via a sensor — Dagster schedules
+are minute-resolution): reads ``/v1/positions/live`` and upserts the
+``Aircraft`` Ontology object. ``foundry_sites_sync`` (every 5 min): full
+refresh of the ``Site`` object from ``/v1/sites`` + per-site SLA.
+
+Both assets are an **independent failure domain** from the rest of the
+pipeline: AFM's local stack must run with Foundry creds absent or Foundry
+unreachable. The orchestration layer (``afm_foundry_sync.sync_jobs``)
+raises ``FoundrySyncSkipped`` for exactly those conditions; here it is
+translated to a *successful* materialization carrying a ``skip_reason``
+(same convention as ``opensky_positions`` handling ``OpenSkyError``), not
+a failed run. A genuine defect (e.g. a malformed Action payload) is not a
+``FoundrySyncSkipped`` and so still fails the asset loudly.
+
+Cursor: the positions response ``server_time`` is recorded in the asset's
+materialization metadata each run and read back as ``since`` on the next
+run. The v1 API returns the full live snapshot (no server-side delta), so
+``since`` is advisory/logged for now — the mechanism is wired so a future
+delta endpoint needs no asset change.
+
+Takeoff detection (``afm_foundry_sync.sync_jobs.TakeoffDetector``) is
+wired into ``foundry_positions_sync``: a detected on-ground→airborne edge
+triggers a create-only ``Flight`` upsert. The detector is stateful across
+ticks but a per-process instance would reset on restart and miss every
+cross-restart edge, so its on-ground map is persisted to this asset's
+materialization metadata (same mechanism as the cursor, stored as a JSON
+string) and a fresh ``TakeoffDetector`` is seeded from it each run.
+FlightDetail enrichment is deferred (a per-icao24 fanout off a slower
+cadence — out of scope for the 30s tick).
+"""
+
+import asyncio
+import json
+from datetime import datetime
+
+from afm_foundry_sync.sync_jobs import (
+    FoundrySyncSkipped,
+    SyncResult,
+    TakeoffDetector,
+    run_positions_sync,
+    run_sites_sync,
+)
+from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, asset
+
+_CURSOR_KEY = "cursor"
+_DETECTOR_STATE_KEY = "detector_state"
+
+
+def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
+    """Read the previous run's ``server_time`` cursor from this asset's
+    latest materialization metadata. Any miss (first run, no metadata,
+    unparseable) returns None — the sync then runs without a ``since``.
+    """
+    try:
+        event = context.instance.get_latest_materialization_event(context.asset_key)
+        if event is None or event.asset_materialization is None:
+            return None
+        entry = event.asset_materialization.metadata.get(_CURSOR_KEY)
+        if entry is None:
+            return None
+        return datetime.fromisoformat(str(entry.value))
+    except (ValueError, AttributeError) as exc:
+        context.log.warning("could not read prior cursor: %s", exc)
+        return None
+
+
+def _prior_detector_state(context: AssetExecutionContext) -> dict[str, bool] | None:
+    """Read the previous run's TakeoffDetector on-ground map (JSON string)
+    from this asset's latest materialization metadata. Any miss returns
+    None — the detector then starts empty (first sightings only seed).
+    """
+    try:
+        event = context.instance.get_latest_materialization_event(context.asset_key)
+        if event is None or event.asset_materialization is None:
+            return None
+        entry = event.asset_materialization.metadata.get(_DETECTOR_STATE_KEY)
+        if entry is None:
+            return None
+        raw = json.loads(str(entry.value))
+        if not isinstance(raw, dict):
+            return None
+        return {str(k): bool(v) for k, v in raw.items()}
+    except (ValueError, AttributeError) as exc:
+        context.log.warning("could not read prior detector state: %s", exc)
+        return None
+
+
+def _skipped(context: AssetExecutionContext, reason: str) -> MaterializeResult:
+    context.log.warning("foundry sync skipped: %s", reason)
+    return MaterializeResult(
+        metadata={
+            "attempted": MetadataValue.int(0),
+            "succeeded": MetadataValue.int(0),
+            "failed": MetadataValue.int(0),
+            "skip_reason": MetadataValue.text(reason),
+        }
+    )
+
+
+def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
+    meta: dict[str, MetadataValue] = {
+        "attempted": MetadataValue.int(result.attempted),
+        "succeeded": MetadataValue.int(result.succeeded),
+        "failed": MetadataValue.int(result.failed),
+        "takeoffs_detected": MetadataValue.int(result.takeoffs_detected),
+        "flights_written": MetadataValue.int(result.flights_written),
+    }
+    if result.cursor is not None:
+        meta[_CURSOR_KEY] = MetadataValue.text(result.cursor.isoformat())
+    if result.detector_state is not None:
+        # JSON string (not MetadataValue.json) so read-back uses the same
+        # entry.value access path as the cursor — no Dagster-version risk.
+        meta[_DETECTOR_STATE_KEY] = MetadataValue.text(json.dumps(result.detector_state))
+    return meta
+
+
+@asset(
+    group_name="foundry_sync",
+    description="Upserts the Aircraft Ontology object from /v1/positions/live.",
+    metadata={"target": "Foundry Ontology: Aircraft", "cadence": "30s"},
+)
+def foundry_positions_sync(context: AssetExecutionContext) -> MaterializeResult:
+    since = _prior_cursor(context)
+    detector = TakeoffDetector(_prior_detector_state(context))
+    try:
+        result = asyncio.run(run_positions_sync(since=since, detector=detector))
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    return MaterializeResult(metadata=_result_metadata(result))
+
+
+@asset(
+    group_name="foundry_sync",
+    description="Full-refresh upsert of the Site Ontology object from /v1/sites + SLA.",
+    metadata={"target": "Foundry Ontology: Site", "cadence": "5min"},
+)
+def foundry_sites_sync(context: AssetExecutionContext) -> MaterializeResult:
+    try:
+        result = asyncio.run(run_sites_sync())
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    return MaterializeResult(metadata=_result_metadata(result))

@@ -49,6 +49,17 @@ TRAIL_INTERVALS: dict[TrailLookback, str] = {
     "since_takeoff": "6 hours",  # capped per API.md §4.2
 }
 
+# `/v1/positions/live` is spec'd (API.md §3.1) as "all currently airborne
+# aircraft". app.current_positions retains the last-known row for every
+# aircraft ever seen (icao24-keyed upsert, no eviction in the ingestion
+# path), so the query MUST bound by recency or it returns long-landed
+# traffic — without this filter ~62% of the result is hours-to-days old.
+# 15 min keeps fresh (<60s) + stale (<5min) + recently-lost "for context"
+# (the Workshop map dims these) while dropping the multi-hour/day backlog.
+# The companion `prune_stale_positions` Dagster job bounds the table
+# itself; this filter guarantees the contract even between prunes.
+LIVE_POSITION_WINDOW = "15 minutes"
+
 
 def _compute_staleness(last_seen_at: datetime, now: datetime) -> Staleness:
     """Bucket age since last observation into fresh / stale / lost."""
@@ -121,6 +132,11 @@ class QueryService:
                     "lon_max": lon_max,
                 }
             )
+
+        # Always bound to recently-seen aircraft — see LIVE_POSITION_WINDOW.
+        # This makes the endpoint match its "currently airborne" contract;
+        # the window literal is a code constant, not user input.
+        where.append(f"last_seen_at >= NOW() - INTERVAL '{LIVE_POSITION_WINDOW}'")
 
         where_sql = " AND ".join(where) if where else "TRUE"
         rows = self._postgres.fetchall(

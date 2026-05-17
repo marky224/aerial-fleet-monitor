@@ -11,8 +11,9 @@
 ### 1.1 Base URL and versioning
 
 ```
-https://api.aerial-fleet-monitor.markandrewmarquez.com
+https://api.example.com
 ```
+(Public base URL is environment-specific and kept out of the public tree per scrub-infra discipline; `api.example.com` is a placeholder.)
 
 All endpoints are prefixed `/v1/`. v1 stays stable for the lifetime of the project. Breaking changes go to `/v2/`. Non-breaking additions (new fields, new endpoints) ship under `/v1/` without warning.
 
@@ -80,7 +81,7 @@ Session is a signed JWT in `afm_session` HttpOnly cookie. JWT carries:
   "custom_perms": ["AFM_Region_West"],
   "exp": 1714000000,
   "iat": 1713996400,
-  "iss": "afm.markandrewmarquez.com"
+  "iss": "afm.example.com"
 }
 ```
 
@@ -139,6 +140,13 @@ Clear the cookie. If the cookie holds a Salesforce-issued session, also call SF'
 ### 3.1 `GET /v1/positions/live`
 
 Return all currently airborne aircraft within the caller's scope.
+"Currently airborne" = aircraft observed within the last **15 minutes**
+(`last_seen_at >= now() - 15m`). The backing `current_positions` store
+keeps a last-known row per aircraft indefinitely, so this recency bound
+is what makes the result "live"; without it the endpoint returns
+long-landed traffic. Each returned row still carries a `staleness`
+bucket (`fresh` < 60 s, `stale` < 5 min, `lost` otherwise) so the
+recently-lost tail inside the window is distinguishable client-side.
 
 **Query params:**
 - `bbox` (optional): `lat_min,lon_min,lat_max,lon_max`. If omitted, returns all in scope.
@@ -518,7 +526,7 @@ Liveness check. Returns 200 if the process is up.
 
 ### 9.2 `GET /v1/health/deep`
 
-Deeper check: Postgres reachable, Parquet lake mounted, Salesforce token valid, Anthropic client healthy. Used by Cloudflare's tunnel health probes.
+Deeper check: Postgres reachable, Parquet lake mounted, Salesforce token valid, Anthropic client healthy. Used by the reverse tunnel's health probes.
 
 **Response 200** if all green; **503** if any are degraded.
 
@@ -533,7 +541,7 @@ class DeepHealthResponse(BaseModel):
 
 ### 9.3 `GET /v1/metrics`
 
-Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not authenticated (it's behind Cloudflare Access for the Grafana subdomain only).
+Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not authenticated — it is network-scoped (reachable only on the private network, never forwarded by the public reverse tunnel).
 
 ## 10. Endpoint summary table
 
