@@ -16,6 +16,7 @@ import pytest
 import respx
 from pydantic import BaseModel
 
+from afm_foundry_sync import sync_jobs as _sj
 from afm_foundry_sync.api_readers import AfmApiClient
 from afm_foundry_sync.models import Position
 from afm_foundry_sync.ontology_writers import FoundryWriter
@@ -640,3 +641,44 @@ async def test_enriched_sync_flights_propagates_skip_on_unreachable_api(
             FoundryWriter(settings) as writer,
         ):
             await enriched_sync_flights(client, writer)
+
+
+@respx.mock
+async def test_enriched_sync_flights_streams_in_chunks_and_aggregates(
+    settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OOM fix: candidates are upserted in bounded chunks (not one
+    accumulate-all batch), and per-chunk counts aggregate. With chunk=2 and
+    3 distinct-icao24 candidates → exactly 2 upsert HTTP calls, enriched=3."""
+    monkeypatch.setattr(_sj, "_ENRICHMENT_CHUNK", 2)
+    icaos = ["aa1111", "bb2222", "cc3333"]
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"flightId": f"{i}-1700000000"} for i in icaos]}
+        )
+    )
+    for i in icaos:
+        respx.get(f"http://api.test/v1/flights/{i}").mock(
+            return_value=httpx.Response(200, json=_flight_detail(i))
+        )
+        respx.get(f"http://api.test/v1/flights/{i}/trail").mock(
+            return_value=httpx.Response(200, json=_TRAIL_JSON)
+        )
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.candidates == 3
+    assert result.enriched == 3
+    assert (result.skipped_inactive, result.fetch_failed) == (0, 0)
+    # 2 chunks (sizes 2 + 1) → 2 separate upsert applyBatch POSTs, proving
+    # memory is bounded per-chunk rather than one accumulate-all batch.
+    assert upsert_route.call_count == 2
+    sent = {
+        r["parameters"]["flightId"]
+        for call in upsert_route.calls
+        for r in json.loads(call.request.content)["requests"]
+    }
+    assert sent == {f"{i}-1700000000" for i in icaos}
