@@ -255,6 +255,40 @@ def test_flight_params_geopoint_only_when_both_coords_present() -> None:
     assert "departed" in takeoff["statusTimeline"]
 
 
+def test_flight_params_trail_path_linestring_geo_native_projection() -> None:
+    # >= 2 trail points → trailPath is a GeoJSON LineString in [lon, lat]
+    # order (mirrors position's geopoint), the App 3 §3.3 polyline binding.
+    # trail2h (the raw JSON-string points) is still emitted alongside it.
+    p = flight_params(
+        _flight(
+            trail_2h=[
+                TrailPoint(ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280),
+                TrailPoint(ts=_TAKEOFF, lat=37.8, lon=-122.5, altitude_ft=9000, speed_kt=300),
+            ]
+        )
+    )
+    assert p["trailPath"] == {
+        "type": "LineString",
+        "coordinates": [[-122.4, 37.7], [-122.5, 37.8]],
+    }
+    assert isinstance(p["trail2h"], str)  # raw points still shipped
+
+
+def test_flight_params_trail_path_omitted_under_two_points() -> None:
+    # A LineString needs >= 2 positions; a 0/1-point trail omits trailPath
+    # entirely (like position when coords are absent) — never an invalid
+    # shape. trail2h still serializes the (possibly empty) points.
+    one = flight_params(
+        _flight(
+            trail_2h=[TrailPoint(ts=_TAKEOFF, lat=1.0, lon=2.0, altitude_ft=None, speed_kt=None)]
+        )
+    )
+    assert "trailPath" not in one
+    none = flight_params(_flight(trail_2h=[]))
+    assert "trailPath" not in none
+    assert none["trail2h"] == "[]"
+
+
 def test_flight_params_omits_none_optionals_keeps_required() -> None:
     p = flight_params(_flight(callsign=None, landed_at=None, eta_minutes=None, operator_icao=None))
     assert "callsign" not in p

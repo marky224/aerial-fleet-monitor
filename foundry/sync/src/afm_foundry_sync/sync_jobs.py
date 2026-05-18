@@ -53,7 +53,7 @@ import structlog
 from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
-from afm_foundry_sync.models import Flight, Position
+from afm_foundry_sync.models import Flight, FlightDetail, Position
 from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
@@ -390,27 +390,29 @@ async def reconcile_aircraft(
     )
 
 
-# Candidates are enriched in chunks of this size: each carries a full 2h
-# trail (~hundreds of points), so an accumulate-all list OOM-killed the
-# 512 MB asset container at ~2k candidates. 50 keeps peak memory ≈ 50
-# enriched Flights + their trails — well inside the cap — and is the
-# unit of partial-progress (one upsert per chunk; earlier chunks persist
-# if a later one raises).
+# The upsert-flush unit. Enriched Flights (each carrying a full 2h trail,
+# ~hundreds of points) accumulate to this many, are upserted, then
+# discarded, so peak memory is bounded to one chunk regardless of tenant
+# size — an accumulate-all list OOM-killed the asset container at ~2k
+# candidates (#12). With the trail now fetched in ONE batched lakehouse
+# scan (``stream_flight_trails``) rather than per-flight, chunk size no
+# longer drives scan count; it is purely the memory bound and the unit of
+# partial progress (an upsert that raises → FoundrySyncSkipped leaves
+# earlier chunks persisted; the next hourly run carries forward).
 _ENRICHMENT_CHUNK = 50
 
-# Per-flight fetches (fetch_flight + fetch_flight_trail) inside a chunk run
-# concurrently behind this semaphore. Serial awaits were the runtime defect:
-# ~3.4k candidates x ~0.86 s per active-flight trail fetch is ~26 min on a
-# healthy upstream (far worse — never completing — lapping the hourly
-# schedule). The work is network-bound, so concurrency collapses it ~Nx
-# (~5-7 min at 4). Lowered 8→4: the /v1/flights/{id}/trail endpoint (2h
-# history) is heavy, and at 8 concurrent it ReadTimeout'd the API under
-# load; 4 keeps the API within its read-timeout while still well under the
-# hourly cadence. A per-flight timeout no longer aborts the pass anyway
-# (counted as ``fetch_failed`` — see ``_enrich_one``); this just keeps the
-# failure rate low. ``transient_retry`` still absorbs the occasional
-# 429/5xx.
-_ENRICHMENT_CONCURRENCY = 4
+# Concurrency of the per-icao24 *detail* fanout (``fetch_flight``). The 2h
+# trail — formerly the bottleneck, fetched per-flight as a full lakehouse
+# scan whose icao24 predicate pruned nothing (~0.5 s each x ~thousands ≈
+# the bulk of the ~56 min run) — is now a single batched scan, so the only
+# per-flight call left is ``fetch_flight``: a recency-bounded
+# ``current_positions`` point lookup (cheap, indexed). #18 lowered this
+# 8→4 specifically because the heavy trail endpoint ReadTimeout'd at 8
+# concurrent; that reason is gone with the batched trail, so it returns to
+# 8. A per-detail timeout still never aborts the pass (counted
+# ``fetch_failed`` — see ``_fetch_detail``); ``transient_retry`` still
+# absorbs the occasional 429/5xx.
+_ENRICHMENT_CONCURRENCY = 8
 
 
 async def enriched_sync_flights(
@@ -426,34 +428,30 @@ async def enriched_sync_flights(
     *current* flight (404 outside the API's recency window), so enriching a
     stale flight_id would bleed a newer flight's data onto it. We therefore
     enrich only the **latest flight_id per icao24** (max ``takeoff_ts``
-    parsed from the PK). A 404 means the aircraft isn't currently flying —
-    nothing to enrich (``skipped_inactive``, not failed). A non-404 status
-    error for one icao24 is counted and skipped so it can't sink the batch;
-    a transport/timeout failure for one icao24 is *also* counted (``failed``)
-    and skipped — under the concurrent fanout a single transient timeout is
-    near-certain, so letting one abort the whole pass meant enrichment never
-    completed (see ``_enrich_one``). Foundry-side I/O still bubbles to
-    ``guarded_sync`` → ``FoundrySyncSkipped`` (the tenant being unreachable
-    *is* a skip). Upsert-only: no deletes and an empty tenant just no-ops,
-    so no empty-feed guard is needed (unlike the reconcile).
+    parsed from the PK).
 
-    **Streamed in chunks of ``_ENRICHMENT_CHUNK``:** each chunk is fetched,
-    built, upserted and then discarded, so peak memory is bounded to one
-    chunk of enriched Flights (each carrying a full 2h trail) regardless of
-    tenant size. A single accumulate-all list OOM-killed the 512 MB asset
-    container at ~2k candidates. A side benefit: earlier chunks are already
-    persisted in the tenant if a later chunk raises (e.g. a transport
-    failure → ``FoundrySyncSkipped``); the next hourly run carries forward.
+    **Two phases, one trail scan.** Phase 1 fans the per-icao24 *detail*
+    fetch (``fetch_flight``) out concurrently (``_ENRICHMENT_CONCURRENCY``):
+    a 404 means the aircraft isn't currently flying (``skipped_inactive``,
+    not failed); a non-404 status error or a transport/timeout for one
+    icao24 is counted (``fetch_failed``) and skipped so it can't sink the
+    pass — under a concurrent fanout a single transient is near-certain, so
+    letting one abort meant enrichment never completed (see
+    ``_fetch_detail``). Phase 2 fetches the 2h trail for **every active
+    icao24 in a single batched lakehouse scan** (``stream_flight_trails``)
+    instead of one heavy per-flight scan each; trails stream back grouped by
+    icao24, are paired with the held detail, built, and flushed in
+    ``_ENRICHMENT_CHUNK`` upserts so peak memory stays one chunk.
 
-    **Per-flight fetches within a chunk run concurrently**, bounded by
-    ``_ENRICHMENT_CONCURRENCY`` (semaphore). Strictly-serial awaits were the
-    runtime defect — ~3.4k candidates one-at-a-time, dominated by the
-    ~0.86 s active-flight trail fetch, ran ~26 min on a healthy upstream and
-    never completed under stress, lapping the hourly schedule. The work is
-    network-bound, so concurrency collapses wall time ~Nx without changing
-    the memory bound (still one chunk) or the correctness invariant
-    (candidates are resolved to latest-per-icao24 *before* fetching; fetch
-    order is irrelevant). Outcome accounting is unchanged.
+    **Trail resilience.** If the batched trail call fails (transport, or a
+    server-side mid-scan IO error truncating the NDJSON after a 200), the
+    unseen icao24 are enriched **detail-only** (route / registration /
+    status — just no trail) rather than aborting; the next hourly run
+    carries the trail forward (idempotent, latest-per-icao24 ⇒ convergent).
+    Foundry-side I/O (``list_flight_pks`` / ``upsert_flight_batch``) still
+    bubbles to ``guarded_sync`` → ``FoundrySyncSkipped`` — the tenant being
+    unreachable *is* a skip. Upsert-only: no deletes, an empty tenant
+    no-ops, so no empty-feed guard is needed (unlike the reconcile).
     """
     flight_pks = await writer.list_flight_pks()
 
@@ -478,29 +476,21 @@ async def enriched_sync_flights(
 
     semaphore = asyncio.Semaphore(_ENRICHMENT_CONCURRENCY)
 
-    async def _enrich_one(
-        icao24: str, takeoff_ts: datetime, flight_id: str
-    ) -> tuple[str, Flight | None]:
-        """Fetch+build one Flight. Returns a tagged outcome; never raises a
-        per-flight HTTP error. 404 → ``inactive``; other 4xx/5xx → ``failed``;
-        a *transport/timeout* error (``ConnectError``/``ReadTimeout``/… —
-        anything in ``httpx.HTTPError`` that isn't a status error) → also
-        ``failed``, **counted, the pass continues**. Rationale: with the
-        concurrent fanout over ~thousands of candidates against a
-        rate/latency-bounded upstream, a *single* transient timeout is
-        near-certain per run; letting one abort the whole pass (the prior
-        propagate-to-``guarded_sync`` behaviour) meant enrichment never
-        completed. A genuine total outage simply makes *every* flight fail
-        → ``enriched=0``/``fetch_failed=candidates``, which is observable in
-        the materialization metadata and a safe no-op (no crash, no bad
-        data). Foundry-side I/O (``list_flight_pks``/``upsert_flight_batch``,
-        outside this helper) still bubbles to ``guarded_sync`` →
-        ``FoundrySyncSkipped`` — the tenant being unreachable *is* a skip.
+    async def _fetch_detail(icao24: str) -> tuple[str, FlightDetail | None]:
+        """Fetch one flight's detail. Never raises a per-flight HTTP error.
+
+        404 → ``inactive``; other 4xx/5xx → ``failed``; a transport/timeout
+        error → also ``failed``, counted, the pass continues (a single
+        transient is near-certain across a concurrent fanout over thousands
+        of candidates; letting one abort meant enrichment never completed).
+        A genuine total outage makes *every* detail fail →
+        ``enriched=0``/``fetch_failed=candidates``, observable in the
+        metadata and a safe no-op. Foundry-side I/O is outside this helper
+        and still bubbles to ``guarded_sync``.
         """
         async with semaphore:
             try:
-                detail = await client.fetch_flight(icao24)
-                trail = await client.fetch_flight_trail(icao24)
+                return "ok", await client.fetch_flight(icao24)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 404:
                     return "inactive", None
@@ -511,32 +501,66 @@ async def enriched_sync_flights(
                 )
                 return "failed", None
             except httpx.HTTPError as exc:
-                # Transport/timeout for ONE flight — count and continue;
-                # must not sink the whole pass (see docstring).
                 logger.warning(
                     "foundry_enrichment_fetch_failed",
                     icao24=icao24,
                     error=type(exc).__name__,
                 )
                 return "failed", None
-            return "ok", flight_detail_to_flight(flight_id, takeoff_ts, detail, trail)
 
+    # Phase 1 — concurrent detail fanout (semaphore-bounded; candidates are
+    # already resolved to latest-per-icao24, so fetch order is irrelevant).
+    detail_outcomes = await asyncio.gather(*(_fetch_detail(icao24) for icao24, _ in candidates))
+    skipped_inactive = sum(1 for kind, _ in detail_outcomes if kind == "inactive")
+    fetch_failed = sum(1 for kind, _ in detail_outcomes if kind == "failed")
+    active: dict[str, tuple[str, datetime, FlightDetail]] = {}
+    for (icao24, (takeoff_ts, flight_id)), (kind, detail) in zip(
+        candidates, detail_outcomes, strict=True
+    ):
+        if kind == "ok" and detail is not None:
+            active[icao24] = (flight_id, takeoff_ts, detail)
+
+    # Phase 2 — one batched trail scan; build + flush per chunk.
     enriched = 0
-    skipped_inactive = 0
-    fetch_failed = 0
-    for start in range(0, len(candidates), _ENRICHMENT_CHUNK):
-        chunk = candidates[start : start + _ENRICHMENT_CHUNK]
-        # Per-flight fetches run concurrently (semaphore-bounded); the chunk
-        # boundary still serializes fetch→upsert→discard so peak memory stays
-        # one chunk and partial progress persists per chunk.
-        outcomes = await asyncio.gather(
-            *(_enrich_one(icao24, ts, fid) for icao24, (ts, fid) in chunk)
-        )
-        flights: list[Flight] = [f for kind, f in outcomes if kind == "ok" and f is not None]
-        skipped_inactive += sum(1 for kind, _ in outcomes if kind == "inactive")
-        fetch_failed += sum(1 for kind, _ in outcomes if kind == "failed")
-        batch = await writer.upsert_flight_batch(flights)
+    buffer: list[Flight] = []
+    seen: set[str] = set()
+
+    async def _flush() -> None:
+        nonlocal enriched
+        if not buffer:
+            return
+        batch = await writer.upsert_flight_batch(buffer)
         enriched += batch.succeeded
+        buffer.clear()
+
+    if active:
+        try:
+            async for trail in client.stream_flight_trails(list(active), "2h"):
+                entry = active.get(trail.icao24)
+                if entry is None:
+                    continue  # defensive: only active icao24 were requested
+                flight_id, takeoff_ts, detail = entry
+                buffer.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, trail))
+                seen.add(trail.icao24)
+                if len(buffer) >= _ENRICHMENT_CHUNK:
+                    await _flush()
+        except httpx.HTTPError as exc:
+            # Batched trail call failed — enrich the rest detail-only; the
+            # next hourly run carries the trail forward (convergent).
+            logger.warning(
+                "foundry_enrichment_trail_batch_failed",
+                error=type(exc).__name__,
+            )
+
+    # Active icao24 with no trail line (no rows in the window, OR the trail
+    # stream ended early) → detail-only enrichment, same chunked flush.
+    for icao24, (flight_id, takeoff_ts, detail) in active.items():
+        if icao24 in seen:
+            continue
+        buffer.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, None))
+        if len(buffer) >= _ENRICHMENT_CHUNK:
+            await _flush()
+    await _flush()
 
     return FlightEnrichmentResult(
         tenant_flights=len(flight_pks),

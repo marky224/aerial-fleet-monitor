@@ -21,6 +21,7 @@ broken — that's a different failure domain than a missing Foundry tenant.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import Any, Self
 
@@ -102,6 +103,37 @@ class AfmApiClient:
     ) -> TrailResponse:
         data = await self._get_json(f"/v1/flights/{icao24}/trail", params={"lookback": lookback})
         return TrailResponse.model_validate(data)
+
+    async def stream_flight_trails(
+        self, icao24s: list[str], lookback: TrailLookback = "2h"
+    ) -> AsyncIterator[TrailResponse]:
+        """Stream trails for many icao24 from ONE lakehouse scan (NDJSON).
+
+        Bulk sibling of :meth:`fetch_flight_trail`: POSTs the whole candidate
+        set to ``/v1/flights/trail/batch`` and yields one ``TrailResponse``
+        per line as the server streams them (ordered by icao24). icao24s with
+        no positions in the window are simply not yielded — the caller treats
+        an absent icao24 as an empty trail.
+
+        Deliberately NOT wrapped in ``transient_retry`` (a generator can't be
+        cleanly retried, and the per-flight rationale no longer applies — this
+        is *one* call, not ~thousands). A transport blip, or a server-side
+        mid-scan IO error truncating the NDJSON after a 200, just ends the
+        stream early; ``enriched_sync_flights`` falls back to detail-only
+        enrichment for the unseen icao24 and the next hourly run carries the
+        trail forward (idempotent, latest-per-icao24 ⇒ convergent).
+        """
+        body: dict[str, Any] = {"icao24s": icao24s, "lookback": lookback}
+        logger.info(
+            "afm_api_request",
+            path="/v1/flights/trail/batch",
+            count=len(icao24s),
+        )
+        async with self._client.stream("POST", "/v1/flights/trail/batch", json=body) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line:
+                    yield TrailResponse.model_validate_json(line)
 
     async def fetch_sites(self) -> SiteListResponse:
         data = await self._get_json("/v1/sites")
