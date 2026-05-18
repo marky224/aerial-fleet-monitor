@@ -148,6 +148,14 @@ long-landed traffic. Each returned row still carries a `staleness`
 bucket (`fresh` < 60 s, `stale` < 5 min, `lost` otherwise) so the
 recently-lost tail inside the window is distinguishable client-side.
 
+The endpoint returns the **complete** in-scope set (it is a snapshot, not
+a paginated list — the `cursor`/`limit` convention in §1 does not apply).
+A server-side safety ceiling of **50,000** rows bounds memory and response
+size; this is far above realistic airborne traffic (single-digit
+thousands). If the in-scope set ever exceeds the ceiling, the freshest
+50,000 rows (ordered by `last_seen_at` desc) are returned and
+`truncated: true` is set so the clip is observable rather than silent.
+
 **Query params:**
 - `bbox` (optional): `lat_min,lon_min,lat_max,lon_max`. If omitted, returns all in scope.
 - `region` (optional): override scope to a specific region (rejected with 403 if user lacks `AFM_All_Regions`).
@@ -173,6 +181,7 @@ class PositionsLiveResponse(BaseModel):
     count: int
     server_time: datetime
     pipeline_lag_seconds: int                       # last successful poll lag
+    truncated: bool = False                         # True if clipped at the 50k safety ceiling
 ```
 
 Polling cadence from the dashboard sync: every 30s.
