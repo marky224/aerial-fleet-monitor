@@ -58,7 +58,14 @@ from afm_foundry_sync.sync_jobs import (
     run_positions_sync,
     run_sites_sync,
 )
-from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, asset
+from dagster import (
+    AssetExecutionContext,
+    DagsterRunStatus,
+    MaterializeResult,
+    MetadataValue,
+    RunsFilter,
+    asset,
+)
 
 _CURSOR_KEY = "cursor"
 _DETECTOR_STATE_KEY = "detector_state"
@@ -216,6 +223,28 @@ def _enrichment_metadata(result: FlightEnrichmentResult) -> dict[str, MetadataVa
     metadata={"target": "Foundry Ontology: Flight", "cadence": "hourly"},
 )
 def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResult:
+    # Overlap guard: the hourly schedule must never stack a second run on a
+    # slow one (on a bad-upstream hour enrichment can still run long). If
+    # another run of this job is already in progress, skip this tick — a
+    # coalesced no-op, surfaced via the same ``skip_reason`` contract as a
+    # FoundrySyncSkipped so verification treats it identically.
+    in_progress = context.instance.get_run_records(
+        RunsFilter(
+            job_name="foundry_flight_enrichment_job",
+            statuses=[
+                DagsterRunStatus.QUEUED,
+                DagsterRunStatus.STARTING,
+                DagsterRunStatus.STARTED,
+                DagsterRunStatus.CANCELING,
+            ],
+        )
+    )
+    if any(r.dagster_run.run_id != context.run_id for r in in_progress):
+        return _skipped(
+            context,
+            "another foundry_flight_enrichment run is already in progress "
+            "(coalesced — the previous run is still draining)",
+        )
     try:
         result = asyncio.run(run_flight_enrichment())
     except FoundrySyncSkipped as exc:

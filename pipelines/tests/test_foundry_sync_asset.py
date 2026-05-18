@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from afm_foundry_sync.sync_jobs import (
@@ -235,3 +236,48 @@ def test_flight_enrichment_real_defect_is_not_swallowed(
 
     with pytest.raises(RuntimeError, match="malformed flight upsert payload"):
         foundry_sync.foundry_flight_enrichment(build_asset_context())
+
+
+def test_flight_enrichment_overlap_guard_skips_when_sibling_run_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hourly schedule must not stack a second run on a slow one: if
+    another run of the job is in progress, the tick is a coalesced skip
+    (surfaced via skip_reason) and the enrichment body never runs."""
+
+    async def _must_not_run() -> FlightEnrichmentResult:
+        raise AssertionError("enrichment ran despite an in-progress sibling")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_enrichment", _must_not_run)
+    ctx = build_asset_context()
+    sibling = SimpleNamespace(dagster_run=SimpleNamespace(run_id="a-different-run"))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [sibling])
+
+    result = foundry_sync.foundry_flight_enrichment(ctx)
+
+    assert isinstance(result, MaterializeResult)
+    assert "already in progress" in (result.metadata or {})["skip_reason"].value
+
+
+def test_flight_enrichment_overlap_guard_ignores_own_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must exclude the current run itself (which is STARTED while
+    executing) — otherwise every run would skip itself."""
+
+    async def _ok() -> FlightEnrichmentResult:
+        return FlightEnrichmentResult(
+            tenant_flights=1,
+            candidates=1,
+            enriched=1,
+            skipped_inactive=0,
+            fetch_failed=0,
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_flight_enrichment", _ok)
+    ctx = build_asset_context()
+    own = SimpleNamespace(dagster_run=SimpleNamespace(run_id=ctx.run_id))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [own])
+
+    md = foundry_sync.foundry_flight_enrichment(ctx).metadata or {}
+    assert md["enriched"].value == 1  # proceeded — own run is not "another"

@@ -42,6 +42,7 @@ to every icao24 ever observed).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
@@ -391,9 +392,21 @@ async def reconcile_aircraft(
 # Candidates are enriched in chunks of this size: each carries a full 2h
 # trail (~hundreds of points), so an accumulate-all list OOM-killed the
 # 512 MB asset container at ~2k candidates. 50 keeps peak memory ≈ 50
-# enriched Flights + their trails — comfortably inside the cap with
-# headroom — and is well above the per-run candidate count in practice.
+# enriched Flights + their trails — well inside the cap — and is the
+# unit of partial-progress (one upsert per chunk; earlier chunks persist
+# if a later one raises).
 _ENRICHMENT_CHUNK = 50
+
+# Per-flight fetches (fetch_flight + fetch_flight_trail) inside a chunk run
+# concurrently behind this semaphore. Serial awaits were the runtime defect:
+# ~3.4k candidates x ~0.86 s per active-flight trail fetch is ~26 min on a
+# healthy upstream (far worse — never completing — under upstream stress,
+# lapping the hourly schedule). The work is network-bound, so concurrency
+# collapses it ~Nx (~3-4 min at 8). Kept modest on purpose: /v1/flights
+# proxies a rate-limited upstream that returns 5xx under burst (observed at
+# concurrency 20); 8 is comfortably below that, and the existing
+# ``transient_retry`` absorbs the occasional 429/5xx.
+_ENRICHMENT_CONCURRENCY = 8
 
 
 async def enriched_sync_flights(
@@ -424,6 +437,16 @@ async def enriched_sync_flights(
     container at ~2k candidates. A side benefit: earlier chunks are already
     persisted in the tenant if a later chunk raises (e.g. a transport
     failure → ``FoundrySyncSkipped``); the next hourly run carries forward.
+
+    **Per-flight fetches within a chunk run concurrently**, bounded by
+    ``_ENRICHMENT_CONCURRENCY`` (semaphore). Strictly-serial awaits were the
+    runtime defect — ~3.4k candidates one-at-a-time, dominated by the
+    ~0.86 s active-flight trail fetch, ran ~26 min on a healthy upstream and
+    never completed under stress, lapping the hourly schedule. The work is
+    network-bound, so concurrency collapses wall time ~Nx without changing
+    the memory bound (still one chunk) or the correctness invariant
+    (candidates are resolved to latest-per-icao24 *before* fetching; fetch
+    order is irrelevant). Outcome accounting is unchanged.
     """
     flight_pks = await writer.list_flight_pks()
 
@@ -446,27 +469,46 @@ async def enriched_sync_flights(
         candidates=len(candidates),
     )
 
-    enriched = 0
-    skipped_inactive = 0
-    fetch_failed = 0
-    for start in range(0, len(candidates), _ENRICHMENT_CHUNK):
-        flights: list[Flight] = []
-        for icao24, (takeoff_ts, flight_id) in candidates[start : start + _ENRICHMENT_CHUNK]:
+    semaphore = asyncio.Semaphore(_ENRICHMENT_CONCURRENCY)
+
+    async def _enrich_one(
+        icao24: str, takeoff_ts: datetime, flight_id: str
+    ) -> tuple[str, Flight | None]:
+        """Fetch+build one Flight. Returns a tagged outcome; never raises an
+        ``HTTPStatusError`` (404 → ``inactive``, other 4xx/5xx → ``failed``,
+        both counted, the pass continues). A *transport* failure is NOT
+        caught — it propagates out of ``gather`` → ``guarded_sync`` →
+        ``FoundrySyncSkipped`` (the API is down, not one bad flight).
+        """
+        async with semaphore:
             try:
                 detail = await client.fetch_flight(icao24)
                 trail = await client.fetch_flight_trail(icao24)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 404:
-                    skipped_inactive += 1
-                    continue
+                    return "inactive", None
                 logger.warning(
                     "foundry_enrichment_fetch_failed",
                     icao24=icao24,
                     status=exc.response.status_code,
                 )
-                fetch_failed += 1
-                continue
-            flights.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, trail))
+                return "failed", None
+            return "ok", flight_detail_to_flight(flight_id, takeoff_ts, detail, trail)
+
+    enriched = 0
+    skipped_inactive = 0
+    fetch_failed = 0
+    for start in range(0, len(candidates), _ENRICHMENT_CHUNK):
+        chunk = candidates[start : start + _ENRICHMENT_CHUNK]
+        # Per-flight fetches run concurrently (semaphore-bounded); the chunk
+        # boundary still serializes fetch→upsert→discard so peak memory stays
+        # one chunk and partial progress persists per chunk.
+        outcomes = await asyncio.gather(
+            *(_enrich_one(icao24, ts, fid) for icao24, (ts, fid) in chunk)
+        )
+        flights: list[Flight] = [f for kind, f in outcomes if kind == "ok" and f is not None]
+        skipped_inactive += sum(1 for kind, _ in outcomes if kind == "inactive")
+        fetch_failed += sum(1 for kind, _ in outcomes if kind == "failed")
         batch = await writer.upsert_flight_batch(flights)
         enriched += batch.succeeded
 
