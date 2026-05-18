@@ -471,3 +471,45 @@ async def test_list_aircraft_pks_retries_on_503_then_succeeds(
 
     assert pks == set()
     assert route.call_count == 2  # transient_retry covers the GET too
+
+
+# ---------------------------------------------------------------------------
+# Flight enrichment primitive: list_flight_pks (mirrors list_aircraft_pks)
+# ---------------------------------------------------------------------------
+
+_FLIGHT_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Flight"
+
+
+@respx.mock
+async def test_list_flight_pks_follows_pagination(settings: FoundrySettings) -> None:
+    route = respx.get(_FLIGHT_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"flightId": "abc123-1700"}, {"flightId": "def456-1800"}],
+                    "nextPageToken": "p2",
+                },
+            ),
+            httpx.Response(200, json={"data": [{"flightId": "ghi789-1900"}]}),
+        ]
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_flight_pks()
+
+    assert pks == {"abc123-1700", "def456-1800", "ghi789-1900"}
+    assert route.call_count == 2  # stopped when nextPageToken absent
+
+
+@respx.mock
+async def test_list_flight_pks_falls_back_to_primary_key(settings: FoundrySettings) -> None:
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"__primaryKey": "aaa111-1700"}, {"flightId": "bbb222-1800"}]},
+        )
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_flight_pks()
+
+    assert pks == {"aaa111-1700", "bbb222-1800"}

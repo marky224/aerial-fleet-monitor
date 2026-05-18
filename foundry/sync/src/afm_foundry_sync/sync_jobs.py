@@ -20,9 +20,12 @@ writes) into runnable jobs. It owns:
     synthesizes ``Flight`` primary keys. **Now wired** (Flight schema +
     ``upsert-flight`` proven 2026-05-16): a detected takeoff triggers a
     *create-only* ``upsert_flight_batch`` of the takeoff-shaped Flight
-    (``transforms.takeoff_to_flight``). FlightDetail/trail **enrichment is
-    deferred** — it needs a per-icao24 ``/v1/flights`` fanout off a slower
-    cadence, out of scope for the 30s positions tick.
+    (``transforms.takeoff_to_flight``).
+  - ``enriched_sync_flights`` — the deferred FlightDetail/trail backfill,
+    a per-icao24 ``/v1/flights`` (+ 2h trail) fanout off a slower cadence
+    (hourly), out of scope for the 30s positions tick. ``/v1/flights`` is
+    icao24-keyed and returns the aircraft's *current* flight, so only the
+    **latest flight_id per icao24** is a safe enrichment target.
 
 Cursor & detector state are *returned* (``SyncResult.cursor`` /
 ``SyncResult.detector_state``), never persisted here: this module stays
@@ -42,7 +45,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -53,6 +56,7 @@ from afm_foundry_sync.models import Position
 from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
+    flight_detail_to_flight,
     position_to_aircraft,
     site_to_site,
     takeoff_to_flight,
@@ -120,6 +124,34 @@ class ReconcileResult:
     skipped_empty_live: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class FlightEnrichmentResult:
+    """Outcome of one deferred Flight-enrichment pass.
+
+    The takeoff path writes a Flight with only the 3 synthesized identity
+    fields; this backfills route/operator/registration/status + 2h trail
+    from ``/v1/flights/{icao24}``. ``/v1/flights`` keys on icao24 and
+    returns the aircraft's *current* flight (404 outside the API recency
+    window), so only the **latest flight_id per icao24** is a safe target —
+    an older PK would be re-written with a newer flight's data.
+
+    ``tenant_flights`` is every Flight PK in the tenant; ``candidates`` is
+    the latest-per-icao24 subset actually enriched; ``enriched`` is the
+    confirmed upsert count (== candidates - skipped - failed on full
+    success); ``skipped_inactive`` 404'd (aircraft not currently flying —
+    nothing to enrich, not an error); ``fetch_failed`` hit a non-404 HTTP
+    *status* error for one icao24 (counted, the pass continues so one bad
+    flight can't sink the batch; a transport/connection failure instead
+    propagates as ``FoundrySyncSkipped`` — the whole API is down).
+    """
+
+    tenant_flights: int
+    candidates: int
+    enriched: int
+    skipped_inactive: int = 0
+    fetch_failed: int = 0
+
+
 @contextlib.asynccontextmanager
 async def guarded_sync(job: str) -> AsyncIterator[None]:
     """Translate config-absent / Foundry-unreachable into ``FoundrySyncSkipped``.
@@ -161,6 +193,21 @@ def _dedupe_latest(positions: Iterable[Position]) -> list[Position]:
 def synthesize_flight_id(icao24: str, takeoff_ts: datetime) -> str:
     """Flight PK = ``{icao24}-{unix_takeoff_ts}`` (ONTOLOGY.md Flight key)."""
     return f"{icao24}-{int(takeoff_ts.timestamp())}"
+
+
+def parse_flight_id(flight_id: str) -> tuple[str, datetime]:
+    """Inverse of ``synthesize_flight_id``: ``{icao24}-{unix_ts}`` →
+    ``(icao24, takeoff_ts)``.
+
+    icao24 is lowercase hex (never contains ``-``), so the unix timestamp
+    is exactly the segment after the last ``-``. Raises ``ValueError`` on a
+    malformed PK (empty icao24, missing or non-numeric timestamp) so the
+    enrichment caller can drop that PK with a warning rather than crash.
+    """
+    icao24, _, ts = flight_id.rpartition("-")
+    if not icao24 or not ts:
+        raise ValueError(f"malformed flight_id: {flight_id!r}")
+    return icao24, datetime.fromtimestamp(int(ts), tz=UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,6 +388,77 @@ async def reconcile_aircraft(
     )
 
 
+async def enriched_sync_flights(
+    client: AfmApiClient,
+    writer: FoundryWriter,
+) -> FlightEnrichmentResult:
+    """Backfill create-only takeoff Flights from /v1/flights (+ 2h trail).
+
+    ``incremental_sync_positions`` writes a Flight at takeoff with only the
+    synthesized identity (flight_id / icao24 / takeoff_ts); every routing /
+    status / trail field stays null until this runs.
+    ``/v1/flights/{icao24}`` is keyed on icao24 and returns that aircraft's
+    *current* flight (404 outside the API's recency window), so enriching a
+    stale flight_id would bleed a newer flight's data onto it. We therefore
+    enrich only the **latest flight_id per icao24** (max ``takeoff_ts``
+    parsed from the PK). A 404 means the aircraft isn't currently flying —
+    nothing to enrich (``skipped_inactive``, not failed). A non-404 status
+    error for one icao24 is counted and skipped so it can't sink the batch;
+    a transport/connection failure is *not* caught here — it bubbles to
+    ``guarded_sync`` and becomes a clean ``FoundrySyncSkipped`` (the API is
+    down, not one bad flight). Upsert-only: no deletes and an empty tenant
+    just no-ops, so no empty-feed guard is needed (unlike the reconcile).
+    """
+    flight_pks = await writer.list_flight_pks()
+
+    # Collapse to the most recent flight_id per icao24 — see docstring.
+    latest: dict[str, tuple[datetime, str]] = {}
+    for pk in flight_pks:
+        try:
+            icao24, takeoff_ts = parse_flight_id(pk)
+        except ValueError:
+            logger.warning("foundry_enrichment_bad_flight_id", flight_id=pk)
+            continue
+        current = latest.get(icao24)
+        if current is None or takeoff_ts > current[0]:
+            latest[icao24] = (takeoff_ts, pk)
+
+    logger.info(
+        "foundry_flight_enrichment",
+        tenant_flights=len(flight_pks),
+        candidates=len(latest),
+    )
+
+    flights = []
+    skipped_inactive = 0
+    fetch_failed = 0
+    for icao24, (takeoff_ts, flight_id) in latest.items():
+        try:
+            detail = await client.fetch_flight(icao24)
+            trail = await client.fetch_flight_trail(icao24)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                skipped_inactive += 1
+                continue
+            logger.warning(
+                "foundry_enrichment_fetch_failed",
+                icao24=icao24,
+                status=exc.response.status_code,
+            )
+            fetch_failed += 1
+            continue
+        flights.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, trail))
+
+    batch = await writer.upsert_flight_batch(flights)
+    return FlightEnrichmentResult(
+        tenant_flights=len(flight_pks),
+        candidates=len(latest),
+        enriched=batch.succeeded,
+        skipped_inactive=skipped_inactive,
+        fetch_failed=fetch_failed,
+    )
+
+
 async def run_positions_sync(
     *,
     since: datetime | None = None,
@@ -379,17 +497,35 @@ async def run_aircraft_reconcile() -> ReconcileResult:
             return await reconcile_aircraft(client, writer)
 
 
+async def run_flight_enrichment() -> FlightEnrichmentResult:
+    """Entrypoint the Dagster flight-enrichment asset calls. Skip-guarded.
+
+    Same standalone discipline as the other entrypoints: an absent
+    ``_private/foundry/.env`` or an unreachable endpoint (including a
+    transport failure to the local /v1 API) surfaces as
+    ``FoundrySyncSkipped``, not a crash.
+    """
+    async with guarded_sync("flight_enrichment"):
+        settings = FoundrySettings()
+        async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+            return await enriched_sync_flights(client, writer)
+
+
 __all__ = [
+    "FlightEnrichmentResult",
     "FoundrySyncSkipped",
     "ReconcileResult",
     "SyncResult",
     "Takeoff",
     "TakeoffDetector",
+    "enriched_sync_flights",
     "full_sync_sites",
     "guarded_sync",
     "incremental_sync_positions",
+    "parse_flight_id",
     "reconcile_aircraft",
     "run_aircraft_reconcile",
+    "run_flight_enrichment",
     "run_positions_sync",
     "run_sites_sync",
     "synthesize_flight_id",
