@@ -8,6 +8,7 @@ clients are built from the ``settings`` fixture (conftest).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -682,3 +683,46 @@ async def test_enriched_sync_flights_streams_in_chunks_and_aggregates(
         for r in json.loads(call.request.content)["requests"]
     }
     assert sent == {f"{i}-1700000000" for i in icaos}
+
+
+@respx.mock
+async def test_enriched_sync_flights_fetches_are_concurrent_but_bounded(
+    settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runtime fix: per-flight fetches within a chunk run concurrently,
+    but never more than ``_ENRICHMENT_CONCURRENCY`` in flight at once. With
+    concurrency=2 and a single chunk of 6, the observed peak in-flight count
+    is exactly 2 (>1 proves it is not serial; ==2 proves it is bounded)."""
+    monkeypatch.setattr(_sj, "_ENRICHMENT_CONCURRENCY", 2)
+    monkeypatch.setattr(_sj, "_ENRICHMENT_CHUNK", 100)
+    icaos = [f"a{i:05d}" for i in range(6)]
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"flightId": f"{i}-1700000000"} for i in icaos]}
+        )
+    )
+
+    state = {"in_flight": 0, "peak": 0}
+
+    async def _tracked(_request: httpx.Request) -> httpx.Response:
+        state["in_flight"] += 1
+        state["peak"] = max(state["peak"], state["in_flight"])
+        try:
+            await asyncio.sleep(0.02)
+        finally:
+            state["in_flight"] -= 1
+        return httpx.Response(200, json=_flight_detail("a00000"))
+
+    for i in icaos:
+        respx.get(f"http://api.test/v1/flights/{i}").mock(side_effect=_tracked)
+        respx.get(f"http://api.test/v1/flights/{i}/trail").mock(
+            return_value=httpx.Response(200, json=_TRAIL_JSON)
+        )
+    respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.enriched == 6
+    assert state["peak"] == 2, f"expected bounded peak 2, saw {state['peak']}"
