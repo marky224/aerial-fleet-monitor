@@ -48,8 +48,24 @@ services:
       context: ./api
       dockerfile: Dockerfile
     restart: unless-stopped
-    mem_limit: 512m
-    cpus: 1.0
+    # Raised from 512m/1.0cpu/1-worker: the Flight-enrichment fanout drives
+    # the local API at concurrency 8; a single uvicorn worker serialized
+    # those connects and dropped them (httpx ConnectError "all connection
+    # attempts failed"), which the enrichment job treats as API-down. 3
+    # workers absorb the concurrent /v1/flights+/trail load; the modest
+    # cpu/mem bump keeps the co-resident host tenant in mind (kept small on
+    # purpose — verified empirically, tunable).
+    mem_limit: 768m
+    cpus: 1.5
+    # Mirrors the Dockerfile CMD (keep --proxy-headers / forwarded-allow-ips
+    # for the Cloudflare Tunnel) + --workers for connection concurrency.
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --proxy-headers
+      --forwarded-allow-ips *
+      --workers 3
     env_file:
       - .env
     volumes:
