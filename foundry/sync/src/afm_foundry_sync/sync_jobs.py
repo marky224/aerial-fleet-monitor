@@ -52,7 +52,7 @@ import structlog
 from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
-from afm_foundry_sync.models import Position
+from afm_foundry_sync.models import Flight, Position
 from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
@@ -388,6 +388,14 @@ async def reconcile_aircraft(
     )
 
 
+# Candidates are enriched in chunks of this size: each carries a full 2h
+# trail (~hundreds of points), so an accumulate-all list OOM-killed the
+# 512 MB asset container at ~2k candidates. 50 keeps peak memory ≈ 50
+# enriched Flights + their trails — comfortably inside the cap with
+# headroom — and is well above the per-run candidate count in practice.
+_ENRICHMENT_CHUNK = 50
+
+
 async def enriched_sync_flights(
     client: AfmApiClient,
     writer: FoundryWriter,
@@ -408,6 +416,14 @@ async def enriched_sync_flights(
     ``guarded_sync`` and becomes a clean ``FoundrySyncSkipped`` (the API is
     down, not one bad flight). Upsert-only: no deletes and an empty tenant
     just no-ops, so no empty-feed guard is needed (unlike the reconcile).
+
+    **Streamed in chunks of ``_ENRICHMENT_CHUNK``:** each chunk is fetched,
+    built, upserted and then discarded, so peak memory is bounded to one
+    chunk of enriched Flights (each carrying a full 2h trail) regardless of
+    tenant size. A single accumulate-all list OOM-killed the 512 MB asset
+    container at ~2k candidates. A side benefit: earlier chunks are already
+    persisted in the tenant if a later chunk raises (e.g. a transport
+    failure → ``FoundrySyncSkipped``); the next hourly run carries forward.
     """
     flight_pks = await writer.list_flight_pks()
 
@@ -423,37 +439,41 @@ async def enriched_sync_flights(
         if current is None or takeoff_ts > current[0]:
             latest[icao24] = (takeoff_ts, pk)
 
+    candidates = list(latest.items())
     logger.info(
         "foundry_flight_enrichment",
         tenant_flights=len(flight_pks),
-        candidates=len(latest),
+        candidates=len(candidates),
     )
 
-    flights = []
+    enriched = 0
     skipped_inactive = 0
     fetch_failed = 0
-    for icao24, (takeoff_ts, flight_id) in latest.items():
-        try:
-            detail = await client.fetch_flight(icao24)
-            trail = await client.fetch_flight_trail(icao24)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
-                skipped_inactive += 1
+    for start in range(0, len(candidates), _ENRICHMENT_CHUNK):
+        flights: list[Flight] = []
+        for icao24, (takeoff_ts, flight_id) in candidates[start : start + _ENRICHMENT_CHUNK]:
+            try:
+                detail = await client.fetch_flight(icao24)
+                trail = await client.fetch_flight_trail(icao24)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    skipped_inactive += 1
+                    continue
+                logger.warning(
+                    "foundry_enrichment_fetch_failed",
+                    icao24=icao24,
+                    status=exc.response.status_code,
+                )
+                fetch_failed += 1
                 continue
-            logger.warning(
-                "foundry_enrichment_fetch_failed",
-                icao24=icao24,
-                status=exc.response.status_code,
-            )
-            fetch_failed += 1
-            continue
-        flights.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, trail))
+            flights.append(flight_detail_to_flight(flight_id, takeoff_ts, detail, trail))
+        batch = await writer.upsert_flight_batch(flights)
+        enriched += batch.succeeded
 
-    batch = await writer.upsert_flight_batch(flights)
     return FlightEnrichmentResult(
         tenant_flights=len(flight_pks),
-        candidates=len(latest),
-        enriched=batch.succeeded,
+        candidates=len(candidates),
+        enriched=enriched,
         skipped_inactive=skipped_inactive,
         fetch_failed=fetch_failed,
     )
