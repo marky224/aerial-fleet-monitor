@@ -628,11 +628,52 @@ async def test_enriched_sync_flights_non_404_status_is_counted_not_fatal(
 
 
 @respx.mock
-async def test_enriched_sync_flights_propagates_skip_on_unreachable_api(
+async def test_enriched_sync_flights_per_flight_transport_error_is_counted_not_fatal(
     settings: FoundrySettings,
 ) -> None:
-    # Transport failure (API/Foundry down) is NOT swallowed per-flight — it
-    # bubbles to guarded_sync as a clean skip, same discipline as reconcile.
+    # A transport/timeout error for ONE flight (here: trail ReadTimeout) is
+    # counted as fetch_failed and the pass continues — it must NOT abort the
+    # whole run (the concurrent fanout makes a single transient timeout
+    # near-certain; the old propagate-and-skip meant enrichment never
+    # completed). The healthy flight still enriches.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"flightId": "slow01-1700000000"}, {"flightId": "good01-1700000000"}]},
+        )
+    )
+    respx.get("http://api.test/v1/flights/slow01").mock(
+        return_value=httpx.Response(200, json=_flight_detail("slow01"))
+    )
+    respx.get("http://api.test/v1/flights/slow01/trail").mock(
+        side_effect=httpx.ReadTimeout("trail too slow under load")
+    )
+    respx.get("http://api.test/v1/flights/good01").mock(
+        return_value=httpx.Response(200, json=_flight_detail("good01"))
+    )
+    respx.get("http://api.test/v1/flights/good01/trail").mock(
+        return_value=httpx.Response(200, json=_TRAIL_JSON)
+    )
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.candidates == 2
+    assert result.enriched == 1  # good01 made it despite slow01's timeout
+    assert result.fetch_failed == 1
+    body = json.loads(upsert_route.calls.last.request.content)
+    assert {r["parameters"]["flightId"] for r in body["requests"]} == {"good01-1700000000"}
+
+
+@respx.mock
+async def test_enriched_sync_flights_propagates_skip_on_unreachable_foundry(
+    settings: FoundrySettings,
+) -> None:
+    # Foundry-side I/O failure (here: list_flight_pks ConnectError) is still
+    # NOT swallowed — the tenant being unreachable *is* a skip; it bubbles to
+    # guarded_sync as a clean FoundrySyncSkipped. (Per-flight AFM-API
+    # transport errors are tolerated; Foundry I/O is not — see _enrich_one.)
     respx.get(_FLIGHT_OBJECTS_URL).mock(side_effect=httpx.ConnectError("refused"))
 
     with pytest.raises(FoundrySyncSkipped, match="unreachable"):
