@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 from afm_foundry_sync.sync_jobs import (
+    FlightEnrichmentResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
@@ -184,3 +185,53 @@ def test_real_defect_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(RuntimeError, match="malformed action payload"):
         foundry_sync.foundry_positions_sync(build_asset_context())
+
+
+def test_flight_enrichment_skip_is_a_materialization_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise() -> FlightEnrichmentResult:
+        raise FoundrySyncSkipped("flight_enrichment: foundry config absent")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_enrichment", _raise)
+
+    result = foundry_sync.foundry_flight_enrichment(build_asset_context())
+
+    assert isinstance(result, MaterializeResult)
+    assert (result.metadata or {})["skip_reason"].value == (
+        "flight_enrichment: foundry config absent"
+    )
+
+
+def test_flight_enrichment_success_surfaces_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok() -> FlightEnrichmentResult:
+        return FlightEnrichmentResult(
+            tenant_flights=50,
+            candidates=30,
+            enriched=27,
+            skipped_inactive=2,
+            fetch_failed=1,
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_flight_enrichment", _ok)
+
+    md = foundry_sync.foundry_flight_enrichment(build_asset_context()).metadata or {}
+    assert md["tenant_flights"].value == 50
+    assert md["candidates"].value == 30
+    assert md["enriched"].value == 27
+    assert md["skipped_inactive"].value == 2
+    assert md["fetch_failed"].value == 1
+
+
+def test_flight_enrichment_real_defect_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _bug() -> FlightEnrichmentResult:
+        raise RuntimeError("malformed flight upsert payload")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_enrichment", _bug)
+
+    with pytest.raises(RuntimeError, match="malformed flight upsert payload"):
+        foundry_sync.foundry_flight_enrichment(build_asset_context())

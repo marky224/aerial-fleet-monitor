@@ -2,6 +2,7 @@
 
 from pipelines.assets.foundry_sync import (
     foundry_aircraft_reconcile,
+    foundry_flight_enrichment,
     foundry_positions_sync,
     foundry_sites_sync,
 )
@@ -11,6 +12,7 @@ from pipelines.assets.reference import static_reference
 
 __all__ = [
     "foundry_aircraft_reconcile",
+    "foundry_flight_enrichment",
     "foundry_positions_sync",
     "foundry_sites_sync",
     "noaa_weather",

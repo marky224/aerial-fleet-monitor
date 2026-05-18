@@ -343,3 +343,26 @@ class FoundryWriter:
         return await self._apply_batch(
             self._action_delete_aircraft, [{"Aircraft": pk} for pk in icao24s]
         )
+
+    async def list_flight_pks(self) -> set[str]:
+        """Return the flight_id primary key of every Flight object in the tenant.
+
+        Paginates ``GET .../objects/Flight`` (pageSize ``_OBJECTS_PAGE_SIZE``,
+        following ``nextPageToken``) — the exact pattern of
+        ``list_aircraft_pks``. Each row exposes the PK as the ``flightId``
+        property; ``__primaryKey`` is the documented fallback. The
+        Flight-enrichment job iterates this to backfill the create-only
+        takeoff Flights from ``/v1/flights``. Read-only — no Action applied.
+        """
+        pks: set[str] = set()
+        page_token: str | None = None
+        while True:
+            body = await self._get_objects_page("Flight", page_token)
+            for obj in body.get("data", []):
+                pk = obj.get("flightId") or obj.get("__primaryKey")
+                if pk:
+                    pks.add(str(pk))
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        return pks
