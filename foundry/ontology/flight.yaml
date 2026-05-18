@@ -145,6 +145,19 @@ properties:
       Foundry-native geopoint derived from (lat, lon) by ontology_writers.py
       at write time; null until the first enrichment supplies a position.
       The Flight Detail Workshop app binds to this field.
+  trail_path:
+    type: geoshape
+    nullable: true
+    description: |
+      Foundry-native GeoShape (GeoJSON LineString, [lon, lat] order)
+      derived from trail_2h by ontology_writers._linestring at write time —
+      the same write-time-geo pattern as `position`. NULL until enrichment
+      supplies a trail with >= 2 points (a LineString needs two positions;
+      a 0/1-point trail omits the param). The Flight Detail Workshop app
+      §3.3 polyline binds to THIS field, not trail_2h: trail_2h is a
+      JSON-encoded `string` (the raw points, kept for non-map consumers)
+      and a string cannot drive a Vortex map layer. Tenant apiName
+      (camelCase, like every property): `trailPath`.
 
   # ---- Open cases (Phase 05; mirrors Site.active_case_count pattern) ----
   open_case_count:

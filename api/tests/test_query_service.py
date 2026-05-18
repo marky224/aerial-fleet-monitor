@@ -228,6 +228,111 @@ def test_get_flight_trail_since_takeoff_caps_at_6h(
     assert "'6 hours'" in sql_arg
 
 
+# === get_flight_trails_batch ===
+
+
+def test_get_flight_trails_batch_groups_one_response_per_icao24(
+    query_service: QueryService,
+    mock_postgres: MagicMock,
+    mock_lakehouse: MagicMock,
+    internal_scope: Scope,
+) -> None:
+    mock_postgres.fetchall.return_value = []  # none in current_positions → all allowed
+    now = datetime.now(UTC)
+    # One ordered scan, two aircraft contiguous (ORDER BY icao24, ts_polled).
+    mock_lakehouse.query_stream.return_value = iter(
+        [
+            {
+                "icao24": "aaa111",
+                "ts": now,
+                "lat": 1.0,
+                "lon": 2.0,
+                "altitude_ft": 100,
+                "speed_kt": 9,
+            },
+            {
+                "icao24": "aaa111",
+                "ts": now,
+                "lat": 1.1,
+                "lon": 2.1,
+                "altitude_ft": 110,
+                "speed_kt": 9,
+            },
+            {
+                "icao24": "bbb222",
+                "ts": now,
+                "lat": 3.0,
+                "lon": 4.0,
+                "altitude_ft": 200,
+                "speed_kt": 8,
+            },
+        ]
+    )
+
+    out = list(
+        query_service.get_flight_trails_batch(
+            scope=internal_scope, icao24s=["aaa111", "bbb222"], lookback="4h"
+        )
+    )
+
+    assert [(t.icao24, t.point_count) for t in out] == [("aaa111", 2), ("bbb222", 1)]
+    assert all(t.lookback == "4h" for t in out)
+    sql_arg = mock_lakehouse.query_stream.call_args[0][0]
+    assert "list_contains($icao24s, icao24)" in sql_arg
+    assert "'4 hours'" in sql_arg
+    assert mock_lakehouse.query_stream.call_args.kwargs["icao24s"] == ["aaa111", "bbb222"]
+
+
+def test_get_flight_trails_batch_filters_out_of_scope_not_raises(
+    query_service: QueryService,
+    mock_postgres: MagicMock,
+    mock_lakehouse: MagicMock,
+    west_scope: Scope,
+) -> None:
+    # 'east1' is east-region → filtered for a west scope (no 403); 'westy1'
+    # is west → kept; 'agedo1' absent from current_positions → allowed.
+    mock_postgres.fetchall.return_value = [
+        {"icao24": "east1", "customer_region": "east"},
+        {"icao24": "westy1", "customer_region": "west"},
+    ]
+    mock_lakehouse.query_stream.return_value = iter(
+        [
+            {
+                "icao24": "westy1",
+                "ts": datetime.now(UTC),
+                "lat": 1.0,
+                "lon": 2.0,
+                "altitude_ft": None,
+                "speed_kt": None,
+            }
+        ]
+    )
+
+    out = list(
+        query_service.get_flight_trails_batch(
+            scope=west_scope, icao24s=["east1", "westy1", "agedo1"], lookback="2h"
+        )
+    )
+
+    assert [t.icao24 for t in out] == ["westy1"]
+    # The scan is asked only for the in-scope/allowed subset.
+    assert sorted(mock_lakehouse.query_stream.call_args.kwargs["icao24s"]) == ["agedo1", "westy1"]
+
+
+def test_get_flight_trails_batch_no_allowed_skips_scan_entirely(
+    query_service: QueryService,
+    mock_postgres: MagicMock,
+    mock_lakehouse: MagicMock,
+    west_scope: Scope,
+) -> None:
+    mock_postgres.fetchall.return_value = [{"icao24": "east1", "customer_region": "east"}]
+    out = list(
+        query_service.get_flight_trails_batch(scope=west_scope, icao24s=["east1"], lookback="2h")
+    )
+    assert out == []
+    mock_lakehouse.query_stream.assert_not_called()
+
+
 # === list_sites ===
 
 
