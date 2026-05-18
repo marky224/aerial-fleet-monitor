@@ -24,9 +24,11 @@ from afm_foundry_sync.sync_jobs import (
     FoundrySyncSkipped,
     TakeoffDetector,
     _dedupe_latest,
+    enriched_sync_flights,
     full_sync_sites,
     guarded_sync,
     incremental_sync_positions,
+    parse_flight_id,
     reconcile_aircraft,
     synthesize_flight_id,
 )
@@ -457,3 +459,184 @@ async def test_reconcile_propagates_skip_on_unreachable_api(
             FoundryWriter(settings) as writer,
         ):
             await reconcile_aircraft(client, writer)
+
+
+# ---------------------------------------------------------------------------
+# Flight enrichment (deferred FlightDetail/trail backfill)
+# ---------------------------------------------------------------------------
+
+_FLIGHT_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Flight"
+
+
+def _flight_detail(icao24: str) -> dict:  # type: ignore[type-arg]
+    return {
+        "icao24": icao24,
+        "callsign": "UAL1234",
+        "registration": "N12345",
+        "aircraft_type": "B738",
+        "operator_icao": "UAL",
+        "origin_icao": "KSFO",
+        "destination_icao": "KLAX",
+        "customer_region": "west",
+        "position": {
+            "icao24": icao24,
+            "callsign": "UAL1234",
+            "lat": 37.6,
+            "lon": -122.3,
+            "altitude_ft": 12000,
+            "speed_kt": 300,
+            "heading_deg": 270,
+            "vertical_rate_fpm": 0,
+            "on_ground": False,
+            "customer_region": "west",
+            "last_seen_at": "2026-05-15T12:00:00Z",
+            "staleness": "fresh",
+        },
+        "eta_minutes": 25,
+        "status_timeline": [],
+        "open_case_ids": [],
+    }
+
+
+_TRAIL_JSON: dict = {  # type: ignore[type-arg]
+    "icao24": "x",
+    "points": [],
+    "lookback": "2h",
+    "point_count": 0,
+}
+
+
+@pytest.mark.parametrize(
+    "icao24, ts",
+    [("abc123", _T1), ("a0b1c2", datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))],
+)
+def test_parse_flight_id_roundtrips_synthesize(icao24: str, ts: datetime) -> None:
+    fid = synthesize_flight_id(icao24, ts)
+    got_icao, got_ts = parse_flight_id(fid)
+    assert got_icao == icao24
+    # synthesize truncates to whole seconds; compare on the unix int.
+    assert int(got_ts.timestamp()) == int(ts.timestamp())
+
+
+@pytest.mark.parametrize("bad", ["noseparator", "-1700", "abc123-", "abc123-notanint"])
+def test_parse_flight_id_rejects_malformed(bad: str) -> None:
+    with pytest.raises(ValueError):
+        parse_flight_id(bad)
+
+
+@respx.mock
+async def test_enriched_sync_flights_enriches_only_latest_per_icao24(
+    settings: FoundrySettings,
+) -> None:
+    # Tenant carries an OLD and a NEW flight_id for abc123 + one for def456
+    # + a malformed PK that must be dropped (not crash).
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"flightId": "abc123-1700000000"},  # old
+                    {"flightId": "abc123-1700003600"},  # newer → the target
+                    {"flightId": "def456-1700000500"},
+                    {"flightId": "garbage"},  # malformed → dropped
+                ]
+            },
+        )
+    )
+    abc_route = respx.get("http://api.test/v1/flights/abc123").mock(
+        return_value=httpx.Response(200, json=_flight_detail("abc123"))
+    )
+    def_route = respx.get("http://api.test/v1/flights/def456").mock(
+        return_value=httpx.Response(200, json=_flight_detail("def456"))
+    )
+    respx.get("http://api.test/v1/flights/abc123/trail").mock(
+        return_value=httpx.Response(200, json=_TRAIL_JSON)
+    )
+    respx.get("http://api.test/v1/flights/def456/trail").mock(
+        return_value=httpx.Response(200, json=_TRAIL_JSON)
+    )
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.tenant_flights == 4
+    assert result.candidates == 2  # abc123 (newest only) + def456
+    assert result.enriched == 2
+    assert (result.skipped_inactive, result.fetch_failed) == (0, 0)
+    assert abc_route.call_count == 1  # the OLD abc123 PK was NOT fetched
+    assert def_route.call_count == 1
+    body = json.loads(upsert_route.calls.last.request.content)
+    sent_ids = {r["parameters"]["flightId"] for r in body["requests"]}
+    assert sent_ids == {"abc123-1700003600", "def456-1700000500"}
+    assert "abc123-1700000000" not in sent_ids  # the superseded PK is untouched
+
+
+@respx.mock
+async def test_enriched_sync_flights_skips_inactive_404(
+    settings: FoundrySettings,
+) -> None:
+    # /v1/flights 404s when the aircraft is outside the recency window —
+    # nothing to enrich for that flight; counted, not failed, not upserted.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"flightId": "dead01-1700000000"}]})
+    )
+    respx.get("http://api.test/v1/flights/dead01").mock(return_value=httpx.Response(404))
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert (result.candidates, result.enriched) == (1, 0)
+    assert result.skipped_inactive == 1
+    assert result.fetch_failed == 0
+    assert not upsert_route.called  # empty batch → no HTTP
+
+
+@respx.mock
+async def test_enriched_sync_flights_non_404_status_is_counted_not_fatal(
+    settings: FoundrySettings,
+) -> None:
+    # One icao24 500s after retry; it is counted as fetch_failed and the
+    # pass continues so a single bad flight cannot sink the batch.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"flightId": "bad999-1700000000"}, {"flightId": "ok0001-1700000000"}]},
+        )
+    )
+    respx.get("http://api.test/v1/flights/bad999").mock(return_value=httpx.Response(500))
+    respx.get("http://api.test/v1/flights/ok0001").mock(
+        return_value=httpx.Response(200, json=_flight_detail("ok0001"))
+    )
+    respx.get("http://api.test/v1/flights/ok0001/trail").mock(
+        return_value=httpx.Response(200, json=_TRAIL_JSON)
+    )
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.candidates == 2
+    assert result.enriched == 1  # only ok0001 made it
+    assert result.fetch_failed == 1
+    assert upsert_route.called
+    body = json.loads(upsert_route.calls.last.request.content)
+    assert {r["parameters"]["flightId"] for r in body["requests"]} == {"ok0001-1700000000"}
+
+
+@respx.mock
+async def test_enriched_sync_flights_propagates_skip_on_unreachable_api(
+    settings: FoundrySettings,
+) -> None:
+    # Transport failure (API/Foundry down) is NOT swallowed per-flight — it
+    # bubbles to guarded_sync as a clean skip, same discipline as reconcile.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+    with pytest.raises(FoundrySyncSkipped, match="unreachable"):
+        async with (
+            guarded_sync("flight_enrichment"),
+            AfmApiClient(settings) as client,
+            FoundryWriter(settings) as writer,
+        ):
+            await enriched_sync_flights(client, writer)

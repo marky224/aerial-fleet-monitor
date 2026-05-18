@@ -34,6 +34,7 @@ from dagster import (
 
 from pipelines.assets import (
     foundry_aircraft_reconcile,
+    foundry_flight_enrichment,
     foundry_positions_sync,
     foundry_sites_sync,
     noaa_weather,
@@ -90,6 +91,11 @@ prune_stale_positions_job = define_asset_job(
 foundry_aircraft_reconcile_job = define_asset_job(
     name="foundry_aircraft_reconcile_job",
     selection=AssetSelection.assets(foundry_aircraft_reconcile),
+)
+
+foundry_flight_enrichment_job = define_asset_job(
+    name="foundry_flight_enrichment_job",
+    selection=AssetSelection.assets(foundry_flight_enrichment),
 )
 
 
@@ -177,6 +183,22 @@ foundry_aircraft_reconcile_schedule = ScheduleDefinition(
 )
 
 
+foundry_flight_enrichment_schedule = ScheduleDefinition(
+    name="foundry_flight_enrichment_schedule",
+    job=foundry_flight_enrichment_job,
+    # :30 past the hour — offset from the top-of-hour reconcile + prune so
+    # the per-icao24 /v1/flights fanout never runs alongside the eviction
+    # pass (and the tenant Flight set it reads is post-reconcile-stable).
+    cron_schedule="30 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :30: backfill route/operator/registration/status + 2h "
+        "trail onto the create-only takeoff Flight objects from /v1/flights."
+    ),
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -185,6 +207,7 @@ defs = Definitions(
         foundry_positions_sync,
         foundry_sites_sync,
         foundry_aircraft_reconcile,
+        foundry_flight_enrichment,
         prune_stale_positions,
     ],
     jobs=[
@@ -194,6 +217,7 @@ defs = Definitions(
         foundry_positions_sync_job,
         foundry_sites_sync_job,
         foundry_aircraft_reconcile_job,
+        foundry_flight_enrichment_job,
         prune_stale_positions_job,
     ],
     schedules=[
@@ -201,6 +225,7 @@ defs = Definitions(
         static_reference_schedule,
         foundry_sites_sync_schedule,
         foundry_aircraft_reconcile_schedule,
+        foundry_flight_enrichment_schedule,
         prune_stale_positions_schedule,
     ],
     sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],

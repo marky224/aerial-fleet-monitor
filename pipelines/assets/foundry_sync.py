@@ -10,6 +10,12 @@ Ontology forever — this evicts the Aircraft objects whose icao24 is no
 longer in the live feed (with an empty-live safety guard; see
 ``afm_foundry_sync.sync_jobs.reconcile_aircraft``). It mirrors the
 ``prune_stale_positions`` (Fix B) pattern on the Foundry side.
+``foundry_flight_enrichment`` (hourly, offset to :30 so it does not
+collide with the top-of-hour reconcile): the takeoff path writes Flight
+objects with only their synthesized identity, so this backfills
+route/operator/registration/status + 2h trail from ``/v1/flights`` for
+the latest flight per icao24 (see
+``afm_foundry_sync.sync_jobs.enriched_sync_flights``).
 
 Both assets are an **independent failure domain** from the rest of the
 pipeline: AFM's local stack must run with Foundry creds absent or Foundry
@@ -33,8 +39,8 @@ ticks but a per-process instance would reset on restart and miss every
 cross-restart edge, so its on-ground map is persisted to this asset's
 materialization metadata (same mechanism as the cursor, stored as a JSON
 string) and a fresh ``TakeoffDetector`` is seeded from it each run.
-FlightDetail enrichment is deferred (a per-icao24 fanout off a slower
-cadence — out of scope for the 30s tick).
+FlightDetail enrichment runs out-of-band in ``foundry_flight_enrichment``
+(the per-icao24 ``/v1/flights`` fanout — out of scope for the 30s tick).
 """
 
 import asyncio
@@ -42,11 +48,13 @@ import json
 from datetime import datetime
 
 from afm_foundry_sync.sync_jobs import (
+    FlightEnrichmentResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
     TakeoffDetector,
     run_aircraft_reconcile,
+    run_flight_enrichment,
     run_positions_sync,
     run_sites_sync,
 )
@@ -186,3 +194,39 @@ def foundry_aircraft_reconcile(context: AssetExecutionContext) -> MaterializeRes
             result.deleted,
         )
     return MaterializeResult(metadata=_reconcile_metadata(result))
+
+
+def _enrichment_metadata(result: FlightEnrichmentResult) -> dict[str, MetadataValue]:
+    return {
+        "tenant_flights": MetadataValue.int(result.tenant_flights),
+        "candidates": MetadataValue.int(result.candidates),
+        "enriched": MetadataValue.int(result.enriched),
+        "skipped_inactive": MetadataValue.int(result.skipped_inactive),
+        "fetch_failed": MetadataValue.int(result.fetch_failed),
+    }
+
+
+@asset(
+    group_name="foundry_sync",
+    description=(
+        "Backfills route/operator/registration/status + 2h trail onto the "
+        "create-only takeoff Flight objects from /v1/flights (latest flight "
+        "per icao24)."
+    ),
+    metadata={"target": "Foundry Ontology: Flight", "cadence": "hourly"},
+)
+def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResult:
+    try:
+        result = asyncio.run(run_flight_enrichment())
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    context.log.info(
+        "flight enrichment: tenant=%d candidates=%d enriched=%d "
+        "skipped_inactive=%d fetch_failed=%d",
+        result.tenant_flights,
+        result.candidates,
+        result.enriched,
+        result.skipped_inactive,
+        result.fetch_failed,
+    )
+    return MaterializeResult(metadata=_enrichment_metadata(result))
