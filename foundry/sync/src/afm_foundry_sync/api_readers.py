@@ -81,7 +81,17 @@ class AfmApiClient:
 
     async def fetch_positions_live(self) -> PositionsLiveResponse:
         data = await self._get_json("/v1/positions/live")
-        return PositionsLiveResponse.model_validate(data)
+        result = PositionsLiveResponse.model_validate(data)
+        if result.truncated:
+            # The API clipped the in-scope live set at its safety ceiling, so
+            # this snapshot — and therefore the tenant sync derived from it —
+            # is incomplete. Not retryable; surface it loudly for the operator.
+            logger.warning(
+                "positions_live_truncated_upstream",
+                count=result.count,
+                hint="AFM API clipped the live set; tenant Aircraft will be incomplete this cycle",
+            )
+        return result
 
     async def fetch_flight(self, icao24: str) -> FlightDetail:
         data = await self._get_json(f"/v1/flights/{icao24}")
