@@ -72,3 +72,12 @@ class PositionsLiveResponse(BaseModel):
     count: int = Field(description="Length of `items` (mirrors API.md §1.5 list convention).")
     server_time: datetime = Field(description="Server clock at response-build time, in UTC.")
     pipeline_lag_seconds: int = Field(description="Seconds since the last successful OpenSky poll.")
+    truncated: bool = Field(
+        default=False,
+        description=(
+            "True when the in-scope live set exceeded the server's safety "
+            "ceiling and `items` is the freshest slice rather than the "
+            "complete snapshot. False in normal operation; consumers that "
+            "need completeness (e.g. the Foundry sync) should alert on True."
+        ),
+    )

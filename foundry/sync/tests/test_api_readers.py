@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 import respx
+import structlog
 from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
@@ -156,6 +157,24 @@ async def test_fetch_positions_live(settings: FoundrySettings) -> None:
     assert result.count == 1
     assert result.items[0].icao24 == "a12345"
     assert result.pipeline_lag_seconds == 5
+    assert result.truncated is False
+
+
+@respx.mock
+async def test_fetch_positions_live_truncated_logs_warning(settings: FoundrySettings) -> None:
+    """A truncated upstream snapshot passes the flag through and is
+    surfaced as a WARNING — the derived tenant sync is incomplete."""
+    respx.get("http://api.test/v1/positions/live").mock(
+        return_value=httpx.Response(200, json={**_POSITIONS_LIVE, "truncated": True})
+    )
+    with structlog.testing.capture_logs() as logs:
+        async with AfmApiClient(settings) as client:
+            result = await client.fetch_positions_live()
+    assert result.truncated is True
+    assert any(
+        e["event"] == "positions_live_truncated_upstream" and e["log_level"] == "warning"
+        for e in logs
+    )
 
 
 @respx.mock
