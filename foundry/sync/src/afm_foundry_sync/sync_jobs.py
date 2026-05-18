@@ -390,14 +390,10 @@ async def reconcile_aircraft(
 
 # Candidates are enriched in chunks of this size: each carries a full 2h
 # trail (~hundreds of points), so an accumulate-all list OOM-killed the
-# 512 MB asset container at ~2k candidates. Chunked streaming fixed the
-# unbounded growth, but a live run at chunk=50 sawtoothed to ~99% of the
-# 512 MB cap (~400 MB resident baseline + ~100 MB per in-flight chunk) —
-# bounded, but no safe headroom for a heavier-than-average chunk on an
-# every-:30 job. 20 keeps each chunk's transient footprint ≈ 2.5x smaller,
-# restoring real margin under the cap while staying well above the
-# per-run candidate count in practice.
-_ENRICHMENT_CHUNK = 20
+# 512 MB asset container at ~2k candidates. 50 keeps peak memory ≈ 50
+# enriched Flights + their trails — comfortably inside the cap with
+# headroom — and is well above the per-run candidate count in practice.
+_ENRICHMENT_CHUNK = 50
 
 
 async def enriched_sync_flights(
