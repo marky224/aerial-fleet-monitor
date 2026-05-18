@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+
 from app.exceptions import NotFoundError, ScopeViolation
 from app.models.common import (
     FlightCategory,
@@ -59,6 +61,17 @@ TRAIL_INTERVALS: dict[TrailLookback, str] = {
 # The companion `prune_stale_positions` Dagster job bounds the table
 # itself; this filter guarantees the contract even between prunes.
 LIVE_POSITION_WINDOW = "15 minutes"
+
+# Hard safety ceiling on a single /v1/positions/live snapshot. This is an
+# implementation guardrail (bounds memory + response size), NOT a spec'd
+# page size — API.md §3.1 contracts this endpoint to return *all* in-scope
+# live aircraft. Real US airborne traffic is single-digit thousands, so
+# 50k is generous headroom; if it is ever exceeded the response carries
+# `truncated=True` and a WARNING is logged, so the clip is observable
+# instead of silent (the prior behaviour: a bare `LIMIT 10000`).
+LIVE_POSITION_CEILING = 50_000
+
+logger = structlog.get_logger(__name__)
 
 
 def _compute_staleness(last_seen_at: datetime, now: datetime) -> Staleness:
@@ -147,10 +160,23 @@ class QueryService:
             FROM app.current_positions
             WHERE {where_sql}
             ORDER BY last_seen_at DESC
-            LIMIT 10000
+            LIMIT %(ceiling_probe)s
             """,
-            params,
+            {**params, "ceiling_probe": LIVE_POSITION_CEILING + 1},
         )
+
+        # Fetch one row past the ceiling so a full result is distinguishable
+        # from a clipped one. ORDER BY last_seen_at DESC means the dropped
+        # tail is the *oldest* rows — we keep the freshest CEILING.
+        truncated = len(rows) > LIVE_POSITION_CEILING
+        if truncated:
+            rows = rows[:LIVE_POSITION_CEILING]
+            logger.warning(
+                "positions_live_truncated",
+                ceiling=LIVE_POSITION_CEILING,
+                region=effective_region,
+                has_bbox=bbox is not None,
+            )
 
         now = datetime.now(UTC)
         positions = [
@@ -163,6 +189,7 @@ class QueryService:
             count=len(positions),
             server_time=now,
             pipeline_lag_seconds=pipeline_lag_seconds,
+            truncated=truncated,
         )
 
     # === Flights ===

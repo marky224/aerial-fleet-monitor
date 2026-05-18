@@ -56,6 +56,11 @@ class PositionsLiveResponse(BaseModel):
     count: int
     server_time: datetime
     pipeline_lag_seconds: int
+    # True when the API clipped the in-scope live set at its safety ceiling
+    # (API.md §3.1). The sync mirrors `/v1` faithfully, so a True here means
+    # the tenant snapshot is incomplete — surfaced as a WARNING in the reader.
+    # Defaulted for backward-compat with responses predating the field.
+    truncated: bool = False
 
 
 # ---------------------------------------------------------------------------

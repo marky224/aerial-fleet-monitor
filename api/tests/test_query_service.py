@@ -1,7 +1,8 @@
 """QueryService unit tests with mocked PostgresPool + LakehouseQuery.
 
 Covers each method's happy path plus the error/scope branches:
-  - list_live_positions: bbox filter, region scope-violation, empty result
+  - list_live_positions: bbox filter, region scope-violation, empty result,
+    safety-ceiling truncation flag
   - get_flight: NotFoundError, ScopeViolation, joined-registry happy path
   - get_flight_trail: interval mapping, scope check via current_positions
   - list_sites: is_in_scope projection, region scope-violation
@@ -16,14 +17,15 @@ derived-field composition, and response-shape construction.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.exceptions import NotFoundError, ScopeViolation
 from app.models.common import Scope
-from app.services.query_service import QueryService
+from app.services import query_service as qs
+from app.services.query_service import LIVE_POSITION_CEILING, QueryService
 
 
 def _position_row(
@@ -99,6 +101,42 @@ def test_list_live_positions_empty_result(
     mock_postgres.fetchall.return_value = []
     result = query_service.list_live_positions(scope=internal_scope)
     assert result.count == 0
+
+
+def test_list_live_positions_not_truncated_by_default(
+    query_service: QueryService, mock_postgres: MagicMock, internal_scope: Scope
+) -> None:
+    """A normal-sized result is never flagged truncated, and the probe
+    LIMIT is ceiling + 1 (one row past the ceiling, to detect a clip)."""
+    mock_postgres.fetchall.return_value = [_position_row()]
+    result = query_service.list_live_positions(scope=internal_scope)
+    assert result.truncated is False
+    _, params = mock_postgres.fetchall.call_args[0]
+    assert params["ceiling_probe"] == LIVE_POSITION_CEILING + 1
+
+
+def test_list_live_positions_truncated_when_ceiling_exceeded(
+    query_service: QueryService,
+    mock_postgres: MagicMock,
+    internal_scope: Scope,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One row past the ceiling → clipped to the ceiling, the *oldest*
+    row dropped (SELECT is ORDER BY last_seen_at DESC), truncated=True."""
+    monkeypatch.setattr(qs, "LIVE_POSITION_CEILING", 3)
+    now = datetime.now(UTC)
+    # 4 rows, newest → oldest, as the DESC-ordered query would return them.
+    mock_postgres.fetchall.return_value = [
+        _position_row(icao24=f"a0000{i}", last_seen_at=now - timedelta(seconds=i)) for i in range(4)
+    ]
+
+    result = query_service.list_live_positions(scope=internal_scope)
+
+    assert result.truncated is True
+    assert result.count == 3
+    assert [p.icao24 for p in result.items] == ["a00000", "a00001", "a00002"]
+    _, params = mock_postgres.fetchall.call_args[0]
+    assert params["ceiling_probe"] == 4
     assert result.pipeline_lag_seconds == 0
 
 
