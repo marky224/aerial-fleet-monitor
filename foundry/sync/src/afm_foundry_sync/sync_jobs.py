@@ -141,9 +141,10 @@ class FlightEnrichmentResult:
     confirmed upsert count (== candidates - skipped - failed on full
     success); ``skipped_inactive`` 404'd (aircraft not currently flying —
     nothing to enrich, not an error); ``fetch_failed`` hit a non-404 HTTP
-    *status* error for one icao24 (counted, the pass continues so one bad
-    flight can't sink the batch; a transport/connection failure instead
-    propagates as ``FoundrySyncSkipped`` — the whole API is down).
+    *status* error **or** a transport/timeout error for one icao24 (counted,
+    the pass continues so one bad/slow flight can't sink the batch; a total
+    API outage just makes every flight ``fetch_failed`` — a safe, observable
+    no-op. Foundry-side I/O failure still surfaces as ``FoundrySyncSkipped``).
     """
 
     tenant_flights: int
@@ -400,13 +401,16 @@ _ENRICHMENT_CHUNK = 50
 # Per-flight fetches (fetch_flight + fetch_flight_trail) inside a chunk run
 # concurrently behind this semaphore. Serial awaits were the runtime defect:
 # ~3.4k candidates x ~0.86 s per active-flight trail fetch is ~26 min on a
-# healthy upstream (far worse — never completing — under upstream stress,
-# lapping the hourly schedule). The work is network-bound, so concurrency
-# collapses it ~Nx (~3-4 min at 8). Kept modest on purpose: /v1/flights
-# proxies a rate-limited upstream that returns 5xx under burst (observed at
-# concurrency 20); 8 is comfortably below that, and the existing
-# ``transient_retry`` absorbs the occasional 429/5xx.
-_ENRICHMENT_CONCURRENCY = 8
+# healthy upstream (far worse — never completing — lapping the hourly
+# schedule). The work is network-bound, so concurrency collapses it ~Nx
+# (~5-7 min at 4). Lowered 8→4: the /v1/flights/{id}/trail endpoint (2h
+# history) is heavy, and at 8 concurrent it ReadTimeout'd the API under
+# load; 4 keeps the API within its read-timeout while still well under the
+# hourly cadence. A per-flight timeout no longer aborts the pass anyway
+# (counted as ``fetch_failed`` — see ``_enrich_one``); this just keeps the
+# failure rate low. ``transient_retry`` still absorbs the occasional
+# 429/5xx.
+_ENRICHMENT_CONCURRENCY = 4
 
 
 async def enriched_sync_flights(
@@ -425,10 +429,13 @@ async def enriched_sync_flights(
     parsed from the PK). A 404 means the aircraft isn't currently flying —
     nothing to enrich (``skipped_inactive``, not failed). A non-404 status
     error for one icao24 is counted and skipped so it can't sink the batch;
-    a transport/connection failure is *not* caught here — it bubbles to
-    ``guarded_sync`` and becomes a clean ``FoundrySyncSkipped`` (the API is
-    down, not one bad flight). Upsert-only: no deletes and an empty tenant
-    just no-ops, so no empty-feed guard is needed (unlike the reconcile).
+    a transport/timeout failure for one icao24 is *also* counted (``failed``)
+    and skipped — under the concurrent fanout a single transient timeout is
+    near-certain, so letting one abort the whole pass meant enrichment never
+    completed (see ``_enrich_one``). Foundry-side I/O still bubbles to
+    ``guarded_sync`` → ``FoundrySyncSkipped`` (the tenant being unreachable
+    *is* a skip). Upsert-only: no deletes and an empty tenant just no-ops,
+    so no empty-feed guard is needed (unlike the reconcile).
 
     **Streamed in chunks of ``_ENRICHMENT_CHUNK``:** each chunk is fetched,
     built, upserted and then discarded, so peak memory is bounded to one
@@ -474,11 +481,21 @@ async def enriched_sync_flights(
     async def _enrich_one(
         icao24: str, takeoff_ts: datetime, flight_id: str
     ) -> tuple[str, Flight | None]:
-        """Fetch+build one Flight. Returns a tagged outcome; never raises an
-        ``HTTPStatusError`` (404 → ``inactive``, other 4xx/5xx → ``failed``,
-        both counted, the pass continues). A *transport* failure is NOT
-        caught — it propagates out of ``gather`` → ``guarded_sync`` →
-        ``FoundrySyncSkipped`` (the API is down, not one bad flight).
+        """Fetch+build one Flight. Returns a tagged outcome; never raises a
+        per-flight HTTP error. 404 → ``inactive``; other 4xx/5xx → ``failed``;
+        a *transport/timeout* error (``ConnectError``/``ReadTimeout``/… —
+        anything in ``httpx.HTTPError`` that isn't a status error) → also
+        ``failed``, **counted, the pass continues**. Rationale: with the
+        concurrent fanout over ~thousands of candidates against a
+        rate/latency-bounded upstream, a *single* transient timeout is
+        near-certain per run; letting one abort the whole pass (the prior
+        propagate-to-``guarded_sync`` behaviour) meant enrichment never
+        completed. A genuine total outage simply makes *every* flight fail
+        → ``enriched=0``/``fetch_failed=candidates``, which is observable in
+        the materialization metadata and a safe no-op (no crash, no bad
+        data). Foundry-side I/O (``list_flight_pks``/``upsert_flight_batch``,
+        outside this helper) still bubbles to ``guarded_sync`` →
+        ``FoundrySyncSkipped`` — the tenant being unreachable *is* a skip.
         """
         async with semaphore:
             try:
@@ -491,6 +508,15 @@ async def enriched_sync_flights(
                     "foundry_enrichment_fetch_failed",
                     icao24=icao24,
                     status=exc.response.status_code,
+                )
+                return "failed", None
+            except httpx.HTTPError as exc:
+                # Transport/timeout for ONE flight — count and continue;
+                # must not sink the whole pass (see docstring).
+                logger.warning(
+                    "foundry_enrichment_fetch_failed",
+                    icao24=icao24,
+                    error=type(exc).__name__,
                 )
                 return "failed", None
             return "ok", flight_detail_to_flight(flight_id, takeoff_ts, detail, trail)
