@@ -1,17 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
     <label>AFM East Coast Customer</label>
-    <description>East Coast customer read-only access. Carries AFM_Region_East for the AFM JWT scope claim. No Apex/LWC/Console — customers use the dashboard only.</description>
+    <!-- Case access intentionally omitted: Salesforce Platform license disallows Case,
+         and per SALESFORCE.md §5.3 customer users never open the SF Console — the
+         Permission Set exists primarily to populate the AFM JWT scope claim. -->
+    <description>East Coast customer read-only. Carries AFM_Region_East for the AFM JWT scope claim. Dashboard-only — no SF Case access (Platform license).</description>
     <hasActivationRequired>false</hasActivationRequired>
-    <objectPermissions>
-        <object>Case</object>
-        <allowCreate>false</allowCreate>
-        <allowRead>true</allowRead>
-        <allowEdit>false</allowEdit>
-        <allowDelete>false</allowDelete>
-        <viewAllRecords>false</viewAllRecords>
-        <modifyAllRecords>false</modifyAllRecords>
-    </objectPermissions>
     <objectPermissions>
         <object>AFM_Site__c</object>
         <allowCreate>false</allowCreate>
@@ -30,51 +24,6 @@
         <viewAllRecords>false</viewAllRecords>
         <modifyAllRecords>false</modifyAllRecords>
     </objectPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_External_Id__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Flight_Id__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Site_Icao__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Customer_Region__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Case_Type__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Detection_Facts__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Severity_Justification__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Runbook_Refs__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
-    <fieldPermissions>
-        <field>Case.AFM_Internal_Url__c</field>
-        <readable>true</readable>
-        <editable>false</editable>
-    </fieldPermissions>
     <fieldPermissions>
         <field>AFM_Site__c.AFM_Iata__c</field>
         <readable>true</readable>
@@ -135,10 +84,6 @@
         <readable>true</readable>
         <editable>false</editable>
     </fieldPermissions>
-    <recordTypeVisibilities>
-        <recordType>Case.Fleet_Operations</recordType>
-        <visible>true</visible>
-    </recordTypeVisibilities>
     <customPermissions>
         <name>AFM_Region_East</name>
         <enabled>true</enabled>
