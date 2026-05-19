@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Case_Type__c</fullName>
+    <label>Case Type</label>
+    <type>Picklist</type>
+    <required>false</required>
+    <description>One of the 6 AFM rule types. API value = rule id (snake_case) to match the Phase-05 detector and the AFM→SF write path.</description>
+    <valueSet>
+        <restricted>true</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>lost_signal</fullName>
+                <default>false</default>
+                <label>Lost Signal</label>
+            </value>
+            <value>
+                <fullName>diversion</fullName>
+                <default>false</default>
+                <label>Diversion</label>
+            </value>
+            <value>
+                <fullName>hold</fullName>
+                <default>false</default>
+                <label>Hold</label>
+            </value>
+            <value>
+                <fullName>weather</fullName>
+                <default>false</default>
+                <label>Weather</label>
+            </value>
+            <value>
+                <fullName>go_around</fullName>
+                <default>false</default>
+                <label>Go-Around</label>
+            </value>
+            <value>
+                <fullName>delay</fullName>
+                <default>false</default>
+                <label>Delay</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</CustomField>

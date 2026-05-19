@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>A flight that has been the subject of a Case. One record per (icao24, callsign, origin, destination, day). Lazily created when a Case is opened.</description>
+    <enableActivities>false</enableActivities>
+    <enableHistory>false</enableHistory>
+    <enableReports>true</enableReports>
+    <enableSearch>true</enableSearch>
+    <label>AFM Flight</label>
+    <pluralLabel>AFM Flights</pluralLabel>
+    <nameField>
+        <displayFormat>FLT-{0000}</displayFormat>
+        <label>Flight Name</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <sharingModel>ReadWrite</sharingModel>
+    <visibility>Public</visibility>
+</CustomObject>

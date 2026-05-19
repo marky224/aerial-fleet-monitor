@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Icao__c</fullName>
+    <label>ICAO</label>
+    <type>Text</type>
+    <length>4</length>
+    <required>true</required>
+    <unique>true</unique>
+    <caseSensitive>false</caseSensitive>
+    <externalId>true</externalId>
+    <description>ICAO airport code, e.g. KSFO. Natural key; AFM sync upserts on this.</description>
+</CustomField>
