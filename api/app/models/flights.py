@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from app.models.common import CustomerRegion, FlightStage, TrailLookback
 from app.models.positions import Position
@@ -100,7 +101,16 @@ class TrailBatchRequest(BaseModel):
         for raw in value:
             ic = raw.strip().lower()
             if len(ic) != 6 or any(c not in "0123456789abcdef" for c in ic):
-                raise ValueError(f"invalid icao24: {raw!r}")
+                # PydanticCustomError (not a bare ValueError): it is natively
+                # JSON-serializable, so it behaves like every other validation
+                # error in the app. A bare ValueError embeds the exception
+                # object in the Pydantic error ctx, which main.py's
+                # RequestValidationError handler cannot JSON-serialize → 500.
+                raise PydanticCustomError(
+                    "invalid_icao24",
+                    "invalid icao24: {value}",
+                    {"value": repr(raw)},
+                )
             seen[ic] = None
         return list(seen)
 

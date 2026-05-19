@@ -289,6 +289,61 @@ def test_flight_params_trail_path_omitted_under_two_points() -> None:
     assert none["trail2h"] == "[]"
 
 
+def test_flight_params_trail_path_omitted_for_degenerate_all_coincident() -> None:
+    # A stationary/parked aircraft's 2 h trail can collapse to one repeated
+    # coordinate. That yields a zero-length LineString, which Foundry's
+    # geoshape validator rejects with 400 INVALID_ARGUMENT — and since
+    # applyBatch is all-or-nothing per chunk, that one Flight 400s the
+    # whole chunk (run skip-fails, enriched=0). So an all-coincident trail
+    # must omit trailPath, exactly like a 0/1-point trail. trail2h still
+    # ships every raw point (no data loss). Repro: a889a9-1779125622,
+    # coordinates [[-123.4629, 46.1935], [-123.4629, 46.1935]].
+    p = flight_params(
+        _flight(
+            trail_2h=[
+                TrailPoint(ts=_TAKEOFF, lat=46.1935, lon=-123.4629, altitude_ft=0, speed_kt=0),
+                TrailPoint(ts=_TAKEOFF, lat=46.1935, lon=-123.4629, altitude_ft=0, speed_kt=0),
+                TrailPoint(ts=_TAKEOFF, lat=46.1935, lon=-123.4629, altitude_ft=0, speed_kt=0),
+            ]
+        )
+    )
+    assert "trailPath" not in p
+    assert isinstance(p["trail2h"], str)  # raw points still shipped
+
+
+def test_flight_params_trail_path_dedupes_consecutive_identical_coords() -> None:
+    # Consecutive-identical coordinates are collapsed so the LineString is
+    # well-formed; [A, A, B] → [A, B]. A LineString with >= 2 *distinct*
+    # positions is valid and emitted.
+    p = flight_params(
+        _flight(
+            trail_2h=[
+                TrailPoint(ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280),
+                TrailPoint(ts=_TAKEOFF, lat=37.7, lon=-122.4, altitude_ft=8000, speed_kt=280),
+                TrailPoint(ts=_TAKEOFF, lat=37.8, lon=-122.5, altitude_ft=9000, speed_kt=300),
+            ]
+        )
+    )
+    assert p["trailPath"] == {
+        "type": "LineString",
+        "coordinates": [[-122.4, 37.7], [-122.5, 37.8]],
+    }
+
+
+def test_flight_params_trail_path_omitted_when_two_points_coincide() -> None:
+    # Exactly 2 points but identical → after dedup only 1 distinct
+    # position remains → omitted (not a 2-point degenerate LineString).
+    p = flight_params(
+        _flight(
+            trail_2h=[
+                TrailPoint(ts=_TAKEOFF, lat=1.0, lon=2.0, altitude_ft=None, speed_kt=None),
+                TrailPoint(ts=_TAKEOFF, lat=1.0, lon=2.0, altitude_ft=None, speed_kt=None),
+            ]
+        )
+    )
+    assert "trailPath" not in p
+
+
 def test_flight_params_omits_none_optionals_keeps_required() -> None:
     p = flight_params(_flight(callsign=None, landed_at=None, eta_minutes=None, operator_icao=None))
     assert "callsign" not in p
