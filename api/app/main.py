@@ -26,9 +26,10 @@ from starlette.responses import Response
 from app.exceptions import AFMException
 from app.logging import configure_logging, get_logger
 from app.models.common import ErrorDetail, ErrorResponse
-from app.routers import auth_stub, flights, positions, sites
+from app.routers import admin, auth_stub, flights, positions, sites
 from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool, WatchedAirportsProvider
+from app.services.salesforce import SalesforceService
 from app.settings import settings
 
 
@@ -62,6 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.lakehouse = LakehouseQuery(settings.afm_lake_path)
     log.info("lakehouse.ready", path=settings.afm_lake_path)
     app.state.watched_airports = WatchedAirportsProvider(app.state.postgres)
+    app.state.salesforce = SalesforceService(settings)
+    log.info("salesforce.ready", configured=bool(settings.salesforce_client_id))
 
     yield
 
@@ -157,6 +160,11 @@ app.include_router(auth_stub.router)
 app.include_router(positions.router)
 app.include_router(flights.router)
 app.include_router(sites.router)
+
+# Dev-only helpers (SF write smoke, acceptance #9). Mounted only in dev
+# so the routes don't exist at all in any other environment.
+if settings.environment == "dev":
+    app.include_router(admin.router)
 
 
 @app.get("/v1/health", response_model=HealthResponse, tags=["meta"])

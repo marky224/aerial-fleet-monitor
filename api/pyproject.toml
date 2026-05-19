@@ -28,6 +28,7 @@ dependencies = [
     "psycopg2-binary>=2.9,<3",
     "duckdb>=1.1,<2",
     "pytz>=2024.1",  # duckdb soft-requires for materializing TIMESTAMPTZ columns
+    "simple-salesforce>=1.12,<2",  # Phase 04 — AFM→SF Case writes (planned tech stack)
 ]
 
 [project.optional-dependencies]
