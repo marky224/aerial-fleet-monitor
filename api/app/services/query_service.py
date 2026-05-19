@@ -11,6 +11,7 @@ handler). The caller can't get rows for resources outside scope.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -280,6 +281,88 @@ class QueryService:
             point_count=len(points),
         )
 
+    def get_flight_trails_batch(
+        self, scope: Scope, icao24s: list[str], lookback: TrailLookback
+    ) -> Iterator[TrailResponse]:
+        """Stream one TrailResponse per in-scope icao24 from a SINGLE lake scan.
+
+        :meth:`get_flight_trail` runs one DuckDB scan of the lookback window
+        *per aircraft*, and the ``WHERE icao24`` predicate prunes nothing
+        (positions are written time-ordered, so icao24 is random within row
+        groups) — N per-flight calls re-read the same ~1M-row window N times.
+        This runs ONE scan filtered to the requested set, ordered by icao24,
+        and yields each aircraft's TrailResponse as its run completes, so
+        neither the api (streamed ``fetchmany``) nor the caller (streamed
+        NDJSON) holds the whole result.
+
+        icao24s with no rows in the window are simply not yielded (absent ==
+        empty trail). Out-of-scope icao24s are filtered, not raised (see
+        ``TrailBatchRequest``); aged out of ``current_positions`` == allowed,
+        matching the single endpoint. One bulk scope lookup replaces N.
+        """
+        requested = list(dict.fromkeys(i.lower() for i in icao24s))
+        if not requested:
+            return
+
+        scope_rows = self._postgres.fetchall(
+            """
+            SELECT icao24, customer_region
+            FROM app.current_positions
+            WHERE icao24 = ANY(%(icao24s)s)
+            """,
+            {"icao24s": requested},
+        )
+        region_by_icao = {r["icao24"]: r["customer_region"] for r in scope_rows}
+        allowed = [i for i in requested if self._flight_in_scope(scope, region_by_icao.get(i))]
+        if not allowed:
+            return
+
+        interval = TRAIL_INTERVALS[lookback]
+        rows = self._lakehouse.query_stream(
+            f"""
+            SELECT icao24,
+                   COALESCE(ts_position, ts_polled) AS ts,
+                   lat, lon, altitude_ft, speed_kt
+            FROM read_parquet($lake_glob, hive_partitioning = true)
+            WHERE list_contains($icao24s, icao24)
+              AND ts_polled >= now() - INTERVAL '{interval}'
+            ORDER BY icao24 ASC, ts_polled ASC
+            """,
+            lake_glob=self._lakehouse.positions_glob,
+            icao24s=allowed,
+        )
+
+        current: str | None = None
+        points: list[TrailPoint] = []
+        for row in rows:
+            ic = row["icao24"]
+            if ic != current:
+                if current is not None:
+                    yield TrailResponse(
+                        icao24=current,
+                        points=points,
+                        lookback=lookback,
+                        point_count=len(points),
+                    )
+                current = ic
+                points = []
+            points.append(
+                TrailPoint(
+                    ts=row["ts"],
+                    lat=row["lat"],
+                    lon=row["lon"],
+                    altitude_ft=row["altitude_ft"],
+                    speed_kt=row["speed_kt"],
+                )
+            )
+        if current is not None:
+            yield TrailResponse(
+                icao24=current,
+                points=points,
+                lookback=lookback,
+                point_count=len(points),
+            )
+
     # === Sites ===
 
     def list_sites(self, scope: Scope, region: Region | None = None) -> SiteListResponse:
@@ -419,6 +502,17 @@ class QueryService:
                 f"'{icao24}' in region '{customer_region}'",
                 details={"flight_region": customer_region},
             )
+
+    def _flight_in_scope(self, scope: Scope, customer_region: str | None) -> bool:
+        """Non-raising sibling of :meth:`_check_flight_scope` for bulk reads.
+
+        Same rule (only ``west``/``east`` regions gate; null/``all`` is
+        always visible) but returns a bool so the batch trail endpoint can
+        filter out-of-scope icao24s instead of 403-ing the whole request.
+        """
+        if customer_region and customer_region in ("west", "east"):
+            return scope.includes_region(customer_region)  # type: ignore[arg-type]
+        return True
 
     def _count_flights(self, icao_upper: str, direction_column: str) -> int:
         """Count flights with origin/destination = icao_upper, seen <60 min."""

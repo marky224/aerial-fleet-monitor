@@ -49,7 +49,7 @@ from typing import Any, Self
 import httpx
 import structlog
 
-from afm_foundry_sync.models import Aircraft, Flight, Site
+from afm_foundry_sync.models import Aircraft, Flight, Site, TrailPoint
 from afm_foundry_sync.retry import transient_retry
 from afm_foundry_sync.settings import FoundrySettings
 
@@ -103,6 +103,33 @@ def _iso_utc(dt: datetime) -> str:
 def _geopoint(lat: float, lon: float) -> dict[str, Any]:
     """GeoJSON Point. Coordinates are [lon, lat] per the GeoJSON axis order."""
     return {"type": "Point", "coordinates": [lon, lat]}
+
+
+def _linestring(points: list[TrailPoint]) -> dict[str, Any] | None:
+    """GeoJSON LineString from a trail, or None if it can't form a line.
+
+    Mirrors :func:`_geopoint` (coordinates are [lon, lat] per the GeoJSON
+    axis order). A LineString needs >= 2 *distinct* positions. We first
+    drop consecutive-identical coordinates: a stationary or parked
+    aircraft whose 2 h trail collapses to one repeated point would
+    otherwise emit a zero-length LineString, which Foundry's geoshape
+    validator rejects with 400 INVALID_ARGUMENT — and since applyBatch is
+    all-or-nothing per chunk, that one Flight 400s the whole chunk and the
+    run skip-fails with enriched=0. After the dedup, fewer than 2 points
+    (a 0/1-point or all-coincident trail) yields None and the param is
+    omitted — Workshop renders nothing rather than an invalid shape. The
+    full ordered point list still ships as the JSON-string ``trail_2h``
+    (no data loss); ``trail_path`` is the geo-native projection the App 3
+    polyline binds to (a JSON string can't drive a Vortex map layer).
+    """
+    coords: list[list[float]] = []
+    for p in points:
+        c = [p.lon, p.lat]
+        if not coords or coords[-1] != c:
+            coords.append(c)
+    if len(coords) < 2:
+        return None
+    return {"type": "LineString", "coordinates": coords}
 
 
 def _put_optional(params: dict[str, Any], key: str, value: Any) -> None:
@@ -218,6 +245,10 @@ def flight_params(f: Flight) -> dict[str, Any]:
         params["lat"] = f.lat
         params["lon"] = f.lon
         params["position"] = _geopoint(f.lat, f.lon)
+    # Geo-native trail projection for the App 3 polyline (omitted until the
+    # trail has >= 2 points — see _linestring; the raw points still ship as
+    # the JSON-string trail_2h above).
+    _put_optional(params, "trail_path", _linestring(f.trail_2h))
     return {_camel(k): v for k, v in params.items()}
 
 

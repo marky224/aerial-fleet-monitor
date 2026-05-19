@@ -18,6 +18,7 @@ of data.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,36 @@ class LakehouseQuery:
                 result = conn.execute(sql, params)
                 columns = [desc[0] for desc in result.description]
                 return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        except duckdb.IOException as e:
+            raise UpstreamUnavailable(
+                "DuckDB lakehouse read failed",
+                details={"reason": str(e)},
+            ) from e
+
+    def query_stream(
+        self, sql: str, *, batch_size: int = 10_000, **params: Any
+    ) -> Iterator[dict[str, Any]]:
+        """Stream ``sql`` rows in ``batch_size`` chunks instead of materializing.
+
+        Same ``$param`` binding and IO-error contract as :meth:`query`, but
+        yields row dicts via ``fetchmany`` so a large result (e.g. the whole
+        lookback window for the batch trail endpoint) never sits fully in api
+        memory. The DuckDB connection stays open for the life of the iterator
+        and is closed on exhaustion — or on early generator close — by the
+        ``with`` block, even if iteration raises.
+
+        Only IO-class errors translate to UpstreamUnavailable (503); SQL-level
+        errors propagate as 500s so bugs surface loud. An IO error raised
+        mid-stream surfaces after the first rows — a streaming caller must
+        tolerate a truncated stream (the enrichment fanout does).
+        """
+        try:
+            with duckdb.connect(":memory:") as conn:
+                result = conn.execute(sql, params)
+                columns = [desc[0] for desc in result.description]
+                while rows := result.fetchmany(batch_size):
+                    for row in rows:
+                        yield dict(zip(columns, row, strict=True))
         except duckdb.IOException as e:
             raise UpstreamUnavailable(
                 "DuckDB lakehouse read failed",

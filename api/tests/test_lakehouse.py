@@ -52,3 +52,33 @@ def test_query_sql_error_propagates_unmasked(seeded_lakehouse: LakehouseQuery) -
             "SELECT BANANA FROM read_parquet($g, hive_partitioning = true)",
             g=seeded_lakehouse.positions_glob,
         )
+
+
+def test_query_stream_yields_same_rows_across_fetchmany_batches(
+    seeded_lakehouse: LakehouseQuery,
+) -> None:
+    """query_stream yields the same rows as query, lazily. batch_size=1
+    forces multiple fetchmany() pulls so the cross-batch path is exercised
+    and the connection stays open for the iterator's lifetime."""
+    gen = seeded_lakehouse.query_stream(
+        "SELECT icao24, lat FROM read_parquet($lake_glob, hive_partitioning = true) "
+        "ORDER BY ts_polled",
+        batch_size=1,
+        lake_glob=seeded_lakehouse.positions_glob,
+    )
+    rows = list(gen)
+    assert [r["icao24"] for r in rows] == ["a2024b", "a2024b"]
+    assert rows[0]["lat"] == 37.6
+
+
+def test_query_stream_io_error_maps_to_upstream_unavailable() -> None:
+    """Missing lake path -> IOException -> UpstreamUnavailable, raised when
+    the generator is first consumed (it is lazy)."""
+    bad = LakehouseQuery(lake_path="/nonexistent/afm-lake-path")
+    with pytest.raises(UpstreamUnavailable, match="DuckDB lakehouse read failed"):
+        list(
+            bad.query_stream(
+                "SELECT * FROM read_parquet($lake_glob, hive_partitioning = true)",
+                lake_glob=bad.positions_glob,
+            )
+        )

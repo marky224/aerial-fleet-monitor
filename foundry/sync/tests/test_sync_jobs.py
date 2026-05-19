@@ -500,12 +500,38 @@ def _flight_detail(icao24: str) -> dict:  # type: ignore[type-arg]
     }
 
 
-_TRAIL_JSON: dict = {  # type: ignore[type-arg]
-    "icao24": "x",
-    "points": [],
-    "lookback": "2h",
-    "point_count": 0,
-}
+_TRAIL_BATCH_URL = "http://api.test/v1/flights/trail/batch"
+
+
+def _trail_line(icao24: str, n_points: int = 2) -> str:
+    """One NDJSON line for the batch-trail endpoint (a serialized TrailResponse).
+
+    >= 2 points by default so the write-time `trailPath` LineString is also
+    exercised (a LineString needs two positions).
+    """
+    pts = [
+        {
+            "ts": f"2026-05-15T12:0{k}:00Z",
+            "lat": 37.0 + k * 0.01,
+            "lon": -122.0 - k * 0.01,
+            "altitude_ft": 30000,
+            "speed_kt": 450,
+        }
+        for k in range(n_points)
+    ]
+    return json.dumps({"icao24": icao24, "points": pts, "lookback": "2h", "point_count": len(pts)})
+
+
+def _trail_batch(*icao24s: str) -> httpx.Response:
+    """NDJSON batch-trail response: one TrailResponse line per icao24, ordered.
+
+    icao24s NOT listed are simply absent from the stream — the caller treats
+    an absent icao24 as an empty trail (detail-only enrichment).
+    """
+    body = "".join(_trail_line(i) + "\n" for i in icao24s)
+    return httpx.Response(
+        200, content=body.encode(), headers={"content-type": "application/x-ndjson"}
+    )
 
 
 @pytest.mark.parametrize(
@@ -551,12 +577,7 @@ async def test_enriched_sync_flights_enriches_only_latest_per_icao24(
     def_route = respx.get("http://api.test/v1/flights/def456").mock(
         return_value=httpx.Response(200, json=_flight_detail("def456"))
     )
-    respx.get("http://api.test/v1/flights/abc123/trail").mock(
-        return_value=httpx.Response(200, json=_TRAIL_JSON)
-    )
-    respx.get("http://api.test/v1/flights/def456/trail").mock(
-        return_value=httpx.Response(200, json=_TRAIL_JSON)
-    )
+    trail_route = respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch("abc123", "def456"))
     upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -568,6 +589,11 @@ async def test_enriched_sync_flights_enriches_only_latest_per_icao24(
     assert (result.skipped_inactive, result.fetch_failed) == (0, 0)
     assert abc_route.call_count == 1  # the OLD abc123 PK was NOT fetched
     assert def_route.call_count == 1
+    # ONE batched trail scan for the whole active set — not one call per
+    # flight (the entire point of the perf follow-up).
+    assert trail_route.call_count == 1
+    trail_req = json.loads(trail_route.calls.last.request.content)
+    assert set(trail_req["icao24s"]) == {"abc123", "def456"}
     body = json.loads(upsert_route.calls.last.request.content)
     sent_ids = {r["parameters"]["flightId"] for r in body["requests"]}
     assert sent_ids == {"abc123-1700003600", "def456-1700000500"}
@@ -611,9 +637,7 @@ async def test_enriched_sync_flights_non_404_status_is_counted_not_fatal(
     respx.get("http://api.test/v1/flights/ok0001").mock(
         return_value=httpx.Response(200, json=_flight_detail("ok0001"))
     )
-    respx.get("http://api.test/v1/flights/ok0001/trail").mock(
-        return_value=httpx.Response(200, json=_TRAIL_JSON)
-    )
+    respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch("ok0001"))
     upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -628,14 +652,16 @@ async def test_enriched_sync_flights_non_404_status_is_counted_not_fatal(
 
 
 @respx.mock
-async def test_enriched_sync_flights_per_flight_transport_error_is_counted_not_fatal(
+async def test_enriched_sync_flights_per_flight_detail_transport_error_is_counted_not_fatal(
     settings: FoundrySettings,
 ) -> None:
-    # A transport/timeout error for ONE flight (here: trail ReadTimeout) is
-    # counted as fetch_failed and the pass continues — it must NOT abort the
-    # whole run (the concurrent fanout makes a single transient timeout
-    # near-certain; the old propagate-and-skip meant enrichment never
-    # completed). The healthy flight still enriches.
+    # A transport/timeout error for ONE flight's *detail* fetch is counted as
+    # fetch_failed and the pass continues — it must NOT abort the whole run
+    # (the concurrent detail fanout makes a single transient near-certain;
+    # the old propagate-and-skip meant enrichment never completed). The
+    # healthy flight still enriches. (Trail timeouts are no longer per-flight
+    # — the trail is one batched scan; its failure mode is covered by
+    # test_..._trail_batch_failure_falls_back_to_detail_only below.)
     respx.get(_FLIGHT_OBJECTS_URL).mock(
         return_value=httpx.Response(
             200,
@@ -643,17 +669,12 @@ async def test_enriched_sync_flights_per_flight_transport_error_is_counted_not_f
         )
     )
     respx.get("http://api.test/v1/flights/slow01").mock(
-        return_value=httpx.Response(200, json=_flight_detail("slow01"))
-    )
-    respx.get("http://api.test/v1/flights/slow01/trail").mock(
-        side_effect=httpx.ReadTimeout("trail too slow under load")
+        side_effect=httpx.ReadTimeout("detail too slow under load")
     )
     respx.get("http://api.test/v1/flights/good01").mock(
         return_value=httpx.Response(200, json=_flight_detail("good01"))
     )
-    respx.get("http://api.test/v1/flights/good01/trail").mock(
-        return_value=httpx.Response(200, json=_TRAIL_JSON)
-    )
+    respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch("good01"))
     upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -690,9 +711,10 @@ async def test_enriched_sync_flights_streams_in_chunks_and_aggregates(
     settings: FoundrySettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The OOM fix: candidates are upserted in bounded chunks (not one
-    accumulate-all batch), and per-chunk counts aggregate. With chunk=2 and
-    3 distinct-icao24 candidates → exactly 2 upsert HTTP calls, enriched=3."""
+    """Memory bound preserved: enriched Flights are flushed in bounded
+    chunks off the streamed trail (not one accumulate-all batch), and
+    per-chunk counts aggregate. With chunk=2 and 3 distinct-icao24
+    candidates → exactly 2 upsert HTTP calls, enriched=3."""
     monkeypatch.setattr(_sj, "_ENRICHMENT_CHUNK", 2)
     icaos = ["aa1111", "bb2222", "cc3333"]
     respx.get(_FLIGHT_OBJECTS_URL).mock(
@@ -704,9 +726,7 @@ async def test_enriched_sync_flights_streams_in_chunks_and_aggregates(
         respx.get(f"http://api.test/v1/flights/{i}").mock(
             return_value=httpx.Response(200, json=_flight_detail(i))
         )
-        respx.get(f"http://api.test/v1/flights/{i}/trail").mock(
-            return_value=httpx.Response(200, json=_TRAIL_JSON)
-        )
+    respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch(*icaos))
     upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -731,12 +751,12 @@ async def test_enriched_sync_flights_fetches_are_concurrent_but_bounded(
     settings: FoundrySettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The runtime fix: per-flight fetches within a chunk run concurrently,
-    but never more than ``_ENRICHMENT_CONCURRENCY`` in flight at once. With
-    concurrency=2 and a single chunk of 6, the observed peak in-flight count
-    is exactly 2 (>1 proves it is not serial; ==2 proves it is bounded)."""
+    """The runtime fix: the per-icao24 *detail* fanout runs concurrently but
+    never more than ``_ENRICHMENT_CONCURRENCY`` in flight at once. With
+    concurrency=2 and 6 candidates, the observed peak in-flight detail count
+    is exactly 2 (>1 proves it is not serial; ==2 proves it is bounded).
+    (The trail is a single batched scan, no longer the concurrency unit.)"""
     monkeypatch.setattr(_sj, "_ENRICHMENT_CONCURRENCY", 2)
-    monkeypatch.setattr(_sj, "_ENRICHMENT_CHUNK", 100)
     icaos = [f"a{i:05d}" for i in range(6)]
     respx.get(_FLIGHT_OBJECTS_URL).mock(
         return_value=httpx.Response(
@@ -757,9 +777,7 @@ async def test_enriched_sync_flights_fetches_are_concurrent_but_bounded(
 
     for i in icaos:
         respx.get(f"http://api.test/v1/flights/{i}").mock(side_effect=_tracked)
-        respx.get(f"http://api.test/v1/flights/{i}/trail").mock(
-            return_value=httpx.Response(200, json=_TRAIL_JSON)
-        )
+    respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch(*icaos))
     respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
@@ -767,3 +785,81 @@ async def test_enriched_sync_flights_fetches_are_concurrent_but_bounded(
 
     assert result.enriched == 6
     assert state["peak"] == 2, f"expected bounded peak 2, saw {state['peak']}"
+
+
+@respx.mock
+async def test_enriched_sync_flights_trail_batch_failure_falls_back_to_detail_only(
+    settings: FoundrySettings,
+) -> None:
+    # The batched trail call failing (transport, or a mid-scan IO truncation)
+    # must NOT abort the pass and must NOT bubble to FoundrySyncSkipped: the
+    # active flights still enrich detail-only (route/registration/status —
+    # just no trail), and the next hourly run carries the trail forward.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"flightId": "aaa111-1700000000"}, {"flightId": "bbb222-1700000000"}]},
+        )
+    )
+    respx.get("http://api.test/v1/flights/aaa111").mock(
+        return_value=httpx.Response(200, json=_flight_detail("aaa111"))
+    )
+    respx.get("http://api.test/v1/flights/bbb222").mock(
+        return_value=httpx.Response(200, json=_flight_detail("bbb222"))
+    )
+    respx.post(_TRAIL_BATCH_URL).mock(side_effect=httpx.ConnectError("batch trail refused"))
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert result.candidates == 2
+    assert result.enriched == 2  # both enriched detail-only
+    assert (result.skipped_inactive, result.fetch_failed) == (0, 0)
+    body = json.loads(upsert_route.calls.last.request.content)
+    sent = {r["parameters"]["flightId"] for r in body["requests"]}
+    assert sent == {"aaa111-1700000000", "bbb222-1700000000"}
+    # detail-only ⇒ trail2h is the empty JSON array and no trailPath geoshape.
+    params = body["requests"][0]["parameters"]
+    assert params["trail2h"] == "[]"
+    assert "trailPath" not in params
+
+
+@respx.mock
+async def test_enriched_sync_flights_active_with_no_trail_line_still_enriched(
+    settings: FoundrySettings,
+) -> None:
+    # An active flight whose icao24 has no rows in the window is simply
+    # absent from the batch stream — it must still enrich (detail-only)
+    # alongside the one that does have a trail line.
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"flightId": "wtrl01-1700000000"}, {"flightId": "notrl1-1700000000"}]},
+        )
+    )
+    respx.get("http://api.test/v1/flights/wtrl01").mock(
+        return_value=httpx.Response(200, json=_flight_detail("wtrl01"))
+    )
+    respx.get("http://api.test/v1/flights/notrl1").mock(
+        return_value=httpx.Response(200, json=_flight_detail("notrl1"))
+    )
+    # Stream carries ONLY wtrl01 (notrl1 had no positions in the window).
+    respx.post(_TRAIL_BATCH_URL).mock(return_value=_trail_batch("wtrl01"))
+    upsert_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await enriched_sync_flights(client, writer)
+
+    assert (result.candidates, result.enriched) == (2, 2)
+    assert (result.skipped_inactive, result.fetch_failed) == (0, 0)
+    params_by_id = {
+        r["parameters"]["flightId"]: r["parameters"]
+        for call in upsert_route.calls
+        for r in json.loads(call.request.content)["requests"]
+    }
+    assert set(params_by_id) == {"wtrl01-1700000000", "notrl1-1700000000"}
+    # wtrl01 got the trail (2 points ⇒ a trailPath LineString); notrl1 didn't.
+    assert params_by_id["wtrl01-1700000000"]["trailPath"]["type"] == "LineString"
+    assert params_by_id["notrl1-1700000000"]["trail2h"] == "[]"
+    assert "trailPath" not in params_by_id["notrl1-1700000000"]

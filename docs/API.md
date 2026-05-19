@@ -248,6 +248,36 @@ class TrailResponse(BaseModel):
 
 For `since_takeoff`, the server caps at 6 hours of history to bound query cost.
 
+### 4.3 `POST /v1/flights/trail/batch`
+
+Bulk trail fetch for many aircraft in a **single** lakehouse scan,
+streamed as NDJSON. The per-flight `4.2` endpoint scans the lookback
+window once per `icao24` (the `icao24` predicate does not reduce the
+scan — positions are written time-ordered), so a fan-out over thousands
+of aircraft re-reads the same window thousands of times. This endpoint
+collapses that to one scan. `4.2` is unchanged for single-flight use.
+
+**Request body:**
+```python
+class TrailBatchRequest(BaseModel):
+    icao24s: list[str]   # 1..20000; lowercased + hex-validated + de-duped
+    lookback: Literal['1h', '2h', '4h', 'since_takeoff'] = '2h'
+```
+
+**Response 200** — `Content-Type: application/x-ndjson`, one
+`TrailResponse` (see `4.2`) JSON object per line, ordered by `icao24`:
+```
+{"icao24":"a1b2c3","points":[...],"lookback":"2h","point_count":42}
+{"icao24":"d4e5f6","points":[...],"lookback":"2h","point_count":7}
+```
+
+- `icao24`s with no positions in the window are **omitted** from the
+  stream (treat an absent `icao24` as an empty trail).
+- Out-of-scope `icao24`s are **filtered**, not an error — a bulk request
+  is never 403'd because one member is out of scope.
+- The body is streamed lazily; a lakehouse IO error mid-scan ends the
+  stream after a `200` (a bulk caller must tolerate a short stream).
+
 ## 5. Sites
 
 ### 5.1 `GET /v1/sites`
@@ -564,6 +594,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | WS | `/v1/positions/stream` | streamed positions (501 in v1, reserved for v2) | yes |
 | GET | `/v1/flights/{icao24}` | single flight detail | yes |
 | GET | `/v1/flights/{icao24}/trail` | flight trail | yes |
+| POST | `/v1/flights/trail/batch` | bulk flight trails (one scan, NDJSON stream) | yes |
 | GET | `/v1/sites` | list sites | yes |
 | GET | `/v1/sites/{icao}` | site detail | yes |
 | GET | `/v1/sites/{icao}/sla` | SLA scorecard | yes |
