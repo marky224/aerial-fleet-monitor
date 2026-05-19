@@ -23,6 +23,11 @@ PYTHON ?= python3.12
 PY_API := api/.venv
 PY_PIPELINES := pipelines/.venv
 
+# Salesforce DX. SF_ORG is the org alias created by `sf org login`
+# (Phase 04 — see docs/build/04_salesforce_setup.md). Override per env.
+SF_ORG ?= afm-dev
+SF_DIR := salesforce
+
 # ----------------------------------------------------------------------------
 # Help
 # ----------------------------------------------------------------------------
@@ -140,23 +145,23 @@ db-shell:
 
 .PHONY: sf-auth
 sf-auth:
-	@echo "Target 'sf-auth' available after Phase 04 — see docs/build/04_salesforce_setup.md"
-	@exit 1
+	cd $(SF_DIR) && sf org login web --alias $(SF_ORG) --set-default \
+		--instance-url https://login.salesforce.com
 
 .PHONY: sf-deploy
 sf-deploy:
-	@echo "Target 'sf-deploy' available after Phase 04 — see docs/build/04_salesforce_setup.md"
-	@exit 1
+	cd $(SF_DIR) && sf project deploy start --target-org $(SF_ORG) \
+		--source-dir force-app --wait 30
 
 .PHONY: sf-validate
 sf-validate:
-	@echo "Target 'sf-validate' available after Phase 04 — see docs/build/04_salesforce_setup.md"
-	@exit 1
+	cd $(SF_DIR) && sf project deploy start --dry-run --target-org $(SF_ORG) \
+		--source-dir force-app --wait 30
 
 .PHONY: sf-test
 sf-test:
-	@echo "Target 'sf-test' available after Phase 04 — see docs/build/04_salesforce_setup.md"
-	@exit 1
+	cd $(SF_DIR) && sf apex run test --target-org $(SF_ORG) \
+		--code-coverage --result-format human --wait 30
 
 .PHONY: api-shell
 api-shell:
