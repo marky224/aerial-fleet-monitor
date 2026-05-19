@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -200,6 +201,49 @@ async def test_fetch_flight_trail_passes_lookback(settings: FoundrySettings) -> 
     assert isinstance(result, TrailResponse)
     assert result.lookback == "4h"
     assert result.point_count == 1
+
+
+@respx.mock
+async def test_stream_flight_trails_yields_one_response_per_ndjson_line(
+    settings: FoundrySettings,
+) -> None:
+    # The batched bulk path: POST /v1/flights/trail/batch, body carries the
+    # icao24 set + lookback; the server streams one TrailResponse per NDJSON
+    # line and the client yields each parsed.
+    line_a = json.dumps({**_TRAIL, "icao24": "a12345"})
+    line_b = json.dumps({**_TRAIL, "icao24": "b67890", "point_count": 1})
+    route = respx.post("http://api.test/v1/flights/trail/batch").mock(
+        return_value=httpx.Response(
+            200,
+            content=(line_a + "\n" + line_b + "\n").encode(),
+            headers={"content-type": "application/x-ndjson"},
+        )
+    )
+    async with AfmApiClient(settings) as client:
+        got = [t async for t in client.stream_flight_trails(["a12345", "b67890"], "2h")]
+
+    assert route.called
+    sent = json.loads(route.calls.last.request.content)
+    assert sent == {"icao24s": ["a12345", "b67890"], "lookback": "2h"}
+    assert [t.icao24 for t in got] == ["a12345", "b67890"]
+    assert all(isinstance(t, TrailResponse) for t in got)
+    assert got[0].points[0].lat == 37.5
+
+
+@respx.mock
+async def test_stream_flight_trails_empty_stream_yields_nothing(
+    settings: FoundrySettings,
+) -> None:
+    # No icao24 had positions in the window → empty body → no yields (the
+    # caller treats every requested icao24 as an empty trail).
+    respx.post("http://api.test/v1/flights/trail/batch").mock(
+        return_value=httpx.Response(
+            200, content=b"", headers={"content-type": "application/x-ndjson"}
+        )
+    )
+    async with AfmApiClient(settings) as client:
+        got = [t async for t in client.stream_flight_trails(["zzzzzz"])]
+    assert got == []
 
 
 @respx.mock
