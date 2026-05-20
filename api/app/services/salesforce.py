@@ -206,14 +206,27 @@ class SalesforceService:
     # -- scope read (Half-A: provided + tested, not yet wired) ------------
 
     def _user_custom_perms_sync(self, user_id: str) -> list[str]:
-        soql = (
-            "SELECT Name FROM CustomPermission WHERE Id IN ("
-            "SELECT SetupEntityId FROM SetupEntityAccess WHERE ParentId IN ("
+        # Two queries — SOQL allows only ONE level of semi-join nesting (a
+        # three-level IN(...IN(...IN(...))) is rejected as MALFORMED_QUERY),
+        # and CustomPermission's API-name column is `DeveloperName` not `Name`.
+        # The mock-based unit test never exercised real SOQL; the Phase-04
+        # integration suite (test_salesforce_integration.py) caught both.
+        client = self._client()
+        access_soql = (
+            "SELECT SetupEntityId FROM SetupEntityAccess "
+            "WHERE SetupEntityType='CustomPermission' AND ParentId IN ("
             "SELECT PermissionSetId FROM PermissionSetAssignment "
-            f"WHERE AssigneeId = '{user_id}'))"
+            f"WHERE AssigneeId = '{user_id}')"
         )
-        res = self._client().query(soql)
-        return [cast(str, r["Name"]) for r in res.get("records", [])]
+        access_recs = client.query(access_soql).get("records", [])
+        cp_ids = [cast(str, r["SetupEntityId"]) for r in access_recs]
+        if not cp_ids:
+            return []
+        id_list = ", ".join(f"'{i}'" for i in cp_ids)
+        cp_recs = client.query(
+            f"SELECT DeveloperName FROM CustomPermission WHERE Id IN ({id_list})"
+        ).get("records", [])
+        return [cast(str, r["DeveloperName"]) for r in cp_recs]
 
     async def get_user_custom_perms(self, user_id: str) -> list[str]:
         """Custom-permission API names assigned to a user (scope source).
