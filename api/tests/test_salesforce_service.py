@@ -156,12 +156,41 @@ async def test_create_case_failure_raises(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_get_user_custom_perms(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = SalesforceService(_settings())
     fake = MagicMock()
-    fake.query.return_value = {
-        "records": [{"Name": "AFM_Region_West"}, {"Name": "AFM_All_Regions"}]
-    }
+    # Two SOQL calls: (1) SetupEntityAccess → SetupEntityIds (CustomPermission ids),
+    # (2) CustomPermission → DeveloperName. One level of semi-join nesting only;
+    # CustomPermission's API-name column is DeveloperName, not Name.
+    fake.query.side_effect = [
+        {
+            "records": [
+                {"SetupEntityId": "0PSCP01"},
+                {"SetupEntityId": "0PSCP02"},
+            ]
+        },
+        {
+            "records": [
+                {"DeveloperName": "AFM_Region_West"},
+                {"DeveloperName": "AFM_All_Regions"},
+            ]
+        },
+    ]
     monkeypatch.setattr(svc, "_client", lambda: fake)
     perms = await svc.get_user_custom_perms("005xx")
     assert perms == ["AFM_Region_West", "AFM_All_Regions"]
-    soql = fake.query.call_args[0][0]
-    assert "PermissionSetAssignment" in soql
-    assert "005xx" in soql
+    first_soql, second_soql = (c.args[0] for c in fake.query.call_args_list)
+    assert "SetupEntityAccess" in first_soql
+    assert "SetupEntityType='CustomPermission'" in first_soql
+    assert "PermissionSetAssignment" in first_soql
+    assert "005xx" in first_soql
+    assert "DeveloperName" in second_soql
+    assert "0PSCP01" in second_soql and "0PSCP02" in second_soql
+
+
+async def test_get_user_custom_perms_no_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """User with no Permission Set assignments → no second query, returns []."""
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    fake.query.return_value = {"records": []}
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    perms = await svc.get_user_custom_perms("005nope")
+    assert perms == []
+    assert fake.query.call_count == 1  # short-circuited before the CP lookup

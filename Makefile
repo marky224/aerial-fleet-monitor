@@ -106,8 +106,8 @@ lint:
 
 .PHONY: test-unit
 test-unit:
-	@echo "→ test-unit: running API pytest suite"
-	cd api && . .venv/bin/activate && pytest
+	@echo "→ test-unit: running API pytest suite (integration tests excluded)"
+	cd api && . .venv/bin/activate && pytest -m "not integration"
 
 .PHONY: db-migrate
 db-migrate:
@@ -175,8 +175,8 @@ test-contract:
 
 .PHONY: test-integration
 test-integration:
-	@echo "Target 'test-integration' available after Phase 04 — see docs/build/04_salesforce_setup.md"
-	@exit 1
+	@echo "→ test-integration: running SF integration tests against afm-dev (auto-skipped if SF env vars missing)"
+	cd api && . .venv/bin/activate && pytest -m integration
 
 .PHONY: test-e2e
 test-e2e:

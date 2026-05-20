@@ -94,3 +94,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: requires a live afm-dev Salesforce org (auto-skipped when SF env vars are absent). Run via `make test-integration`.",
+]
