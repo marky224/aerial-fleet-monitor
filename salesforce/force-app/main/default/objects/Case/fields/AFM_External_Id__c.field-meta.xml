@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_External_Id__c</fullName>
+    <label>External ID</label>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+    <unique>true</unique>
+    <caseSensitive>false</caseSensitive>
+    <externalId>true</externalId>
+    <description>CASE-YYYY-NNNNNN. Correlates to Postgres cases.case_id. Set by AFM on write.</description>
+</CustomField>

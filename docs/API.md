@@ -135,6 +135,29 @@ Clear the cookie. If the cookie holds a Salesforce-issued session, also call SF'
 
 **Response 204.**
 
+### 2.5 `POST /v1/admin/sf-test-case` (dev-only)
+
+Salesforce write smoke (Phase 04 acceptance #9). Creates a Case in the
+connected dev org populating **every** `AFM_*__c` custom field plus the
+`Fleet_Operations` record type, then deletes it. Returns the cross-system
+id pair and the exact field map sent (after the §10.1 region/format
+translation), so the AFM→SF write path can be verified end-to-end without
+the case detector.
+
+Mounted **only when `ENVIRONMENT=dev`** — the route does not exist (404)
+in any other environment, which is the access control. Authenticates to
+Salesforce via OAuth 2.0 Client Credentials (Connected App "Run As" user).
+
+**Response 200:**
+```python
+class SfTestCaseResult(BaseModel):
+    created: SalesforceCaseRef               # {salesforce_id, external_id}
+    deleted: bool                            # True if the smoke Case was cleaned up
+    sf_fields_sent: dict[str, Any]           # post-translation SF field map
+```
+
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
+
 ## 3. Positions
 
 ### 3.1 `GET /v1/positions/live`
@@ -590,6 +613,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/auth/login` | start OAuth | no |
 | GET | `/v1/auth/callback` | OAuth callback | no |
 | POST | `/v1/auth/logout` | clear session | yes |
+| POST | `/v1/admin/sf-test-case` | SF write smoke (dev-only, acceptance #9) | dev env only |
 | GET | `/v1/positions/live` | all current positions in scope | yes |
 | WS | `/v1/positions/stream` | streamed positions (501 in v1, reserved for v2) | yes |
 | GET | `/v1/flights/{icao24}` | single flight detail | yes |

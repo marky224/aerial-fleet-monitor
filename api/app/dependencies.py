@@ -20,6 +20,7 @@ from app.models.common import Scope
 from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool, WatchedAirportsProvider
 from app.services.query_service import QueryService
+from app.services.salesforce import SalesforceService
 
 
 def get_postgres_pool(request: Request) -> PostgresPool:
@@ -43,6 +44,16 @@ def get_query_service(
 ) -> QueryService:
     """Fresh QueryService per request — composes pool + lakehouse references."""
     return QueryService(postgres=postgres, lakehouse=lakehouse)
+
+
+def get_salesforce_service(request: Request) -> SalesforceService:
+    """The app-wide SalesforceService, created in lifespan startup.
+
+    Always present; it is lazy — if SF env is unset it raises a clean
+    503 (UpstreamUnavailable) at first use rather than at startup, so
+    the API still boots in environments without Salesforce config.
+    """
+    return cast(SalesforceService, request.app.state.salesforce)
 
 
 def get_scope(
