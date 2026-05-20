@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Severity_Justification__c</fullName>
+    <label>Severity Justification</label>
+    <type>LongTextArea</type>
+    <length>4096</length>
+    <visibleLines>5</visibleLines>
+    <required>false</required>
+    <description>Agent-generated rationale for the severity assessment.</description>
+</CustomField>

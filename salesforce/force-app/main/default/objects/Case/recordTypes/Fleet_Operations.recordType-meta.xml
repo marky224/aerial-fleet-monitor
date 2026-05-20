@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RecordType xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Fleet_Operations</fullName>
+    <active>true</active>
+    <businessProcess>AFM_Fleet_Operations</businessProcess>
+    <description>AFM-generated fleet operations anomaly cases.</description>
+    <label>Fleet Operations</label>
+</RecordType>

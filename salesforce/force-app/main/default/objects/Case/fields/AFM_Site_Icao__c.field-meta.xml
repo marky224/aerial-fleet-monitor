@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Site_Icao__c</fullName>
+    <label>Site ICAO</label>
+    <type>Text</type>
+    <length>4</length>
+    <required>false</required>
+    <description>ICAO of the affected airport.</description>
+</CustomField>

@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     # exposure, or once Phase 06 lands JWT auth that can gate the routes.
     expose_docs: bool = Field(default=False)
 
+    # Phase 04 — Salesforce (Agentforce DE org). Optional so the API still
+    # boots in Phase 02/03 (and any env without SF) — SalesforceService
+    # validates presence at first use and raises a clean 503 otherwise.
+    # AFM→SF auth is OAuth 2.0 Client Credentials against the org's My
+    # Domain token endpoint (see docs/build/04_salesforce_setup.md).
+    salesforce_instance_url: str | None = Field(default=None)
+    salesforce_client_id: str | None = Field(default=None)
+    salesforce_client_secret: str | None = Field(default=None)
+    salesforce_case_record_type: str = Field(default="Fleet_Operations")
+
 
 settings = Settings()
 """Module-level singleton. Import as `from app.settings import settings`."""

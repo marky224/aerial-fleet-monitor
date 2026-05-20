@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Callsign__c</fullName>
+    <label>Callsign</label>
+    <type>Text</type>
+    <length>8</length>
+    <required>false</required>
+    <description>Flight callsign, e.g. SWA2204.</description>
+</CustomField>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomApplication xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>AFM</label>
+    <description>Aerial Fleet Monitor — fleet operations console (internal-ops surface).</description>
+    <navType>Standard</navType>
+    <uiType>Lightning</uiType>
+    <formFactors>Large</formFactors>
+    <tabs>standard-Case</tabs>
+    <tabs>AFM_Site__c</tabs>
+    <tabs>AFM_Flight__c</tabs>
+</CustomApplication>
