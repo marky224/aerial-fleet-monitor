@@ -11,6 +11,7 @@ from pipelines.assets.foundry_sync import (
 from pipelines.assets.ingestion import noaa_weather, opensky_positions
 from pipelines.assets.maintenance import prune_stale_positions
 from pipelines.assets.reference import static_reference
+from pipelines.assets.sync import sf_case_push
 
 __all__ = [
     "case_detector",
@@ -22,5 +23,6 @@ __all__ = [
     "noaa_weather",
     "opensky_positions",
     "prune_stale_positions",
+    "sf_case_push",
     "static_reference",
 ]

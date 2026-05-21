@@ -26,7 +26,7 @@ from starlette.responses import Response
 from app.exceptions import AFMException
 from app.logging import configure_logging, get_logger
 from app.models.common import ErrorDetail, ErrorResponse
-from app.routers import admin, auth_stub, flights, positions, sites
+from app.routers import admin, auth_stub, cases, flights, positions, sites
 from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool, WatchedAirportsProvider
 from app.services.salesforce import SalesforceService
@@ -160,6 +160,7 @@ app.include_router(auth_stub.router)
 app.include_router(positions.router)
 app.include_router(flights.router)
 app.include_router(sites.router)
+app.include_router(cases.router)
 
 # Dev-only helpers (SF write smoke, acceptance #9). Mounted only in dev
 # so the routes don't exist at all in any other environment.

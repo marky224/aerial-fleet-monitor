@@ -65,6 +65,15 @@ class SalesforceCaseRef(BaseModel):
     external_id: str = Field(description="AFM_External_Id__c (== Postgres cases.case_id).")
 
 
+class CaseSyncSummary(BaseModel):
+    """Outcome of a `POST /v1/cases/sync-pending` push pass."""
+
+    attempted: int = Field(description="Pending cases pulled this pass.")
+    synced: int = Field(description="Created in Salesforce + marked synced.")
+    retrying: int = Field(description="Transient failure; left pending for the next pass.")
+    failed: int = Field(description="Permanent failure (or max attempts); parked failed.")
+
+
 class SfTestCaseResult(BaseModel):
     """Round-trip result of the dev-only `POST /v1/admin/sf-test-case`."""
 

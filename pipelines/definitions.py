@@ -41,6 +41,7 @@ from pipelines.assets import (
     noaa_weather,
     opensky_positions,
     prune_stale_positions,
+    sf_case_push,
     static_reference,
 )
 from pipelines.resources import (
@@ -106,6 +107,12 @@ flight_plan_enrichment_job = define_asset_job(
 )
 
 
+sf_case_push_job = define_asset_job(
+    name="sf_case_push_job",
+    selection=AssetSelection.assets(sf_case_push),
+)
+
+
 # Dagster's cron schedules are minute-resolution at the finest. OpenSky's
 # spec-mandated 30s cadence (PIPELINES.md §5) needs a sensor with
 # minimum_interval_seconds=30 returning a RunRequest every fire. Returning
@@ -134,6 +141,23 @@ def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
     description="Upserts Aircraft to the Foundry Ontology every 30s.",
 )
 def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Pushes pending app.cases rows to Salesforce. A sensor (not a schedule)
+# for the ~60s cadence the dashboard expects (build-doc §5/§7) — finer than
+# Dagster's minute-resolution cron. Each fire launches a fresh run
+# (run_key=None), and each run re-scans whatever is still pending, so a case
+# left pending by a transient SF failure is retried on the next tick — this
+# sensor IS the case-sync retry mechanism (build-doc §8).
+@sensor(
+    job=sf_case_push_job,
+    name="case_sync_retry_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Pushes pending cases to Salesforce every ~60s; re-scan provides retry.",
+)
+def case_sync_retry_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
@@ -232,6 +256,7 @@ defs = Definitions(
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
         flight_plan_enrichment,
+        sf_case_push,
         prune_stale_positions,
     ],
     jobs=[
@@ -243,6 +268,7 @@ defs = Definitions(
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
         flight_plan_enrichment_job,
+        sf_case_push_job,
         prune_stale_positions_job,
     ],
     schedules=[
@@ -254,7 +280,7 @@ defs = Definitions(
         flight_plan_enrichment_schedule,
         prune_stale_positions_schedule,
     ],
-    sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],
+    sensors=[opensky_positions_sensor, foundry_positions_sync_sensor, case_sync_retry_sensor],
     resources={
         "postgres": postgres,
         "watchlist": watchlist,
