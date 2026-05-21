@@ -94,7 +94,7 @@ def test_enrich_with_empty_flight_plans_sets_null_plan_columns() -> None:
 def test_detect_and_dedup_runs_rules_and_suppresses_existing() -> None:
     positions = make_positions(
         [
-            {"icao24": "lost01", "altitude_ft": 38_000, "ts_polled": NOW - mins(5)},
+            {"icao24": "lost01", "altitude_ft": 38_000, "ts_polled": NOW - mins(12)},
             {"icao24": "live01", "ts_polled": NOW},
         ]
     )
@@ -141,7 +141,7 @@ def test_run_case_detection_creates_a_case(monkeypatch) -> None:
                 "icao24": "lost01",
                 "altitude_ft": 38_000,
                 "customer_region": "west",
-                "ts_polled": NOW - mins(5),
+                "ts_polled": NOW - mins(12),
             },
             {"icao24": "live01", "customer_region": "west", "ts_polled": NOW},
         ]

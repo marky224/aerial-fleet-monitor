@@ -1,10 +1,23 @@
 """lost_signal — an aircraft at cruise stops reporting.
 
-Fires when an icao24's most recent snapshot is at cruise altitude,
-airborne, and is older than the latest poll by 2-30 minutes — i.e. the
-feed went quiet on a flight that should still be transmitting. Beyond
-30 minutes we assume it landed or genuinely left coverage, not a fresh
-signal loss (the dedup window then keeps it from re-firing for 6h).
+Fires when an icao24's most recent snapshot is airborne, at cruise
+altitude, in roughly *level* flight, and is older than the latest poll
+by 8-30 minutes — i.e. the feed went quiet on a flight that should still
+be transmitting. Beyond 30 minutes we assume it landed or genuinely left
+coverage, not a fresh signal loss (the dedup window then keeps it from
+re-firing for 6h).
+
+Two precision guards keep this off normal OpenSky coverage churn (the
+free `/states/all` feed routinely drops a cruising aircraft for a few
+polls or as it crosses the polled region's edge):
+
+* an 8-minute floor (not 2) — a 2-minute gap is ~4 missed 30s polls,
+  i.e. ordinary feed jitter, not an operationally meaningful silence;
+* level flight (|vertical_rate| <= 500 fpm) — "lost *at cruise*" means
+  steady cruise, so an aircraft still climbing out or already descending
+  to land is excluded (it's transitioning, expected to leave the band).
+  A missing vertical rate is treated as level (we don't drop a candidate
+  for absent data).
 """
 
 from __future__ import annotations
@@ -25,8 +38,9 @@ from pipelines.rules.base import (
 from pipelines.services.baseline_provider import BaselineProvider
 
 CRUISE_FLOOR_FT = 25_000
-LOST_MIN_GAP = timedelta(minutes=2)
+LOST_MIN_GAP = timedelta(minutes=8)
 LOST_MAX_GAP = timedelta(minutes=30)
+LEVEL_VRATE_FPM = 500
 
 
 class LostSignalRule(Rule):
@@ -53,6 +67,12 @@ class LostSignalRule(Rule):
                 continue
             gap = now - last["ts_polled"]
             if not (LOST_MIN_GAP <= gap <= LOST_MAX_GAP):
+                continue
+            # Level flight only: a climbing/descending aircraft is
+            # transitioning out of cruise, not a steady-cruise signal loss.
+            # Missing vertical rate counts as level (don't drop on absent data).
+            vrate = last.get("vertical_rate_fpm")
+            if vrate is not None and not pd.isna(vrate) and abs(float(vrate)) > LEVEL_VRATE_FPM:
                 continue
             anomalies.append(
                 Anomaly(

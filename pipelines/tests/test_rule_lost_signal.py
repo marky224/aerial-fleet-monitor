@@ -17,7 +17,7 @@ def test_positive_cruise_aircraft_goes_quiet() -> None:
                 "icao24": "lost01",
                 "altitude_ft": 38_000,
                 "on_ground": False,
-                "ts_polled": NOW - mins(5),
+                "ts_polled": NOW - mins(12),
                 "nearest_site_icao": "KDEN",
                 "callsign": "UAL99",
             },
@@ -28,7 +28,36 @@ def test_positive_cruise_aircraft_goes_quiet() -> None:
     assert [a.icao24 for a in out] == ["lost01"]
     assert out[0].rule == "lost_signal"
     assert out[0].site_icao == "KDEN"
-    assert out[0].detection_facts["gap_minutes"] == 5.0
+    assert out[0].detection_facts["gap_minutes"] == 12.0
+
+
+def test_negative_short_gap_is_poll_noise() -> None:
+    # 5-minute gap is below the 8-min floor — ordinary feed jitter, not a
+    # signal loss worth a case.
+    positions = make_positions(
+        [
+            {"icao24": "blip01", "altitude_ft": 38_000, "ts_polled": NOW - mins(5)},
+            {"icao24": "live01", "ts_polled": NOW},
+        ]
+    )
+    assert RULE.detect(positions, {}, empty_cases(), BASELINE) == []
+
+
+def test_negative_climbing_aircraft_excluded() -> None:
+    # Past the 8-min floor and at cruise, but climbing hard — transitioning,
+    # not a steady-cruise signal loss.
+    positions = make_positions(
+        [
+            {
+                "icao24": "clmb01",
+                "altitude_ft": 30_000,
+                "vertical_rate_fpm": 2_000,
+                "ts_polled": NOW - mins(12),
+            },
+            {"icao24": "live01", "ts_polled": NOW},
+        ]
+    )
+    assert RULE.detect(positions, {}, empty_cases(), BASELINE) == []
 
 
 def test_negative_still_tracking_no_gap() -> None:

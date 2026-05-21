@@ -38,6 +38,18 @@ def test_positive_descend_then_climb() -> None:
     assert out[0].detection_facts["climb_ft"] >= 1_000
 
 
+def test_negative_departure_only_climbs() -> None:
+    # A normal departure: the lowest near-field snapshot is the first one,
+    # then it only climbs out — no descent leg, so not a go-around. (This is
+    # the false positive that flooded the detector before the V-shape check.)
+    rows = [
+        _row("dep01", 1_200, 5),  # min — just airborne off the runway
+        _row("dep01", 2_500, 4),
+        _row("dep01", 4_000, 3),  # climbing away
+    ]
+    assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
+
+
 def test_negative_normal_descent_no_climb() -> None:
     rows = [
         _row("ok01", 4_000, 6),
