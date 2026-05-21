@@ -33,6 +33,7 @@ from dagster import (
 )
 
 from pipelines.assets import (
+    case_detector,
     flight_plan_enrichment,
     foundry_aircraft_reconcile,
     foundry_flight_enrichment,
@@ -110,6 +111,12 @@ flight_plan_enrichment_job = define_asset_job(
 sf_case_push_job = define_asset_job(
     name="sf_case_push_job",
     selection=AssetSelection.assets(sf_case_push),
+)
+
+
+case_detector_job = define_asset_job(
+    name="case_detector_job",
+    selection=AssetSelection.assets(case_detector),
 )
 
 
@@ -246,6 +253,20 @@ flight_plan_enrichment_schedule = ScheduleDefinition(
 )
 
 
+case_detector_schedule = ScheduleDefinition(
+    name="case_detector_schedule",
+    job=case_detector_job,
+    cron_schedule="*/5 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Every 5 minutes: run the anomaly rule engine over the last hour of "
+        "positions and insert detected cases into app.cases (pending). The SF "
+        "write is decoupled — case_sync_retry_sensor pushes pending rows."
+    ),
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -257,6 +278,7 @@ defs = Definitions(
         foundry_flight_enrichment,
         flight_plan_enrichment,
         sf_case_push,
+        case_detector,
         prune_stale_positions,
     ],
     jobs=[
@@ -269,6 +291,7 @@ defs = Definitions(
         foundry_flight_enrichment_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
+        case_detector_job,
         prune_stale_positions_job,
     ],
     schedules=[
@@ -278,6 +301,7 @@ defs = Definitions(
         foundry_aircraft_reconcile_schedule,
         foundry_flight_enrichment_schedule,
         flight_plan_enrichment_schedule,
+        case_detector_schedule,
         prune_stale_positions_schedule,
     ],
     sensors=[opensky_positions_sensor, foundry_positions_sync_sensor, case_sync_retry_sensor],
