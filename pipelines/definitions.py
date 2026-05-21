@@ -33,6 +33,7 @@ from dagster import (
 )
 
 from pipelines.assets import (
+    flight_plan_enrichment,
     foundry_aircraft_reconcile,
     foundry_flight_enrichment,
     foundry_positions_sync,
@@ -96,6 +97,12 @@ foundry_aircraft_reconcile_job = define_asset_job(
 foundry_flight_enrichment_job = define_asset_job(
     name="foundry_flight_enrichment_job",
     selection=AssetSelection.assets(foundry_flight_enrichment),
+)
+
+
+flight_plan_enrichment_job = define_asset_job(
+    name="flight_plan_enrichment_job",
+    selection=AssetSelection.assets(flight_plan_enrichment),
 )
 
 
@@ -199,6 +206,22 @@ foundry_flight_enrichment_schedule = ScheduleDefinition(
 )
 
 
+flight_plan_enrichment_schedule = ScheduleDefinition(
+    name="flight_plan_enrichment_schedule",
+    job=flight_plan_enrichment_job,
+    # :15 past the hour — staggered between the :00 reconcile/prune and
+    # the :30 Foundry flight enrichment to avoid contending on OpenSky
+    # rate-limit credits or the API host's HTTP capacity.
+    cron_schedule="15 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :15: refresh origin/destination for active icao24s "
+        "via OpenSky /flights/aircraft. 12h cache TTL in app.flight_plans."
+    ),
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -208,6 +231,7 @@ defs = Definitions(
         foundry_sites_sync,
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
+        flight_plan_enrichment,
         prune_stale_positions,
     ],
     jobs=[
@@ -218,6 +242,7 @@ defs = Definitions(
         foundry_sites_sync_job,
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
+        flight_plan_enrichment_job,
         prune_stale_positions_job,
     ],
     schedules=[
@@ -226,6 +251,7 @@ defs = Definitions(
         foundry_sites_sync_schedule,
         foundry_aircraft_reconcile_schedule,
         foundry_flight_enrichment_schedule,
+        flight_plan_enrichment_schedule,
         prune_stale_positions_schedule,
     ],
     sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],

@@ -1,12 +1,22 @@
 """OpenSky Network REST client resource.
 
 Thin HTTP wrapper over OpenSky's ``/states/all`` endpoint with a fixed
-contiguous-US bounding box. The resource is a faithful representation of
-the API — unit conversions (m/s → kt, meters → feet), the icao24 denylist,
-and region inference all happen in the consuming asset.
+contiguous-US bounding box, and ``/flights/aircraft`` for per-aircraft
+flight history (origin/destination + first/last seen).
 
-Bbox call cost is 1 credit per ``PIPELINES.md`` §3.1. At a 30-second poll
-that totals 2,880 credits/day, well under the 4,000-credit free-tier cap.
+The resource is a faithful representation of the API — unit conversions
+(m/s → kt, meters → feet), the icao24 denylist, and region inference all
+happen in the consuming asset.
+
+Bbox ``/states/all`` cost is 1 credit per call (``PIPELINES.md`` §3.1).
+At a 30-second poll that totals 2,880 credits/day, leaving ~1,120 of the
+4,000/day free-tier budget for ``/flights/aircraft`` queries
+(``flight_plan_enrichment``, Phase 05, ~600 cr/day at steady state).
+
+``/flights/aircraft`` charges 1 credit per 1-hour window of the
+``begin``→``end`` range (rounded up) and returns 404 — *not* an error —
+when no flights match. The fetch method surfaces 404 as an empty tuple
+so callers can cache a ``not_found`` row and avoid re-spamming.
 
 **Auth:** OpenSky migrated free-tier auth from HTTP Basic (username +
 password) to OAuth2 client-credentials in 2024-2025. Registration now
@@ -14,8 +24,8 @@ issues a ``client_id`` (typically ``<email>-api-client``) and a
 ``client_secret``. The resource exchanges those at OpenSky's Keycloak
 token endpoint for a short-lived bearer token, caches it until ~60s
 before expiry, and sends ``Authorization: Bearer <token>`` on every
-``/states/all`` call. A 401 mid-flight invalidates the cache and
-forces one refresh-and-retry.
+call. A 401 mid-flight invalidates the cache and forces one
+refresh-and-retry.
 """
 
 import logging
@@ -112,6 +122,29 @@ class OpenSkyResponse:
     http_status: int
 
 
+@dataclass(frozen=True)
+class OpenSkyFlight:
+    """One flight row from ``/flights/aircraft``.
+
+    Times are epoch seconds (OpenSky's native representation). Airport
+    codes are ICAO 4-letter codes; either may be ``None`` when OpenSky
+    couldn't identify the airport from the flight track. ``callsign`` is
+    space-padded in the API; the resource trims it.
+
+    Reference:
+    https://openskynetwork.github.io/opensky-api/rest.html#flights-by-aircraft
+    """
+
+    icao24: str  # lowercase hex
+    first_seen: int  # epoch seconds — flight-track start (≈ takeoff)
+    last_seen: int  # epoch seconds — flight-track end (≈ landing)
+    callsign: str | None
+    est_departure_airport: str | None  # ICAO; None if unidentified
+    est_arrival_airport: str | None  # ICAO; None if unidentified
+    departure_airport_candidates_count: int
+    arrival_airport_candidates_count: int
+
+
 class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
     """Dagster resource wrapping the OpenSky REST API.
 
@@ -135,7 +168,7 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
     def fetch_states(self) -> OpenSkyResponse:
         """GET ``/states/all`` with the US bbox. Raises ``OpenSkyError`` on failure."""
         url = f"{self.base_url}/states/all"
-        params = {
+        params: dict[str, Any] = {
             "lamin": US_BBOX_LAMIN,
             "lomin": US_BBOX_LOMIN,
             "lamax": US_BBOX_LAMAX,
@@ -153,7 +186,42 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
             response = self._get_with_retry(url, params=params)
         return self._parse_response(response)
 
-    def _get_with_retry(self, url: str, *, params: dict[str, Any]) -> requests.Response:
+    def fetch_flight_history(
+        self,
+        icao24: str,
+        begin: int,
+        end: int,
+    ) -> tuple[OpenSkyFlight, ...]:
+        """GET ``/flights/aircraft`` for one icao24 over an epoch-second window.
+
+        Returns the flights touching the window, ordered as OpenSky returns
+        them (typically chronological). 404 (no flights for this icao24 in
+        the range) is surfaced as an empty tuple — the caller decides
+        whether to cache that as ``not_found``.
+
+        Auth/rate-limit/server failures bubble up as the usual
+        ``OpenSkyError`` subclasses.
+        """
+        url = f"{self.base_url}/flights/aircraft"
+        params: dict[str, Any] = {"icao24": icao24.lower(), "begin": begin, "end": end}
+        try:
+            response = self._get_with_retry(url, params=params, not_found_ok=True)
+        except OpenSkyAuthError:
+            logger.info("OpenSky returned 401; clearing cached token and retrying once.")
+            self._cached_token = None
+            self._cached_token_expires_at = 0.0
+            response = self._get_with_retry(url, params=params, not_found_ok=True)
+        if response.status_code == 404:
+            return ()
+        return self._parse_flights_response(response)
+
+    def _get_with_retry(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any],
+        not_found_ok: bool = False,
+    ) -> requests.Response:
         token = self._get_token()
         # Annotated explicitly so the dict satisfies the (invariant)
         # `MutableMapping[str, str | bytes]` param in the `types-requests`
@@ -197,6 +265,8 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
                     continue
                 raise OpenSkyServerError(f"OpenSky HTTP {status} after retry.")
             if status == 200:
+                return response
+            if status == 404 and not_found_ok:
                 return response
 
             raise OpenSkyError(f"Unexpected HTTP {status}: {response.text[:200]}")
@@ -296,6 +366,65 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
             rate_limit_remaining=rate_limit_remaining,
             http_status=response.status_code,
         )
+
+    @staticmethod
+    def _parse_flights_response(response: requests.Response) -> tuple[OpenSkyFlight, ...]:
+        """Parse a 200 from ``/flights/aircraft`` into a tuple of OpenSkyFlight.
+
+        Caller has already filtered 404 to ``()``. Anything else with a
+        2xx body that doesn't look like a flight list raises
+        ``OpenSkyParseError``.
+        """
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise OpenSkyParseError(f"Non-JSON flights response: {exc}") from exc
+        if not isinstance(payload, list):
+            raise OpenSkyParseError(f"Flights payload not a list: {type(payload).__name__}")
+
+        flights: list[OpenSkyFlight] = []
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            icao24_raw = row.get("icao24")
+            first_seen_raw = row.get("firstSeen")
+            last_seen_raw = row.get("lastSeen")
+            if not isinstance(icao24_raw, str) or not icao24_raw:
+                continue
+            if not isinstance(first_seen_raw, int | float):
+                continue
+            if not isinstance(last_seen_raw, int | float):
+                continue
+
+            callsign_raw = row.get("callsign")
+            callsign = (
+                callsign_raw.strip()
+                if isinstance(callsign_raw, str) and callsign_raw.strip()
+                else None
+            )
+
+            dep = row.get("estDepartureAirport")
+            arr = row.get("estArrivalAirport")
+            dep_count = row.get("departureAirportCandidatesCount", 0)
+            arr_count = row.get("arrivalAirportCandidatesCount", 0)
+
+            flights.append(
+                OpenSkyFlight(
+                    icao24=icao24_raw.lower(),
+                    first_seen=int(first_seen_raw),
+                    last_seen=int(last_seen_raw),
+                    callsign=callsign,
+                    est_departure_airport=dep if isinstance(dep, str) and dep else None,
+                    est_arrival_airport=arr if isinstance(arr, str) and arr else None,
+                    departure_airport_candidates_count=(
+                        int(dep_count) if isinstance(dep_count, int | float) else 0
+                    ),
+                    arrival_airport_candidates_count=(
+                        int(arr_count) if isinstance(arr_count, int | float) else 0
+                    ),
+                )
+            )
+        return tuple(flights)
 
     @staticmethod
     def _row_to_state(row: list[Any]) -> OpenSkyState:

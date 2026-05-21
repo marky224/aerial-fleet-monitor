@@ -1,5 +1,6 @@
 """Dagster assets for AFM pipelines."""
 
+from pipelines.assets.flight_plan_enrichment import flight_plan_enrichment
 from pipelines.assets.foundry_sync import (
     foundry_aircraft_reconcile,
     foundry_flight_enrichment,
@@ -11,6 +12,7 @@ from pipelines.assets.maintenance import prune_stale_positions
 from pipelines.assets.reference import static_reference
 
 __all__ = [
+    "flight_plan_enrichment",
     "foundry_aircraft_reconcile",
     "foundry_flight_enrichment",
     "foundry_positions_sync",
