@@ -172,7 +172,10 @@ class LakehouseResource(ConfigurableResource):  # type: ignore[type-arg]
         dirs = self._recent_partition_dirs(cutoff, now)
         if not dirs:
             return pd.DataFrame(columns=list(POSITIONS_COLUMNS))
-        dataset = pds.dataset([str(d) for d in dirs], format="parquet")
+        # pyarrow.dataset() treats a list as *file* paths; a list of hour
+        # partition *directories* must be unioned as dataset objects (each
+        # discovers its own parquet files), per pyarrow's own guidance.
+        dataset = pds.dataset([pds.dataset(str(d), format="parquet") for d in dirs])
         cutoff_scalar = pa.scalar(cutoff, type=pa.timestamp("us", tz="UTC"))
         table = dataset.to_table(filter=pds.field("ts_polled") >= cutoff_scalar)
         return cast("pd.DataFrame", table.to_pandas())

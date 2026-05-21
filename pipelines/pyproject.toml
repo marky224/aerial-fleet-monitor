@@ -68,6 +68,8 @@ packages = [
     "pipelines.assets",
     "pipelines.data",
     "pipelines.resources",
+    "pipelines.rules",
+    "pipelines.services",
     # subpackages added in later phases: pipelines.jobs.
 ]
 package-dir = {"pipelines" = "."}
