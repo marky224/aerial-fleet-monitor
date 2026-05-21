@@ -25,12 +25,14 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
+import pandas as pd
 import pyarrow as pa
+import pyarrow.dataset as pds
 import pyarrow.parquet as pq
 from dagster import ConfigurableResource
 
@@ -146,6 +148,53 @@ class LakehouseResource(ConfigurableResource):  # type: ignore[type-arg]
 
         bytes_written = final_path.stat().st_size
         return final_path.resolve(), bytes_written
+
+    def read_recent_positions(
+        self,
+        lookback_minutes: int = 60,
+        *,
+        now: datetime | None = None,
+    ) -> pd.DataFrame:
+        """Read the last ``lookback_minutes`` of position snapshots.
+
+        Reads only the hour-partition directories spanning the window
+        (1-2 dirs) and predicate-pushes ``ts_polled >= cutoff`` so the
+        scan stays bounded regardless of how much history the lake holds.
+        Returns an empty (correctly-columned) frame when no partitions
+        in range exist yet.
+
+        DuckDB is the project's analytical engine for complex SQL
+        (site_metrics); this last-hour filter+load needs none of that, so
+        it uses pyarrow.dataset (already a dependency) instead.
+        """
+        now = now or datetime.now(UTC)
+        cutoff = now - timedelta(minutes=lookback_minutes)
+        dirs = self._recent_partition_dirs(cutoff, now)
+        if not dirs:
+            return pd.DataFrame(columns=list(POSITIONS_COLUMNS))
+        dataset = pds.dataset([str(d) for d in dirs], format="parquet")
+        cutoff_scalar = pa.scalar(cutoff, type=pa.timestamp("us", tz="UTC"))
+        table = dataset.to_table(filter=pds.field("ts_polled") >= cutoff_scalar)
+        return cast("pd.DataFrame", table.to_pandas())
+
+    def _recent_partition_dirs(self, cutoff: datetime, now: datetime) -> list[Path]:
+        """Existing hour-partition dirs from ``cutoff``'s hour through ``now``'s."""
+        root = Path(self.lake_path) / "positions"
+        dirs: list[Path] = []
+        cur = cutoff.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        end = now.astimezone(UTC)
+        while cur <= end:
+            part = (
+                root
+                / f"year={cur.year:04d}"
+                / f"month={cur.month:02d}"
+                / f"day={cur.day:02d}"
+                / f"hour={cur.hour:02d}"
+            )
+            if part.exists():
+                dirs.append(part)
+            cur += timedelta(hours=1)
+        return dirs
 
     @staticmethod
     def _build_table(rows: Sequence[dict[str, Any]]) -> pa.Table:
