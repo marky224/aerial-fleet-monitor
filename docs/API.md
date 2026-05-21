@@ -493,6 +493,35 @@ class CaseRunbooksResponse(BaseModel):
 
 (See §8 for `Runbook` model.)
 
+### 6.4 `POST /v1/cases/sync-pending`
+
+System-internal push trigger for the decoupled AFM→Salesforce write path
+(Phase 05). The case detector writes local cases as
+`sf_sync_status='pending'` and never touches Salesforce; this endpoint
+drains up to `limit` pending rows into the connected org via the §10.1
+write path and reconciles `app.cases` (`salesforce_id`, `sf_sync_status`)
++ `app.case_timeline`. The pipelines `sf_case_push` asset polls it on a
+~60s cadence; each call also retries cases left `pending` by a prior
+transient failure (so the endpoint is the retry surface too).
+
+Failure handling per row: a transient Salesforce failure (`503`) leaves
+the case `pending` for the next pass (until an attempts cap parks it
+`failed`); a permanent failure (`400`/`409`) parks it `failed` at once.
+
+**Query params:**
+- `limit`: max pending cases to push this pass (default `50`, 1–500).
+
+**Response 200:**
+```python
+class CaseSyncSummary(BaseModel):
+    attempted: int                           # pending cases pulled this pass
+    synced: int                              # created in SF + marked synced
+    retrying: int                            # transient failure; left pending
+    failed: int                              # permanent failure / max attempts
+```
+
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
+
 ## 7. Briefs
 
 ### 7.1 `GET /v1/briefs`
@@ -627,6 +656,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/cases` | case list | yes |
 | GET | `/v1/cases/{case_id}` | case detail | yes |
 | GET | `/v1/cases/{case_id}/runbooks` | linked runbooks | yes |
+| POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
 | GET | `/v1/briefs` | brief list | yes |
 | GET | `/v1/briefs/{brief_id}` | brief content | yes |
 | GET | `/v1/runbooks` | runbook list | yes |
