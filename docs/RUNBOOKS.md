@@ -225,7 +225,7 @@ related_runbooks:
 
 ## When this fires
 
-An aircraft has executed three or more consecutive turns of >270° within a 10 nm radius near its destination, totaling >15 minutes of holding behavior. Standard holding patterns are typically 1–2 turns; sustained holding indicates arrival sequencing or weather-related delay.
+An aircraft has loitered within 15 nm of a watched airport at under 15,000 ft for at least 30 minutes while its heading sweeps through 6 or more of the 8 compass sectors — a circling/holding pattern rather than transiting through. Aircraft transiting or sequencing 20+ nm out are deliberately excluded (the radius was tightened from 40 nm to 15 nm to cut transit false positives). Sustained holding indicates arrival sequencing or weather-related delay.
 
 ## Triage steps
 

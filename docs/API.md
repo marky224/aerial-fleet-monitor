@@ -508,6 +508,11 @@ Failure handling per row: a transient Salesforce failure (`503`) leaves
 the case `pending` for the next pass (until an attempts cap parks it
 `failed`); a permanent failure (`400`/`409`) parks it `failed` at once.
 
+The call is safe to repeat and to overlap: it is single-flighted (a
+concurrent call returns a no-op `attempted: 0`) and idempotent on the
+unique case external id (a row whose Case already exists reconciles to it
+and is marked `synced` rather than failing as a duplicate).
+
 **Query params:**
 - `limit`: max pending cases to push this pass (default `50`, 1–500).
 
