@@ -17,7 +17,7 @@ def _holding_rows(
     span_min: float,
     headings: list[int],
     *,
-    distance_nm: float = 20.0,
+    distance_nm: float = 10.0,
     altitude_ft: int = 8_000,
 ) -> list[dict[str, Any]]:
     rows = []
@@ -39,36 +39,46 @@ def _holding_rows(
 
 
 def test_positive_circling_near_airport() -> None:
-    # 12 snapshots over 25 min, headings sweep all 8 sectors → holding.
-    rows = _holding_rows(12, 25, [0, 45, 90, 135, 180, 225, 270, 315])
+    # 12 snapshots over 35 min within 10 nm, headings sweep all 8 sectors → holding.
+    rows = _holding_rows(12, 35, [0, 45, 90, 135, 180, 225, 270, 315])
     out = RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE)
     assert [a.icao24 for a in out] == ["hold01"]
     assert out[0].site_icao == "KDEN"
-    assert out[0].detection_facts["distinct_heading_sectors"] >= 5
+    assert out[0].detection_facts["distinct_heading_sectors"] >= 6
 
 
 def test_negative_transiting_single_heading() -> None:
-    # 12 snapshots over 25 min but constant heading → not circling.
-    rows = _holding_rows(12, 25, [90])
+    # Within radius and over the duration floor, but constant heading (1
+    # sector < 6) → transiting, not circling. Isolates the sector gate.
+    rows = _holding_rows(12, 35, [90])
+    assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
+
+
+def test_negative_too_few_sectors() -> None:
+    # Within radius and over the duration floor, sweeps only 5 of 8 sectors
+    # (below the tuned 6) → not enough circling. Isolates the sector gate.
+    rows = _holding_rows(12, 35, [0, 45, 90, 135, 180])
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
 
 
 def test_negative_duration_too_short() -> None:
-    # All 8 sectors but only 10 min in the window.
-    rows = _holding_rows(12, 10, [0, 45, 90, 135, 180, 225, 270, 315])
+    # All 8 sectors, within radius, but only 20 min (< 30) → isolates duration.
+    rows = _holding_rows(12, 20, [0, 45, 90, 135, 180, 225, 270, 315])
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
 
 
 def test_negative_too_few_snapshots() -> None:
-    rows = _holding_rows(6, 25, [0, 45, 90, 135, 180, 225, 270, 315])
+    # All gates pass except < 10 snapshots → isolates the snapshot gate.
+    rows = _holding_rows(6, 35, [0, 45, 90, 135, 180, 225, 270, 315])
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
 
 
-def test_negative_outside_hold_radius() -> None:
-    rows = _holding_rows(12, 25, [0, 45, 90, 135, 180, 225, 270, 315], distance_nm=120.0)
+def test_negative_just_outside_hold_radius() -> None:
+    # 18 nm — just outside the tuned 15 nm radius; everything else passes.
+    rows = _holding_rows(12, 35, [0, 45, 90, 135, 180, 225, 270, 315], distance_nm=18.0)
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
 
 
 def test_negative_too_high_altitude() -> None:
-    rows = _holding_rows(12, 25, [0, 45, 90, 135, 180, 225, 270, 315], altitude_ft=33_000)
+    rows = _holding_rows(12, 35, [0, 45, 90, 135, 180, 225, 270, 315], altitude_ft=33_000)
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []

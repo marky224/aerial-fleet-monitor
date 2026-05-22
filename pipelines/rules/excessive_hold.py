@@ -1,10 +1,18 @@
 """excessive_hold — an aircraft is holding near a watched airport.
 
-Heuristic: across the last hour, an icao24 spends >= 20 minutes airborne
-within 40 nm of a watched airport at < 15,000 ft while its heading
+Heuristic: across the last hour, an icao24 spends >= 30 minutes airborne
+within 15 nm of a watched airport at < 15,000 ft while its heading
 sweeps through many compass sectors (a circling/holding pattern rather
 than transiting through). Wrap-safe circling test = number of distinct
-45-degree heading sectors visited (>= 5 of 8).
+45-degree heading sectors visited (>= 6 of 8).
+
+The 15 nm radius is deliberately tight: a diagnosis of one live cycle
+showed a 40 nm radius fired ~723x/cycle, of which >50% kept the aircraft
+20+ nm from the field the whole time — arrival sequencing / vectoring /
+transit near busy airports, not a hold. A published holding pattern sits
+within ~5-15 nm of the fix; tightening radius (40->15), sectors (5->6),
+and duration (20->30 min) cut fires ~86% to the aircraft that actually
+loiter close to the field.
 """
 
 from __future__ import annotations
@@ -23,11 +31,11 @@ from pipelines.rules.base import (
 )
 from pipelines.services.baseline_provider import BaselineProvider
 
-HOLD_RADIUS_NM = 40.0
+HOLD_RADIUS_NM = 15.0
 HOLD_CEILING_FT = 15_000
-HOLD_MIN_DURATION = timedelta(minutes=20)
+HOLD_MIN_DURATION = timedelta(minutes=30)
 MIN_SNAPSHOTS = 10
-MIN_DISTINCT_SECTORS = 5  # of 8 45-degree sectors
+MIN_DISTINCT_SECTORS = 6  # of 8 45-degree sectors
 
 
 class ExcessiveHoldRule(Rule):
