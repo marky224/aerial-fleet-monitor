@@ -17,13 +17,16 @@ best-effort mirror and an API/SF outage must never fail the pipeline run
 """
 
 import os
+from typing import Any
 
 import httpx
 from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, asset
 
 DEFAULT_API_BASE = "http://localhost:8000"
 SYNC_PENDING_PATH = "/v1/cases/sync-pending"
+SYNC_FROM_SF_PATH = "/v1/cases/sync-from-sf"
 PUSH_LIMIT = 50
+PULL_LIMIT = 200
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
@@ -71,4 +74,51 @@ def sf_case_push(context: AssetExecutionContext) -> MaterializeResult:
     metadata: dict[str, MetadataValue] = {"skipped": MetadataValue.bool(False)}
     for key, value in summary.items():
         metadata[key] = MetadataValue.int(int(value))
+    return MaterializeResult(metadata=metadata)
+
+
+def pull_cases_from_sf(base_url: str, limit: int = PULL_LIMIT) -> dict[str, Any]:
+    """POST the sync-from-sf trigger; return the CasePullSummary body.
+
+    Raises ``httpx.HTTPError`` (transport or 4xx/5xx) — the asset turns
+    that into a skip.
+    """
+    resp = httpx.post(
+        f"{base_url}{SYNC_FROM_SF_PATH}",
+        params={"limit": limit},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return dict(resp.json())
+
+
+@asset(
+    group_name="sync",
+    description=(
+        "Mirrors Salesforce-modified Cases back into app.cases via the API's "
+        "/v1/cases/sync-from-sf endpoint (watermark-driven SF→PG pull). Skips "
+        "(does not fail) when the API is unreachable — the watermark is "
+        "untouched so the next pass re-reads the same window."
+    ),
+    metadata={"source": "salesforce", "cadence": "60s"},
+)
+def sf_case_sync(context: AssetExecutionContext) -> MaterializeResult:
+    base_url = _api_base()
+    try:
+        summary = pull_cases_from_sf(base_url, PULL_LIMIT)
+    except httpx.HTTPError as exc:
+        context.log.warning("sf_case_sync: API unreachable (%s) — skipping", exc)
+        return MaterializeResult(
+            metadata={
+                "skipped": MetadataValue.bool(True),
+                "skip_reason": MetadataValue.text(str(exc)),
+            }
+        )
+    context.log.info("sf_case_sync: %s", summary)
+    metadata: dict[str, MetadataValue] = {"skipped": MetadataValue.bool(False)}
+    for key in ("fetched", "updated", "unmatched"):
+        metadata[key] = MetadataValue.int(int(summary.get(key, 0) or 0))
+    watermark = summary.get("watermark")
+    if watermark:
+        metadata["watermark"] = MetadataValue.text(str(watermark))
     return MaterializeResult(metadata=metadata)

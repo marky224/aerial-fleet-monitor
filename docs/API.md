@@ -522,6 +522,34 @@ class CaseSyncSummary(BaseModel):
 
 **Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
 
+### 6.5 `POST /v1/cases/sync-from-sf`
+
+System-internal pull trigger for the SF→Postgres mirror (Phase 05), the
+inverse of §6.4. Reads the persisted `sf_case_sync` watermark, fetches up
+to `limit` `Fleet_Operations` Cases with `SystemModstamp` greater than the
+watermark via the §10.1 read path, mirrors each onto its `app.cases` row
+(matched by `salesforce_id`, falling back to the external id), writes
+`app.case_timeline` events for material changes (`status_changed`,
+`severity_changed`, `resolved`), and advances the watermark to the maximum
+`SystemModstamp` observed (leaving it untouched when nothing changed). The
+pipelines `sf_case_sync` asset polls it on a ~60s cadence. SF→AFM
+translation (Status/Priority/Description → `app.cases` status/severity/
+summary) lives only in the §10.1 service.
+
+**Query params:**
+- `limit`: max modified Cases to pull this pass (default `200`, 1–200).
+
+**Response 200:**
+```python
+class CasePullSummary(BaseModel):
+    fetched: int                             # cases returned by SF since the watermark
+    updated: int                             # matched app.cases rows updated
+    unmatched: int                           # SF cases with no local row (skipped)
+    watermark: datetime | None               # new watermark; null if nothing changed
+```
+
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
+
 ## 7. Briefs
 
 ### 7.1 `GET /v1/briefs`
@@ -657,6 +685,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/cases/{case_id}` | case detail | yes |
 | GET | `/v1/cases/{case_id}/runbooks` | linked runbooks | yes |
 | POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
+| POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
 | GET | `/v1/briefs` | brief list | yes |
 | GET | `/v1/briefs/{brief_id}` | brief content | yes |
 | GET | `/v1/runbooks` | runbook list | yes |

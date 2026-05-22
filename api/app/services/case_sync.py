@@ -26,13 +26,19 @@ and never names an ``AFM_*__c`` field.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 
 from psycopg2.extras import Json
 
 from app.exceptions import AFMException, UpstreamUnavailable
 from app.logging import get_logger
-from app.models.salesforce import CaseCreateInput, CaseSyncSummary
+from app.models.salesforce import (
+    CaseCreateInput,
+    CasePullSummary,
+    CaseSyncRecord,
+    CaseSyncSummary,
+)
 from app.services.postgres import PostgresPool
 from app.services.salesforce import SalesforceService
 
@@ -42,6 +48,19 @@ log = get_logger(__name__)
 # permanently-broken row can't retry forever. Generous enough to ride out a
 # multi-minute SF outage at the ~60s push cadence.
 MAX_ATTEMPTS = 5
+
+# app.sync_watermarks key for the SF→Postgres pull (PIPELINES.md §3.5).
+SF_CASE_SYNC_WATERMARK = "sf_case_sync"
+
+# Postgres advisory-lock key for the push single-flight. The retry sensor
+# fires ~every 60s; once the pending backlog makes a pass run longer than
+# that, a second pass would overlap and double-submit the same rows (the
+# unique AFM_External_Id__c then bounces the loser as DUPLICATE_VALUE). A
+# session-level advisory lock makes overlapping passes a no-op skip. (An
+# advisory lock rather than FOR UPDATE row locks: a pass holds across many
+# slow SF round-trips, and a row-lock transaction open that long is an
+# idle-in-transaction anti-pattern.)
+_PUSH_LOCK_KEY = 0x4146_4D43  # "AFMC"
 
 # AFM severity (cases.severity) → Salesforce standard Priority picklist.
 # Priority is where AFM severity rides (models/salesforce.py CaseCreateInput).
@@ -95,6 +114,33 @@ class CaseSyncService:
         self._sf = salesforce
 
     async def push_pending(self, limit: int = 50) -> CaseSyncSummary:
+        # Single-flight: hold one connection's session advisory lock for the
+        # whole pass so a concurrent push (overlapping sensor tick) skips
+        # rather than double-submitting the same pending rows.
+        with self._pg.connection() as lock_conn:
+            if not await asyncio.to_thread(self._try_lock, lock_conn):
+                log.info("case_sync.push_pending.skipped_locked")
+                return CaseSyncSummary(attempted=0, synced=0, retrying=0, failed=0)
+            try:
+                return await self._push_pending_locked(limit)
+            finally:
+                await asyncio.to_thread(self._unlock, lock_conn)
+
+    @staticmethod
+    def _try_lock(conn: Any) -> bool:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (_PUSH_LOCK_KEY,))
+            acquired = bool(cur.fetchone()[0])
+        conn.commit()  # release the implicit txn; session lock persists
+        return acquired
+
+    @staticmethod
+    def _unlock(conn: Any) -> None:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock(%s)", (_PUSH_LOCK_KEY,))
+        conn.commit()
+
+    async def _push_pending_locked(self, limit: int) -> CaseSyncSummary:
         rows = await asyncio.to_thread(self._fetch_pending, limit)
         synced = retrying = failed = 0
         for row in rows:
@@ -215,3 +261,146 @@ class CaseSyncService:
                 (case_id, Json({"attempts": attempts, "error": error})),
             )
             conn.commit()
+
+    # == pull half: Salesforce → Postgres (PIPELINES.md §3.5) =============
+
+    async def pull_from_sf(self, limit: int = 200) -> CasePullSummary:
+        """Mirror Cases modified in Salesforce back into app.cases.
+
+        Reads the `sf_case_sync` watermark, fetches Cases with
+        SystemModstamp > watermark, applies each to its local row (writing
+        timeline events for material changes), then advances the watermark
+        to the max SystemModstamp seen. Zero rows → watermark untouched so
+        the next cycle re-attempts the same window (spec step 5)."""
+        watermark = await asyncio.to_thread(self._read_watermark)
+        records = await self._sf.query_cases_modified_since(watermark, limit)
+
+        updated = unmatched = 0
+        max_modstamp: datetime | None = None
+        for rec in records:
+            max_modstamp = (
+                rec.system_modstamp
+                if max_modstamp is None
+                else max(max_modstamp, rec.system_modstamp)
+            )
+            if await asyncio.to_thread(self._apply_record, rec):
+                updated += 1
+            else:
+                unmatched += 1
+
+        new_watermark: datetime | None = None
+        if max_modstamp is not None:
+            await asyncio.to_thread(self._write_watermark, max_modstamp)
+            new_watermark = max_modstamp
+
+        summary = CasePullSummary(
+            fetched=len(records), updated=updated, unmatched=unmatched, watermark=new_watermark
+        )
+        log.info(
+            "case_sync.pull_from_sf",
+            fetched=summary.fetched,
+            updated=summary.updated,
+            unmatched=summary.unmatched,
+            watermark=new_watermark.isoformat() if new_watermark else None,
+        )
+        return summary
+
+    def _read_watermark(self) -> datetime:
+        row = self._pg.fetchone(
+            "SELECT last_sync_at FROM app.sync_watermarks WHERE sync_name = %(name)s",
+            {"name": SF_CASE_SYNC_WATERMARK},
+        )
+        if row is None:
+            return SalesforceService.default_pull_watermark()
+        return cast(datetime, row["last_sync_at"])
+
+    def _write_watermark(self, modstamp: datetime) -> None:
+        with self._pg.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO app.sync_watermarks (sync_name, last_sync_at, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (sync_name)
+                DO UPDATE SET last_sync_at = EXCLUDED.last_sync_at, updated_at = NOW()
+                """,
+                (SF_CASE_SYNC_WATERMARK, modstamp),
+            )
+            conn.commit()
+
+    def _apply_record(self, rec: CaseSyncRecord) -> bool:
+        """Apply one SF Case to its local row. Returns False if unmatched.
+
+        SELECT-then-UPDATE in one transaction so timeline events reflect the
+        true pre-update state. Matches by salesforce_id, falling back to
+        external_id==case_id (which also backfills a stranded salesforce_id —
+        the duplicate-recovery edge). summary/severity/justification use
+        COALESCE so a null from SF never blanks a locally-set value; status
+        and resolved_at are authoritative from SF (a reopen clears ClosedDate)."""
+        with self._pg.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT case_id, status, severity, resolved_at
+                FROM app.cases
+                WHERE salesforce_id = %s OR case_id = %s
+                """,
+                (rec.salesforce_id, rec.external_id),
+            )
+            current = cur.fetchone()
+            if current is None:
+                return False
+            case_id, prev_status, prev_severity, prev_resolved_at = current
+
+            cur.execute(
+                """
+                UPDATE app.cases
+                SET status = %s,
+                    severity = COALESCE(%s, severity),
+                    summary = COALESCE(%s, summary),
+                    severity_justification = COALESCE(%s, severity_justification),
+                    runbook_refs = COALESCE(%s, runbook_refs),
+                    resolved_at = %s,
+                    salesforce_id = COALESCE(salesforce_id, %s),
+                    updated_at = NOW()
+                WHERE case_id = %s
+                """,
+                (
+                    rec.status,
+                    rec.severity,
+                    rec.summary,
+                    rec.severity_justification,
+                    rec.runbook_refs or None,
+                    rec.resolved_at,
+                    rec.salesforce_id,
+                    case_id,
+                ),
+            )
+
+            for event_type, detail in self._material_changes(
+                rec, prev_status, prev_severity, prev_resolved_at
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO app.case_timeline (case_id, event_type, detail, source)
+                    VALUES (%s, %s, %s, 'sf_sync')
+                    """,
+                    (case_id, event_type, Json(detail)),
+                )
+            conn.commit()
+        return True
+
+    @staticmethod
+    def _material_changes(
+        rec: CaseSyncRecord,
+        prev_status: str,
+        prev_severity: str,
+        prev_resolved_at: datetime | None,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Timeline events for the changes spec step 4 calls material."""
+        events: list[tuple[str, dict[str, Any]]] = []
+        if rec.status != prev_status:
+            events.append(("status_changed", {"from": prev_status, "to": rec.status}))
+        if rec.severity is not None and rec.severity != prev_severity:
+            events.append(("severity_changed", {"from": prev_severity, "to": rec.severity}))
+        if rec.resolved_at is not None and prev_resolved_at is None:
+            events.append(("resolved", {"resolved_at": rec.resolved_at.isoformat()}))
+        return events

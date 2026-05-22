@@ -43,6 +43,7 @@ from pipelines.assets import (
     opensky_positions,
     prune_stale_positions,
     sf_case_push,
+    sf_case_sync,
     static_reference,
 )
 from pipelines.resources import (
@@ -114,6 +115,12 @@ sf_case_push_job = define_asset_job(
 )
 
 
+sf_case_sync_job = define_asset_job(
+    name="sf_case_sync_job",
+    selection=AssetSelection.assets(sf_case_sync),
+)
+
+
 case_detector_job = define_asset_job(
     name="case_detector_job",
     selection=AssetSelection.assets(case_detector),
@@ -165,6 +172,23 @@ def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunReque
     description="Pushes pending cases to Salesforce every ~60s; re-scan provides retry.",
 )
 def case_sync_retry_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Pulls Salesforce-modified Cases back into app.cases (PIPELINES.md §3.5).
+# A sensor at ~60s for the same reason as the push: the spec's 60s cadence is
+# finer than Dagster's minute-resolution cron, and a fresh RunRequest each
+# fire launches a run. The pull is watermark-driven + idempotent, so an
+# overlapping run is harmless; an API/SF outage materializes as a skip with
+# the watermark untouched, so the next tick re-reads the same window.
+@sensor(
+    job=sf_case_sync_job,
+    name="sf_case_sync_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Mirrors Salesforce Case changes into app.cases every ~60s (watermark-driven).",
+)
+def sf_case_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
@@ -278,6 +302,7 @@ defs = Definitions(
         foundry_flight_enrichment,
         flight_plan_enrichment,
         sf_case_push,
+        sf_case_sync,
         case_detector,
         prune_stale_positions,
     ],
@@ -291,6 +316,7 @@ defs = Definitions(
         foundry_flight_enrichment_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
+        sf_case_sync_job,
         case_detector_job,
         prune_stale_positions_job,
     ],
@@ -304,7 +330,12 @@ defs = Definitions(
         case_detector_schedule,
         prune_stale_positions_schedule,
     ],
-    sensors=[opensky_positions_sensor, foundry_positions_sync_sensor, case_sync_retry_sensor],
+    sensors=[
+        opensky_positions_sensor,
+        foundry_positions_sync_sensor,
+        case_sync_retry_sensor,
+        sf_case_sync_sensor,
+    ],
     resources={
         "postgres": postgres,
         "watchlist": watchlist,
