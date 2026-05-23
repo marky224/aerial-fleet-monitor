@@ -6,8 +6,12 @@ from FastAPI's event loop (SALESFORCE.md §"Async wrapping convention").
 
 Auth is OAuth 2.0 Client Credentials against the org's My Domain token
 endpoint (no stored user password; the Connected App's "Run As" user is
-the effective principal). The token is fetched lazily and cached, then
-refreshed once on an auth failure.
+the effective principal). The token is fetched lazily and cached;
+``_with_session_retry`` drops the cached client and re-fetches once on
+a 401 ``INVALID_SESSION_ID`` (token TTL expired between requests on
+this app-wide singleton), and ``_translate_sf_error`` maps a residual
+401 to a transient ``UpstreamUnavailable`` so the push retries the
+row rather than parking it permanently ``failed``.
 
 This module is the single place region values are translated to
 Salesforce TitleCase and snake_case inputs are mapped to `AFM_*__c` API
@@ -27,6 +31,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -159,6 +164,24 @@ class SalesforceService:
         self._case_record_type_id = None
         return self._client()
 
+    def _with_session_retry(self, fn: Callable[[], Any]) -> Any:
+        """Run ``fn``; on a 401 INVALID_SESSION_ID, drop the cached client
+        and retry once. The Connected App's client-credentials access token
+        has a finite TTL (org rotation policy) and the SalesforceService
+        instance is an app-wide singleton, so an expired token would
+        otherwise 401 every subsequent call until process restart. A
+        second 401 indicates a real auth problem (revoked creds, IP
+        block) and is left to propagate — `_translate_sf_error` will
+        surface it as a transient `UpstreamUnavailable` so the push
+        retries the row rather than parking it `failed`."""
+        try:
+            return fn()
+        except SalesforceError as exc:
+            if getattr(exc, "status", None) != 401:
+                raise
+            self._reauth()
+            return fn()
+
     # -- field mapping ----------------------------------------------------
 
     def _case_record_type(self) -> str:
@@ -167,7 +190,7 @@ class SalesforceService:
                 "SELECT Id FROM RecordType WHERE SobjectType='Case' "
                 f"AND DeveloperName='{self._record_type_dev_name}'"
             )
-            res = self._client().query(soql)
+            res = self._with_session_retry(lambda: self._client().query(soql))
             recs = res.get("records", [])
             if not recs:
                 raise UpstreamUnavailable(
@@ -232,6 +255,12 @@ class SalesforceService:
         """
         status = getattr(exc, "status", None)
         details = {"sf_status": status, "sf_errors": getattr(exc, "content", None)}
+        # 401 = session/auth, treated as transient so the push retries the row
+        # (`_with_session_retry` already attempts one in-process refresh before
+        # this point; a residual 401 here usually means revoked creds or an IP
+        # block that may clear on its own).
+        if status == 401:
+            return UpstreamUnavailable(message, details=details)
         if isinstance(status, int) and 400 <= status < 500:
             return BadRequest(message, details=details)
         return UpstreamUnavailable(message, details=details)
@@ -253,13 +282,13 @@ class SalesforceService:
     def _find_case_id_by_external_id_sync(self, external_id: str) -> str | None:
         safe = external_id.replace("\\", "\\\\").replace("'", "\\'")
         soql = f"SELECT Id FROM Case WHERE AFM_External_Id__c = '{safe}' LIMIT 1"
-        records = self._client().query(soql).get("records", [])
+        records = self._with_session_retry(lambda: self._client().query(soql)).get("records", [])
         return cast(str, records[0]["Id"]) if records else None
 
     def _create_case_sync(self, payload: CaseCreateInput) -> SalesforceCaseRef:
         sf_fields = self.to_sf_fields(payload)
         try:
-            result = self._client().Case.create(sf_fields)
+            result = self._with_session_retry(lambda: self._client().Case.create(sf_fields))
         except SalesforceError as exc:
             # Idempotent recovery: a Case already exists for this external id
             # (retry / concurrent push) → adopt the existing record instead of
@@ -287,13 +316,19 @@ class SalesforceService:
         """Insert a Case. Returns both cross-system ids (DATA_MODEL §6)."""
         return await asyncio.to_thread(self._create_case_sync, payload)
 
+    def _update_case_sync(self, case_id: str, updates: dict[str, Any]) -> None:
+        self._with_session_retry(lambda: self._client().Case.update(case_id, updates))
+
     async def update_case(self, case_id: str, updates: dict[str, Any]) -> None:
         """Patch a Case by Salesforce Id. `updates` uses SF field names."""
-        await asyncio.to_thread(self._client().Case.update, case_id, updates)
+        await asyncio.to_thread(self._update_case_sync, case_id, updates)
+
+    def _delete_case_sync(self, case_id: str) -> None:
+        self._with_session_retry(lambda: self._client().Case.delete(case_id))
 
     async def delete_case(self, case_id: str) -> None:
         """Hard-delete a Case by Salesforce Id (used by the dev smoke test)."""
-        await asyncio.to_thread(self._client().Case.delete, case_id)
+        await asyncio.to_thread(self._delete_case_sync, case_id)
 
     # -- scope read (Half-A: provided + tested, not yet wired) ------------
 
@@ -303,21 +338,21 @@ class SalesforceService:
         # and CustomPermission's API-name column is `DeveloperName` not `Name`.
         # The mock-based unit test never exercised real SOQL; the Phase-04
         # integration suite (test_salesforce_integration.py) caught both.
-        client = self._client()
         access_soql = (
             "SELECT SetupEntityId FROM SetupEntityAccess "
             "WHERE SetupEntityType='CustomPermission' AND ParentId IN ("
             "SELECT PermissionSetId FROM PermissionSetAssignment "
             f"WHERE AssigneeId = '{user_id}')"
         )
-        access_recs = client.query(access_soql).get("records", [])
+        access_recs = self._with_session_retry(lambda: self._client().query(access_soql)).get(
+            "records", []
+        )
         cp_ids = [cast(str, r["SetupEntityId"]) for r in access_recs]
         if not cp_ids:
             return []
         id_list = ", ".join(f"'{i}'" for i in cp_ids)
-        cp_recs = client.query(
-            f"SELECT DeveloperName FROM CustomPermission WHERE Id IN ({id_list})"
-        ).get("records", [])
+        cp_soql = f"SELECT DeveloperName FROM CustomPermission WHERE Id IN ({id_list})"
+        cp_recs = self._with_session_retry(lambda: self._client().query(cp_soql)).get("records", [])
         return [cast(str, r["DeveloperName"]) for r in cp_recs]
 
     async def get_user_custom_perms(self, user_id: str) -> list[str]:
@@ -369,7 +404,7 @@ class SalesforceService:
             "ORDER BY SystemModstamp ASC "
             f"LIMIT {int(limit)}"
         )
-        records = self._client().query(soql).get("records", [])
+        records = self._with_session_retry(lambda: self._client().query(soql)).get("records", [])
         return [self._to_sync_record(r) for r in records]
 
     async def query_cases_modified_since(

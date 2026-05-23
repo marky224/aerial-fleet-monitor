@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from simple_salesforce.exceptions import (
+    SalesforceExpiredSession,
     SalesforceGeneralError,
     SalesforceMalformedRequest,
 )
@@ -265,6 +266,60 @@ async def test_create_case_5xx_translates_to_upstream_unavailable(
     monkeypatch.setattr(svc, "_case_record_type", lambda: "012")
     with pytest.raises(UpstreamUnavailable):
         await svc.create_case(CaseCreateInput(external_id="C", subject="s"))
+
+
+async def test_create_case_401_reauths_and_retries_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cached access token expires (TTL) → SF returns 401 INVALID_SESSION_ID.
+    # Without the retry the whole push batch parks `failed` until process
+    # restart; `_with_session_retry` must drop the cached client and retry once.
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    expired = SalesforceExpiredSession(
+        url="https://x/Case",
+        status=401,
+        resource_name="Case",
+        content=[{"message": "Session expired or invalid", "errorCode": "INVALID_SESSION_ID"}],
+    )
+    fake.Case.create.side_effect = [expired, {"id": "500NEW", "success": True}]
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    monkeypatch.setattr(svc, "_case_record_type", lambda: "012")
+    reauth_calls: list[int] = []
+    real_reauth = svc._reauth
+
+    def tracked_reauth() -> Any:
+        reauth_calls.append(1)
+        return real_reauth()
+
+    monkeypatch.setattr(svc, "_reauth", tracked_reauth)
+    ref = await svc.create_case(CaseCreateInput(external_id="CASE-X", subject="s"))
+    assert ref.salesforce_id == "500NEW"
+    assert len(reauth_calls) == 1, "expected exactly one reauth attempt"
+    assert fake.Case.create.call_count == 2, "expected one retry after the 401"
+
+
+async def test_create_case_persistent_401_translates_to_upstream_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Both attempts 401 → real auth problem (revoked creds, IP block). Must
+    # surface as `UpstreamUnavailable` (transient) so the case stays `pending`
+    # and the next push pass retries it; never `BadRequest` which would park
+    # it permanently `failed`.
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    expired = SalesforceExpiredSession(
+        url="https://x/Case",
+        status=401,
+        resource_name="Case",
+        content=[{"message": "Session expired or invalid", "errorCode": "INVALID_SESSION_ID"}],
+    )
+    fake.Case.create.side_effect = expired
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    monkeypatch.setattr(svc, "_case_record_type", lambda: "012")
+    with pytest.raises(UpstreamUnavailable) as exc_info:
+        await svc.create_case(CaseCreateInput(external_id="C", subject="s"))
+    assert exc_info.value.details["sf_status"] == 401
 
 
 async def test_get_user_custom_perms(monkeypatch: pytest.MonkeyPatch) -> None:
