@@ -3,7 +3,7 @@
     <fullName>AFM_Flight_Id__c</fullName>
     <label>Flight ICAO24</label>
     <type>Text</type>
-    <length>6</length>
+    <length>12</length>
     <required>false</required>
-    <description>ICAO24 hex identifier for the flight this case concerns.</description>
+    <description>ICAO24 hex identifier for the flight this case concerns. Holds a `WX-{site}` sentinel for site-level cases (weather_impact) where the rule has no specific aircraft — length 12 accommodates the longest sentinel form.</description>
 </CustomField>
