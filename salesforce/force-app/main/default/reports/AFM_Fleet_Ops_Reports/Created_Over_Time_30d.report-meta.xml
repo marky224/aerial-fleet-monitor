@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://soap.sforce.com/2006/04/metadata">
+    <name>Cases Created Over Time (30d)</name>
+    <description>Daily AFM Case creation volume over the last 30 days — line chart of detector throughput.</description>
+    <reportType>CaseList</reportType>
+    <format>Summary</format>
+    <showDetails>false</showDetails>
+    <showGrandTotal>true</showGrandTotal>
+    <showSubTotals>true</showSubTotals>
+    <groupingsDown>
+        <field>Case.CreatedDate</field>
+        <sortOrder>Asc</sortOrder>
+        <dateGranularity>Day</dateGranularity>
+    </groupingsDown>
+    <columns>
+        <field>Case.CaseNumber</field>
+    </columns>
+    <filter>
+        <criteriaItems>
+            <column>Case.AFM_External_Id__c</column>
+            <operator>notEqual</operator>
+            <value></value>
+        </criteriaItems>
+    </filter>
+    <timeFrameFilter>
+            <dateColumn>CREATED_DATE</dateColumn>
+            <interval>INTERVAL_LAST30</interval>
+        </timeFrameFilter>
+</Report>

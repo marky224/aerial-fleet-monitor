@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexiPage xmlns="http://soap.sforce.com/2006/04/metadata">
+    <masterLabel>AFM Fleet Operations Case Record</masterLabel>
+    <description>Lightning record page for AFM Fleet Operations Cases — Highlights + Path on top, Details + Related lists below.</description>
+    <sobjectType>Case</sobjectType>
+    <type>RecordPage</type>
+    <template>
+        <name>flexipage:recordHomeTemplateDesktop</name>
+    </template>
+    <flexiPageRegions>
+        <name>header</name>
+        <type>Region</type>
+        <itemInstances>
+            <componentInstance>
+                <componentName>force:highlightsPanel</componentName>
+                <identifier>highlights_panel</identifier>
+            </componentInstance>
+        </itemInstances>
+        <itemInstances>
+            <componentInstance>
+                <componentName>runtime_sales_pathassistant:pathAssistant</componentName>
+                <identifier>path_assistant</identifier>
+            </componentInstance>
+        </itemInstances>
+    </flexiPageRegions>
+    <flexiPageRegions>
+        <name>main</name>
+        <type>Region</type>
+        <itemInstances>
+            <componentInstance>
+                <componentName>force:detailPanel</componentName>
+                <identifier>detail_panel</identifier>
+            </componentInstance>
+        </itemInstances>
+    </flexiPageRegions>
+    <flexiPageRegions>
+        <name>sidebar</name>
+        <type>Region</type>
+    </flexiPageRegions>
+</FlexiPage>

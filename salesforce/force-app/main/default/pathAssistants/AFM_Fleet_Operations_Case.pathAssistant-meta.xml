@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PathAssistant xmlns="http://soap.sforce.com/2006/04/metadata">
+    <active>true</active>
+    <entityName>Case</entityName>
+    <fieldName>Status</fieldName>
+    <masterLabel>AFM Fleet Operations</masterLabel>
+    <recordTypeName>Fleet_Operations</recordTypeName>
+    <pathAssistantSteps>
+        <picklistValueName>New</picklistValueName>
+        <fieldNames>Priority</fieldNames>
+        <fieldNames>AFM_Case_Type__c</fieldNames>
+        <fieldNames>AFM_Site_Icao__c</fieldNames>
+        <fieldNames>AFM_Flight_Id__c</fieldNames>
+        <info>&lt;p&gt;Triage: review detection facts and confirm severity before acknowledging.&lt;/p&gt;</info>
+    </pathAssistantSteps>
+    <pathAssistantSteps>
+        <picklistValueName>Working</picklistValueName>
+        <fieldNames>OwnerId</fieldNames>
+        <fieldNames>AFM_Detection_Facts__c</fieldNames>
+        <info>&lt;p&gt;Investigate using the runbook and detection facts. Coordinate with ATC or the operator as needed.&lt;/p&gt;</info>
+    </pathAssistantSteps>
+    <pathAssistantSteps>
+        <picklistValueName>Escalated</picklistValueName>
+        <fieldNames>AFM_Severity_Justification__c</fieldNames>
+        <fieldNames>OwnerId</fieldNames>
+        <info>&lt;p&gt;Escalate to the next tier. Justification (≥10 chars) is required by validation rule.&lt;/p&gt;</info>
+    </pathAssistantSteps>
+    <pathAssistantSteps>
+        <picklistValueName>Closed</picklistValueName>
+        <fieldNames>Reason</fieldNames>
+        <fieldNames>Description</fieldNames>
+        <info>&lt;p&gt;Document the resolution. Reason and a non-empty Description are required by validation rule.&lt;/p&gt;</info>
+    </pathAssistantSteps>
+</PathAssistant>

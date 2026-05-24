@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ListView xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Escalated</fullName>
+    <label>AFM: Escalated</label>
+    <filterScope>Everything</filterScope>
+    <columns>CASES.CASE_NUMBER</columns>
+    <columns>CASES.SUBJECT</columns>
+    <columns>AFM_Severity_Badge__c</columns>
+    <columns>CASES.PRIORITY</columns>
+    <columns>AFM_Case_Type__c</columns>
+    <columns>AFM_Flight_Id__c</columns>
+    <columns>AFM_Site_Icao__c</columns>
+    <columns>CORE.USERS.ALIAS</columns>
+    <columns>AFM_Severity_Justification__c</columns>
+    <columns>CASES.CREATED_DATE</columns>
+    <filters>
+        <field>AFM_External_Id__c</field>
+        <operation>notEqual</operation>
+    </filters>
+    <filters>
+        <field>CASES.STATUS</field>
+        <operation>equals</operation>
+        <value>Escalated</value>
+    </filters>
+</ListView>

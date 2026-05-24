@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://soap.sforce.com/2006/04/metadata">
+    <name>Severity Mix</name>
+    <description>AFM Cases grouped by Priority — at-a-glance severity distribution. Filter Status in the UI to scope to open only.</description>
+    <reportType>CaseList</reportType>
+    <format>Summary</format>
+    <showDetails>true</showDetails>
+    <showGrandTotal>true</showGrandTotal>
+    <showSubTotals>true</showSubTotals>
+    <groupingsDown>
+        <field>Case.Priority</field>
+        <sortOrder>Asc</sortOrder>
+    </groupingsDown>
+    <columns>
+        <field>Case.CaseNumber</field>
+    </columns>
+    <columns>
+        <field>Case.Subject</field>
+    </columns>
+    <columns>
+        <field>Case.AFM_Case_Type__c</field>
+    </columns>
+    <columns>
+        <field>Case.Status</field>
+    </columns>
+    <columns>
+        <field>Case.AFM_Flight_Id__c</field>
+    </columns>
+    <columns>
+        <field>Case.AFM_Site_Icao__c</field>
+    </columns>
+    <filter>
+        <criteriaItems>
+            <column>Case.AFM_External_Id__c</column>
+            <operator>notEqual</operator>
+            <value></value>
+        </criteriaItems>
+    </filter>
+</Report>

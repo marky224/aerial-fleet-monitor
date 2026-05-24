@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Resolve_Requires_Description</fullName>
+    <active>true</active>
+    <description>A Closed AFM Case must have a non-empty Description so the resolution is documented. Scoped to the Fleet_Operations record type so non-AFM Cases are unaffected.</description>
+    <errorConditionFormula>AND(
+  ISPICKVAL(Status, "Closed"),
+  RecordType.DeveloperName = "Fleet_Operations",
+  ISBLANK(Description)
+)</errorConditionFormula>
+    <errorMessage>Description is required when closing an AFM Case (document the resolution).</errorMessage>
+    <errorDisplayField>Description</errorDisplayField>
+</ValidationRule>
