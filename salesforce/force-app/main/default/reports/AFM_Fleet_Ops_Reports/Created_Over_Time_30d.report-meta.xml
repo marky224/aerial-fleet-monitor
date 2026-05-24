@@ -1,29 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Report xmlns="http://soap.sforce.com/2006/04/metadata">
-    <name>Cases Created Over Time (30d)</name>
-    <description>Daily AFM Case creation volume over the last 30 days — line chart of detector throughput.</description>
-    <reportType>CaseList</reportType>
-    <format>Summary</format>
-    <showDetails>false</showDetails>
-    <showGrandTotal>true</showGrandTotal>
-    <showSubTotals>true</showSubTotals>
-    <groupingsDown>
-        <field>Case.CreatedDate</field>
-        <sortOrder>Asc</sortOrder>
-        <dateGranularity>Day</dateGranularity>
-    </groupingsDown>
+    <chart>
+        <chartSummaries>
+            <axisBinding>y</axisBinding>
+            <column>RowCount</column>
+        </chartSummaries>
+        <chartType>Line</chartType>
+        <groupingColumn>CREATED_DATEONLY</groupingColumn>
+        <location>CHART_BOTTOM</location>
+        <size>Medium</size>
+        <summaryAxisRange>Auto</summaryAxisRange>
+        <title>Cases Created Over Time (30d)</title>
+    </chart>
     <columns>
-        <field>Case.CaseNumber</field>
+        <field>PARENT_CASE_NUMBER</field>
     </columns>
+    <description>Daily AFM Case creation volume over the last 30 days — line chart of detector throughput.</description>
     <filter>
         <criteriaItems>
             <column>Case.AFM_External_Id__c</column>
+            <columnToColumn>false</columnToColumn>
+            <isUnlocked>false</isUnlocked>
             <operator>notEqual</operator>
             <value></value>
         </criteriaItems>
+        <language>en_US</language>
     </filter>
+    <format>Summary</format>
+    <groupingsDown>
+        <dateGranularity>Day</dateGranularity>
+        <field>CREATED_DATEONLY</field>
+        <sortOrder>Asc</sortOrder>
+    </groupingsDown>
+    <name>Cases Created Over Time (30d)</name>
+    <params>
+        <name>units</name>
+        <value>m</value>
+    </params>
+    <params>
+        <name>co</name>
+        <value>1</value>
+    </params>
+    <reportType>CaseList</reportType>
+    <scope>user</scope>
+    <showDetails>false</showDetails>
+    <showGrandTotal>true</showGrandTotal>
+    <showSubTotals>true</showSubTotals>
     <timeFrameFilter>
-            <dateColumn>CREATED_DATE</dateColumn>
-            <interval>INTERVAL_LAST30</interval>
-        </timeFrameFilter>
+        <dateColumn>CREATED_DATE</dateColumn>
+        <interval>INTERVAL_LAST30</interval>
+    </timeFrameFilter>
 </Report>
