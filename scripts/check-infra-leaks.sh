@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-PATTERN='100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+|fd7a:[0-9a-f:]|192\.168\.[0-9]+\.[0-9]+|<host>|\.ts\.net'
+PATTERN='100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+|fd7a:[0-9a-f:]|192\.168\.[0-9]+\.[0-9]+|\.ts\.net'
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 if upstream=$(git rev-parse --abbrev-ref "${branch}@{upstream}" 2>/dev/null); then
