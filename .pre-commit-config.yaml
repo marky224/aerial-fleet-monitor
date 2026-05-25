@@ -3,3 +3,12 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+  - repo: local
+    hooks:
+      - id: check-infra-leaks
+        name: Scan for infra-specific strings (Tailscale, LAN, hostname)
+        entry: scripts/check-infra-leaks.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
