@@ -555,6 +555,57 @@ class CasePullSummary(BaseModel):
 
 **Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
 
+### 6.6 `GET /v1/cases/all-for-sync`
+
+System-internal read for the Foundry sync (Phase 05). Returns a paginated
+snapshot of `app.cases` for the `foundry_cases_sync` pipelines asset to
+ingest. No scope filter — this endpoint is server-to-server. The
+customer-facing scope-gated reads (§6.1, §6.2) are a separate slice.
+
+Rows are ordered by `(updated_at, case_id)` ASC so a `since`-cursor walk
+is deterministic. Resolved cases are included (App 1's panel applies its
+own status filter); once a Case resolves, its `updated_at` stops
+advancing, so it falls out of the moving window naturally.
+
+The subject field is derived at response time from `case_type` +
+`detection_facts` by the same formatter the SF push uses
+(`CaseSyncService._format_subject`).
+
+**Query params:**
+- `since`: timestamp; return rows with `updated_at > since`. Omit for the first page.
+- `limit`: max rows in this page (default `200`, 1–1000).
+
+**Response 200:**
+```python
+class CaseForSync(BaseModel):
+    case_id: str
+    salesforce_id: str | None
+    case_type: str
+    status: str                                  # open/acknowledged/in_progress/resolved
+    severity: str                                # low/medium/high/critical
+    customer_region: str                         # west/east/all
+    site_icao: str
+    flight_id: str                               # 'WX-{site_icao}' for site-level cases
+    subject: str                                 # derived from case_type + facts
+    summary: str | None
+    severity_justification: str | None
+    detection_facts: dict
+    runbook_refs: list[str]
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None
+
+class CasesForSyncPage(BaseModel):
+    items: list[CaseForSync]
+    next_cursor: datetime | None                 # max(updated_at) in this page
+    truncated: bool                              # True when len(items) == limit
+```
+
+The caller persists `next_cursor` and passes it as `since` on the next
+call; pages until `truncated=False`. Foundry-side upserts are idempotent
+on `case_id`, so a boundary tie at `updated_at == since` that re-ships a
+previous page's tail row is harmless.
+
 ## 7. Briefs
 
 ### 7.1 `GET /v1/briefs`
@@ -691,6 +742,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/cases/{case_id}/runbooks` | linked runbooks | yes |
 | POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
 | POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
+| GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) | yes |
 | GET | `/v1/briefs` | brief list | yes |
 | GET | `/v1/briefs/{brief_id}` | brief content | yes |
 | GET | `/v1/runbooks` | runbook list | yes |

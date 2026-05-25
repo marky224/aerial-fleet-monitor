@@ -12,6 +12,7 @@ import respx
 from afm_foundry_sync import ontology_writers
 from afm_foundry_sync.models import (
     Aircraft,
+    Case,
     Flight,
     FlightStatusEvent,
     Site,
@@ -22,6 +23,7 @@ from afm_foundry_sync.ontology_writers import (
     FoundryWriter,
     _camel,
     aircraft_params,
+    case_params,
     flight_params,
     site_params,
 )
@@ -602,3 +604,185 @@ async def test_list_flight_pks_falls_back_to_primary_key(settings: FoundrySettin
         pks = await w.list_flight_pks()
 
     assert pks == {"aaa111-1700", "bbb222-1800"}
+
+
+# ---------------------------------------------------------------------------
+# Cases (Phase 05 task #5)
+# ---------------------------------------------------------------------------
+
+
+_CASE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-case/applyBatch"
+_CASE_DELETE_URL = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-case/applyBatch"
+)
+_CASE_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Case"
+
+_CREATED_AT = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
+_UPDATED_AT = datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC)
+
+
+def _case(case_id: str = "CASE-2026-000001", **overrides: object) -> Case:
+    base = dict(
+        case_id=case_id,
+        salesforce_id="500X000000abc",
+        case_type="lost_signal",
+        status="open",
+        severity="high",
+        customer_region="west",
+        site_icao="KSFO",
+        flight_id="a12345-1747308600",
+        subject="Lost signal during cruise — UAL1234 near KSFO",
+        summary=None,
+        severity_justification=None,
+        detection_facts={"callsign": "UAL1234", "gap_minutes": 12},
+        runbook_refs=["lost-signal-cruise"],
+        created_at=_CREATED_AT,
+        updated_at=_UPDATED_AT,
+        resolved_at=None,
+    )
+    base.update(overrides)
+    return Case(**base)  # type: ignore[arg-type]
+
+
+def test_case_params_pk_via_locator_only_no_case_id_param() -> None:
+    """Unique vs Aircraft/Site/Flight: the upsert-case action has no separate
+    PK string param — the `case` object-locator alone handles the PK."""
+    p = case_params(_case())
+    assert p["case"] == "CASE-2026-000001"  # locator = bare PK string
+    assert "caseId" not in p  # NO separate PK param (verified live 2026-05-24)
+
+
+def test_case_params_camel_keys_and_iso_timestamps() -> None:
+    p = case_params(_case())
+    # camelCase keys per the established tenant contract.
+    assert p["caseType"] == "lost_signal"
+    assert p["customerRegion"] == "west"
+    assert p["siteIcao"] == "KSFO"
+    assert p["flightId"] == "a12345-1747308600"
+    assert p["createdAt"] == "2026-05-24T10:00:00Z"
+    assert p["updatedAt"] == "2026-05-24T10:05:00Z"
+
+
+def test_case_params_dict_and_list_fields_are_json_strings() -> None:
+    """detection_facts (dict) and runbook_refs (list) → JSON-encoded strings
+    (same precedent as Site.customer_regions / Flight.trail_2h)."""
+    p = case_params(
+        _case(
+            detection_facts={"callsign": "UAL1234", "gap_minutes": 12},
+            runbook_refs=["lost-signal-cruise", "satcom-outage"],
+        )
+    )
+    assert json.loads(p["detectionFacts"]) == {"callsign": "UAL1234", "gap_minutes": 12}
+    assert json.loads(p["runbookRefs"]) == ["lost-signal-cruise", "satcom-outage"]
+
+
+def test_case_params_empty_collections_serialize_to_empty_json() -> None:
+    p = case_params(_case(detection_facts={}, runbook_refs=[]))
+    assert p["detectionFacts"] == "{}"
+    assert p["runbookRefs"] == "[]"
+
+
+def test_case_params_omits_none_optionals_keeps_required() -> None:
+    p = case_params(
+        _case(
+            salesforce_id=None,
+            subject=None,
+            summary=None,
+            severity_justification=None,
+            resolved_at=None,
+        )
+    )
+    assert "salesforceId" not in p
+    assert "subject" not in p
+    assert "summary" not in p
+    assert "severityJustification" not in p
+    assert "resolvedAt" not in p
+    # Required ones survive.
+    assert p["caseType"] == "lost_signal"
+    assert p["status"] == "open"
+    assert p["severity"] == "high"
+
+
+def test_case_params_resolved_at_iso_z_format_when_set() -> None:
+    resolved = datetime(2026, 5, 24, 11, 0, 0, tzinfo=UTC)
+    p = case_params(_case(resolved_at=resolved))
+    assert p["resolvedAt"] == "2026-05-24T11:00:00Z"
+
+
+@respx.mock
+async def test_upsert_case_batch_posts_to_upsert_case_action(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_CASE_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_case_batch([_case("CASE-A"), _case("CASE-B")])
+    assert route.call_count == 1
+    body = json.loads(route.calls[0].request.content)
+    assert len(body["requests"]) == 2
+    assert body["requests"][0]["parameters"]["case"] == "CASE-A"
+    assert body["requests"][1]["parameters"]["case"] == "CASE-B"
+    assert result.attempted == 2 and result.succeeded == 2
+
+
+async def test_upsert_case_batch_empty_is_noop(settings: FoundrySettings) -> None:
+    """Empty list → no HTTP call (mirrors aircraft/site/flight upsert contracts)."""
+    async with FoundryWriter(settings) as w:
+        result = await w.upsert_case_batch([])
+    assert result.attempted == 0 and result.succeeded == 0
+
+
+@respx.mock
+async def test_delete_case_batch_uses_pascal_case_object_key(
+    settings: FoundrySettings,
+) -> None:
+    """delete-case mirrors delete-aircraft: the single param is the PascalCase
+    object-type name ``Case`` (NOT routed through _camel)."""
+    route = respx.post(_CASE_DELETE_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.delete_case_batch(["CASE-1", "CASE-2"])
+    assert route.call_count == 1
+    body = json.loads(route.calls[0].request.content)
+    assert body["requests"] == [
+        {"parameters": {"Case": "CASE-1"}},
+        {"parameters": {"Case": "CASE-2"}},
+    ]
+    assert result.succeeded == 2
+
+
+async def test_delete_case_batch_empty_is_noop(settings: FoundrySettings) -> None:
+    async with FoundryWriter(settings) as w:
+        result = await w.delete_case_batch([])
+    assert result.attempted == 0 and result.succeeded == 0
+
+
+@respx.mock
+async def test_list_case_pks_paginates_and_pulls_case_id(settings: FoundrySettings) -> None:
+    route = respx.get(_CASE_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"caseId": "CASE-1"}, {"caseId": "CASE-2"}],
+                    "nextPageToken": "p2",
+                },
+            ),
+            httpx.Response(200, json={"data": [{"caseId": "CASE-3"}]}),
+        ]
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_case_pks()
+    assert pks == {"CASE-1", "CASE-2", "CASE-3"}
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_list_case_pks_falls_back_to_primary_key(settings: FoundrySettings) -> None:
+    respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"__primaryKey": "CASE-ALPHA"}, {"caseId": "CASE-BETA"}]},
+        )
+    )
+    async with FoundryWriter(settings) as w:
+        pks = await w.list_case_pks()
+    assert pks == {"CASE-ALPHA", "CASE-BETA"}

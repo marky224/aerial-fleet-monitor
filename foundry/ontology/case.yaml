@@ -1,0 +1,214 @@
+# AFM Foundry Ontology — Case object type
+#
+# Source of truth: foundry/sync/src/afm_foundry_sync/models.py (class Case)
+# Build doc: _private/docs/build/05_case_detector.md
+# Design notes: _private/docs/foundry/ONTOLOGY.md (§ Case)
+#
+# Apply to the AFM Foundry tenant. If the tenant supports direct YAML import,
+# this file is the canonical schema. Otherwise treat it as the click-by-click
+# spec for provisioning Case through Ontology Manager.
+#
+# CANONICAL SCHEMA IS snake_case (below) — the logical schema. The provisioned
+# tenant's object-type properties AND Action parameters are camelCase (Foundry
+# auto-derives a camelCase param per property; manual snake renames get undone
+# whenever the action rules are touched). The sync serializes camelCase via
+# `ontology_writers._camel` — that is the stable contract boundary (Aircraft/
+# Site/Flight all follow this; see _private/docs/foundry/ONTOLOGY.md § REVERSAL).
+# As with Site's `customer_regions` and Flight's `trail_2h`, the array/struct
+# fields below are stored in-tenant as JSON-encoded `string` (array<struct> is
+# not a usable Foundry Action parameter type); the writer json.dumps them.
+#
+# Replaces the PK-only stub recorded in ONTOLOGY.md § Case. Wired Phase 05
+# (task #5): a Postgres `app.cases` row reaches Foundry via the internal
+# `GET /v1/cases/all-for-sync` endpoint → `incremental_sync_cases` →
+# `upsert-case` Action. SF push/pull (task #1/#7) is unchanged; this sync sits
+# downstream of both — by the time a row leaves AFM for Foundry, it has been
+# through both directions of the SF round-trip.
+
+objectType:
+  apiName: Case
+  displayName: Case
+  pluralDisplayName: Cases
+  description: |
+    An AFM-detected anomaly mirrored from `app.cases` into the Ontology so
+    App 1 (Fleet Overview) can render an "Open cases" panel.
+
+    The row is *originated* by the AFM rule engine (`pipelines.assets.detection`
+    → `app.cases` `sf_sync_status='pending'`), pushed to Salesforce by the
+    `sf_case_push` asset (where it gains its `salesforce_id`), and any
+    operator mutations in SF (Status, Description→summary, Priority→severity,
+    AFM_Severity_Justification__c, ClosedDate→resolved_at) are pulled back
+    by `sf_case_sync`. Foundry is the *third* destination — read-only from
+    its perspective, an eventually-consistent mirror at ~60s sensor cadence.
+
+source:
+  endpoint: GET /v1/cases/all-for-sync
+  refreshCadence: 60s incremental
+  upsertKey: case_id
+
+primaryKey: case_id
+
+properties:
+  # ---- Identity ----
+  case_id:
+    type: string
+    nullable: false
+    description: |
+      AFM-side primary key (e.g. `CASE-2026-000123`). The same value lands
+      in Salesforce as `AFM_External_Id__c` (unique, idempotency anchor for
+      the push path).
+  salesforce_id:
+    type: string
+    nullable: true
+    description: |
+      Salesforce Case Id (15- or 18-char). NULL until the `sf_case_push`
+      asset successfully creates the SF Case; once set, the push path's
+      DUPLICATE_VALUE recovery uses it for the idempotent adopt-existing
+      branch.
+
+  # ---- Classification ----
+  case_type:
+    type: string
+    nullable: false
+    enum: [lost_signal, diversion, excessive_hold, weather_impact, go_around, delay]
+    description: |
+      Rule id from the detector. Matches the `AFM_Case_Type__c` restricted
+      picklist on the Salesforce Case (post 2026-05-22 picklist alignment).
+  status:
+    type: string
+    nullable: false
+    enum: [open, acknowledged, in_progress, resolved]
+    description: |
+      AFM-side lifecycle. SF mappings (locked 2026-05-21/22): `New→open`,
+      `Working→in_progress`, `Escalated→in_progress`, `Closed→resolved`
+      (sets `resolved_at`). `acknowledged` is unused (no SF equivalent in
+      the 4-value Fleet_Operations picklist); kept as a future-state slot.
+  severity:
+    type: string
+    nullable: false
+    enum: [low, medium, high, critical]
+    description: |
+      AFM severity. Pushed to SF as standard `Priority` (`low→Low`,
+      `medium→Medium`, `high|critical→High` — `critical` collapses to
+      High by design); pull translates back `Low|Medium|High → low|medium|
+      high` (so `critical` round-trips as `high`, lossy by design).
+
+  # ---- Scope / linkage ----
+  customer_region:
+    type: string
+    nullable: false
+    enum: [west, east, all]
+    description: |
+      Region attribution. Mirrors `Aircraft.customer_region` /
+      `Flight.customer_region` / `Site.customer_regions[]`. Drives the
+      App 1 Cases panel filter widget (Workshop dropdown) — the
+      Foundry-side region-scoping mechanism (Foundry-native perms vs
+      Workshop-JWT filter vs spike-first) is still OPEN; operator-driven
+      filter widget is the v1 interaction.
+  site_icao:
+    type: string
+    nullable: false
+    description: |
+      4-char ICAO of the site this case concerns. For aircraft-level rules
+      (lost_signal, go_around, etc.) it's the nearest watched field; for
+      site-level rules (weather_impact) it's the site itself.
+  flight_id:
+    type: string
+    nullable: false
+    description: |
+      `app.cases.flight_id` — either the synthesized Flight PK
+      `{icao24}-{unix_takeoff_ts}` (FK to Flight.flight_id) for an
+      aircraft-level rule, or the `WX-{site_icao}` sentinel (per
+      `pipelines/assets/detection.py:208`) for site-level rules where
+      no flight is involved. The Case→Flight link is only navigable when
+      `flight_id` does NOT start with `WX-`.
+
+  # ---- Content ----
+  subject:
+    type: string
+    nullable: true
+    description: |
+      Human-readable subject (e.g. "Lost signal during cruise — UAL1234
+      near KORD"). Derived at API-response time by `CaseSyncService.
+      _format_subject` from `case_type` + `detection_facts` — kept in the
+      service (single source of truth, same formatter the SF push uses).
+      Foundry treats it as a denormalized scalar so Workshop binds without
+      computing.
+  summary:
+    type: string
+    nullable: true
+    description: |
+      Free-text summary written by the Phase-07 Agentforce agent into the
+      SF Case `Description` field; pulled back by `sf_case_sync`. NULL
+      until the agent runs (no-Anthropic decision: AFM never writes this
+      field locally).
+  severity_justification:
+    type: string
+    nullable: true
+    description: |
+      Operator/agent justification for the chosen severity (mirrors SF
+      `AFM_Severity_Justification__c`). NULL until set in SF.
+  detection_facts:
+    # Logical dict; stored in-tenant as a JSON-encoded `string` (same
+    # precedent as Site.customer_regions / Flight.trail_2h — Foundry
+    # Action parameters don't support struct/dict natively). The writer
+    # json.dumps the dict (or "{}" if empty). Workshop parses JSON when
+    # rendering for the detail/tooltip view.
+    type: string                 # logical: struct/dict; JSON-encoded on the wire
+    nullable: false
+    description: |
+      Rule-specific facts the detector emitted (e.g. for `excessive_hold`:
+      `{"radius_nm": 15, "sectors": 6, "duration_min": 32, ...}`). The
+      App-1 panel doesn't render this directly; it's carried for the
+      drill-through detail view and for AIP Logic prompts that may want
+      the raw facts.
+  runbook_refs:
+    # Logical array<string>; stored in-tenant as a JSON-encoded `string`
+    # (e.g. '["lost-signal-cruise","go-around-recovery"]'). Mirrors
+    # Site.customer_regions / Flight.open_case_ids; the writer json.dumps
+    # the list (or "[]" if empty).
+    type: array<string>          # logical; serialized as JSON string on the wire
+    nullable: false
+    description: |
+      Runbook slugs discovered for this case (`runbooks/{slug}.md`).
+      Populated at detection time by `lookup_runbooks(rule, site_icao)`.
+
+  # ---- Timestamps ----
+  created_at:
+    type: timestamp
+    nullable: false
+    description: |
+      UTC time the AFM detector inserted the row into `app.cases`. Drives
+      App 1 panel's "time-ago" display.
+  updated_at:
+    type: timestamp
+    nullable: false
+    description: |
+      UTC time of the last mutation (any column). Drives the sync's
+      incremental cursor — the sync watermark advances to max(updated_at)
+      across a batch.
+  resolved_at:
+    type: timestamp
+    nullable: true
+    description: |
+      UTC time the case transitioned to `status=resolved` (mirrors SF
+      `ClosedDate`). NULL while the case is open; cleared if SF reopens
+      the case (the pull is authoritative for status/resolved_at).
+
+links:
+  # Outbound links FROM Case. The Site —has-open-cases→ Case relationship
+  # is denormalized as Site.active_case_count rather than a real link
+  # (consistent with the v1 ontology — Site reads simpler if every count
+  # is a scalar; matches the Flight.open_case_count pattern too).
+  - apiName: case_flight
+    target: Flight
+    cardinality: many-to-one
+    via: flight_id
+    nullable: true
+    description: |
+      The flight this case concerns. Nullable in the graph sense even
+      though `flight_id` itself is required — when `flight_id` starts
+      with `WX-` (site-level weather case, no real flight), the link
+      target doesn't exist in the Flight set, so the navigation just
+      returns empty. Matches the ONTOLOGY.md "Case concerns Flight"
+      link declaration.

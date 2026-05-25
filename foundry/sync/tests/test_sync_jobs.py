@@ -29,6 +29,7 @@ from afm_foundry_sync.sync_jobs import (
     enriched_sync_flights,
     full_sync_sites,
     guarded_sync,
+    incremental_sync_cases,
     incremental_sync_positions,
     parse_flight_id,
     reconcile_aircraft,
@@ -863,3 +864,127 @@ async def test_enriched_sync_flights_active_with_no_trail_line_still_enriched(
     assert params_by_id["wtrl01-1700000000"]["trailPath"]["type"] == "LineString"
     assert params_by_id["notrl1-1700000000"]["trail2h"] == "[]"
     assert "trailPath" not in params_by_id["notrl1-1700000000"]
+
+
+# --------------------------------------------------------------------------- #
+# Cases (Phase 05 task #5)
+# --------------------------------------------------------------------------- #
+
+_CASES_URL = "http://api.test/v1/cases/all-for-sync"
+_CASE_BATCH = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-case/applyBatch"
+
+
+def _case_dict(case_id: str, updated_at_iso: str) -> dict:
+    return {
+        "case_id": case_id,
+        "salesforce_id": None,
+        "case_type": "lost_signal",
+        "status": "open",
+        "severity": "high",
+        "customer_region": "west",
+        "site_icao": "KSFO",
+        "flight_id": "a12345-1747308600",
+        "subject": f"Lost signal — {case_id}",
+        "summary": None,
+        "severity_justification": None,
+        "detection_facts": {"callsign": "UAL1234"},
+        "runbook_refs": ["lost-signal-cruise"],
+        "created_at": updated_at_iso,
+        "updated_at": updated_at_iso,
+        "resolved_at": None,
+    }
+
+
+@respx.mock
+async def test_incremental_sync_cases_happy_path(settings: FoundrySettings) -> None:
+    """One-page fetch → one upsert batch → cursor = max(updated_at)."""
+    body = {
+        "items": [
+            _case_dict("CASE-1", "2026-05-24T10:00:00Z"),
+            _case_dict("CASE-2", "2026-05-24T10:05:00Z"),
+        ],
+        "next_cursor": "2026-05-24T10:05:00Z",
+        "truncated": False,
+    }
+    respx.get(_CASES_URL).mock(return_value=httpx.Response(200, json=body))
+    upsert_route = respx.post(_CASE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await incremental_sync_cases(client, writer)
+
+    assert (result.attempted, result.succeeded, result.failed) == (2, 2, 0)
+    assert result.cursor == datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC)
+    # The 2 cases went through one applyBatch call with `case` locators set.
+    assert upsert_route.call_count == 1
+    payload = json.loads(upsert_route.calls[0].request.content)
+    assert [r["parameters"]["case"] for r in payload["requests"]] == ["CASE-1", "CASE-2"]
+
+
+@respx.mock
+async def test_incremental_sync_cases_empty_skips_upsert_and_preserves_since(
+    settings: FoundrySettings,
+) -> None:
+    """Zero new cases → no upsert HTTP call, cursor = the prior `since`."""
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200, json={"items": [], "next_cursor": None, "truncated": False}
+        )
+    )
+    upsert_route = respx.post(_CASE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    prior = datetime(2026, 5, 24, 9, 0, 0, tzinfo=UTC)
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await incremental_sync_cases(client, writer, since=prior)
+
+    assert result.attempted == 0 and result.succeeded == 0
+    assert result.cursor == prior  # watermark untouched
+    assert upsert_route.call_count == 0  # upsert_case_batch short-circuits on []
+
+
+@respx.mock
+async def test_incremental_sync_cases_walks_multiple_pages(settings: FoundrySettings) -> None:
+    """Truncated pages drain until truncated=False, one upsert per pass."""
+    respx.get(_CASES_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "items": [_case_dict("CASE-A", "2026-05-24T10:00:00Z")],
+                    "next_cursor": "2026-05-24T10:00:00Z",
+                    "truncated": True,
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "items": [_case_dict("CASE-B", "2026-05-24T10:05:00Z")],
+                    "next_cursor": "2026-05-24T10:05:00Z",
+                    "truncated": False,
+                },
+            ),
+        ]
+    )
+    upsert_route = respx.post(_CASE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await incremental_sync_cases(client, writer)
+
+    assert result.attempted == 2  # both pages aggregated into one upsert pass
+    assert result.cursor == datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC)
+    assert upsert_route.call_count == 1  # one batched write, not one per page
+
+
+@respx.mock
+async def test_incremental_sync_cases_propagates_skip_on_unreachable_api(
+    settings: FoundrySettings,
+) -> None:
+    """An unreachable local API → FoundrySyncSkipped (the standalone contract)."""
+    respx.get(_CASES_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+    with pytest.raises(FoundrySyncSkipped, match="unreachable"):
+        async with (
+            guarded_sync("cases"),
+            AfmApiClient(settings) as client,
+            FoundryWriter(settings) as writer,
+        ):
+            await incremental_sync_cases(client, writer)

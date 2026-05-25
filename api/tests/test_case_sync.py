@@ -305,3 +305,131 @@ def test_material_changes_severity_none_is_not_a_change() -> None:
     # SF returned no/unknown Priority → severity None must not log a spurious diff.
     rec = _record(status="open", severity=None, resolved_at=None)
     assert CaseSyncService._material_changes(rec, "open", "high", None) == []
+
+
+# -- list_for_sync (Phase 05 task #5: Foundry sync read path) -----------
+
+
+def _sync_row(case_id: str, updated_at: datetime, **over: Any) -> dict[str, Any]:
+    """Full `app.cases` projection used by `_fetch_for_sync`."""
+    base: dict[str, Any] = {
+        "case_id": case_id,
+        "salesforce_id": None,
+        "case_type": "lost_signal",
+        "status": "open",
+        "severity": "high",
+        "customer_region": "west",
+        "site_icao": "KSFO",
+        "flight_id": "abc123",
+        "summary": None,
+        "severity_justification": None,
+        "detection_facts": {"callsign": "SWA1"},
+        "runbook_refs": ["lost-signal-cruise"],
+        "created_at": updated_at,
+        "updated_at": updated_at,
+        "resolved_at": None,
+    }
+    base.update(over)
+    return base
+
+
+def _sync_service(rows: list[dict[str, Any]]) -> CaseSyncService:
+    """Build a CaseSyncService with SF unconstructed and `_fetch_for_sync` stubbed."""
+    svc = CaseSyncService(postgres=_FakePG())  # type: ignore[arg-type]
+    svc._fetch_for_sync = lambda _since, _limit: rows  # type: ignore[method-assign]
+    return svc
+
+
+async def test_list_for_sync_returns_page_with_max_cursor() -> None:
+    rows = [
+        _sync_row("CASE-1", datetime(2026, 5, 24, 10, 0, tzinfo=UTC)),
+        _sync_row("CASE-2", datetime(2026, 5, 24, 11, 0, tzinfo=UTC)),
+        _sync_row("CASE-3", datetime(2026, 5, 24, 12, 0, tzinfo=UTC)),
+    ]
+    svc = _sync_service(rows)
+
+    page = await svc.list_for_sync(since=None, limit=200)
+
+    assert len(page.items) == 3
+    assert [c.case_id for c in page.items] == ["CASE-1", "CASE-2", "CASE-3"]
+    assert page.next_cursor == datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+    assert page.truncated is False
+
+
+async def test_list_for_sync_empty_leaves_cursor_none() -> None:
+    svc = _sync_service([])
+
+    page = await svc.list_for_sync(since=datetime(2026, 5, 24, tzinfo=UTC), limit=200)
+
+    assert page.items == []
+    assert page.next_cursor is None
+    assert page.truncated is False
+
+
+async def test_list_for_sync_truncated_when_full_page() -> None:
+    rows = [_sync_row(f"CASE-{i}", datetime(2026, 5, 24, i, 0, tzinfo=UTC)) for i in range(1, 4)]
+    svc = _sync_service(rows)
+
+    page = await svc.list_for_sync(since=None, limit=3)
+
+    assert len(page.items) == 3
+    assert page.truncated is True  # len == limit ⇒ more rows likely
+
+
+async def test_list_for_sync_derives_subject_from_facts() -> None:
+    rows = [
+        _sync_row(
+            "CASE-1",
+            datetime(2026, 5, 24, tzinfo=UTC),
+            case_type="diversion",
+            detection_facts={
+                "callsign": "UAL42",
+                "origin": "KJFK",
+                "alternate": "KORD",
+                "expected_destination": "KLAX",
+            },
+        )
+    ]
+    svc = _sync_service(rows)
+
+    page = await svc.list_for_sync(since=None, limit=200)
+
+    assert page.items[0].subject == "Diversion — UAL42 KJFK→KORD (was KLAX)"
+
+
+async def test_list_for_sync_passes_since_through_to_fetch() -> None:
+    """`since` and `limit` arrive at `_fetch_for_sync` verbatim (no munging)."""
+    captured: dict[str, Any] = {}
+    svc = CaseSyncService(postgres=_FakePG())  # type: ignore[arg-type]
+
+    def fake_fetch(since: datetime | None, limit: int) -> list[dict[str, Any]]:
+        captured["since"] = since
+        captured["limit"] = limit
+        return []
+
+    svc._fetch_for_sync = fake_fetch  # type: ignore[method-assign]
+
+    cursor = datetime(2026, 5, 24, 9, 30, tzinfo=UTC)
+    await svc.list_for_sync(since=cursor, limit=42)
+
+    assert captured == {"since": cursor, "limit": 42}
+
+
+async def test_constructed_without_sf_rejects_push() -> None:
+    """A list_for_sync-only instance must raise if push_pending is called."""
+    svc = CaseSyncService(postgres=_FakePG())  # type: ignore[arg-type]
+    svc._fetch_pending = lambda _limit: [_row()]  # type: ignore[method-assign]
+    svc._try_lock = lambda _conn: True  # type: ignore[method-assign]
+    svc._unlock = lambda _conn: None  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="require a SalesforceService"):
+        await svc.push_pending()
+
+
+async def test_constructed_without_sf_rejects_pull() -> None:
+    """Same guard fires on the pull half."""
+    svc = CaseSyncService(postgres=_FakePG())  # type: ignore[arg-type]
+    svc._read_watermark = lambda: datetime(2026, 5, 24, tzinfo=UTC)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="require a SalesforceService"):
+        await svc.pull_from_sf()

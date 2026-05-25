@@ -33,6 +33,7 @@ from psycopg2.extras import Json
 
 from app.exceptions import AFMException, UpstreamUnavailable
 from app.logging import get_logger
+from app.models.cases import CaseForSync, CasesForSyncPage
 from app.models.salesforce import (
     CaseCreateInput,
     CasePullSummary,
@@ -106,12 +107,39 @@ def _format_subject(case_type: str, site_icao: str, facts: dict[str, Any]) -> st
     return f"{case_type} — {callsign} near {site}"
 
 
-class CaseSyncService:
-    """Pushes ``pending`` ``app.cases`` rows into Salesforce."""
+_FOR_SYNC_COLUMNS = (
+    "case_id, salesforce_id, case_type, status, severity, customer_region, "
+    "site_icao, flight_id, summary, severity_justification, detection_facts, "
+    "runbook_refs, created_at, updated_at, resolved_at"
+)
 
-    def __init__(self, postgres: PostgresPool, salesforce: SalesforceService) -> None:
+
+class CaseSyncService:
+    """Push/pull/read service for `app.cases`.
+
+    `salesforce` is required for `push_pending` / `pull_from_sf` (the SF
+    round-trip halves). `list_for_sync` is a pure Postgres read and works
+    without SF — `salesforce=None` is accepted for that path.
+    """
+
+    def __init__(
+        self, postgres: PostgresPool, salesforce: SalesforceService | None = None
+    ) -> None:
         self._pg = postgres
         self._sf = salesforce
+
+    def _require_sf(self) -> SalesforceService:
+        """Return the SalesforceService or raise — guard for push/pull paths.
+
+        Constructed-without-SF instances are valid (the `list_for_sync` path
+        is pure Postgres) but the SF round-trip halves can't run there.
+        """
+        if self._sf is None:
+            raise RuntimeError(
+                "CaseSyncService.push_pending/pull_from_sf require a SalesforceService; "
+                "this instance was constructed for list_for_sync only."
+            )
+        return self._sf
 
     async def push_pending(self, limit: int = 50) -> CaseSyncSummary:
         # Single-flight: hold one connection's session advisory lock for the
@@ -146,7 +174,7 @@ class CaseSyncService:
         for row in rows:
             attempts = int(row["sf_sync_attempts"]) + 1
             try:
-                ref = await self._sf.create_case(self._to_payload(row))
+                ref = await self._require_sf().create_case(self._to_payload(row))
             except UpstreamUnavailable as exc:
                 if attempts >= MAX_ATTEMPTS:
                     await asyncio.to_thread(
@@ -273,7 +301,7 @@ class CaseSyncService:
         to the max SystemModstamp seen. Zero rows → watermark untouched so
         the next cycle re-attempts the same window (spec step 5)."""
         watermark = await asyncio.to_thread(self._read_watermark)
-        records = await self._sf.query_cases_modified_since(watermark, limit)
+        records = await self._require_sf().query_cases_modified_since(watermark, limit)
 
         updated = unmatched = 0
         max_modstamp: datetime | None = None
@@ -404,3 +432,74 @@ class CaseSyncService:
         if rec.resolved_at is not None and prev_resolved_at is None:
             events.append(("resolved", {"resolved_at": rec.resolved_at.isoformat()}))
         return events
+
+    # == read half: Postgres → Foundry sync (Phase 05 task #5) ============
+
+    async def list_for_sync(
+        self, since: datetime | None = None, limit: int = 200
+    ) -> CasesForSyncPage:
+        """Return `app.cases` rows for the Foundry sync's incremental ingest.
+
+        Server-to-server snapshot, no scope filter. Rows with `updated_at >
+        since` (or all rows if `since` is None), ordered by `(updated_at,
+        case_id)` ASC so a fixed-window `limit` returns a deterministic
+        prefix. `next_cursor` is the max `updated_at` in the batch; the
+        caller persists it and passes it back as `since` next call. The
+        upserts on the Foundry side are idempotent on `case_id`, so a
+        boundary tie at `updated_at == since` that re-ships a previous
+        page's tail row is harmless (the row is just upserted again).
+
+        Includes resolved cases — Foundry mirrors the full lifecycle and
+        App 1's panel applies its own status filter. Once a Case resolves,
+        its `updated_at` stops advancing, so it falls out of the sync's
+        moving window naturally without a status filter on the SQL side.
+        """
+        rows = await asyncio.to_thread(self._fetch_for_sync, since, limit)
+        items = [self._row_to_case_for_sync(r) for r in rows]
+        next_cursor = max((c.updated_at for c in items), default=None)
+        truncated = len(items) >= limit
+        log.info(
+            "case_sync.list_for_sync",
+            count=len(items),
+            since=since.isoformat() if since else None,
+            truncated=truncated,
+        )
+        return CasesForSyncPage(items=items, next_cursor=next_cursor, truncated=truncated)
+
+    def _fetch_for_sync(
+        self, since: datetime | None, limit: int
+    ) -> list[dict[str, Any]]:
+        if since is None:
+            return self._pg.fetchall(
+                f"SELECT {_FOR_SYNC_COLUMNS} FROM app.cases "
+                "ORDER BY updated_at ASC, case_id ASC LIMIT %(limit)s",
+                {"limit": limit},
+            )
+        return self._pg.fetchall(
+            f"SELECT {_FOR_SYNC_COLUMNS} FROM app.cases "
+            "WHERE updated_at > %(since)s "
+            "ORDER BY updated_at ASC, case_id ASC LIMIT %(limit)s",
+            {"since": since, "limit": limit},
+        )
+
+    @staticmethod
+    def _row_to_case_for_sync(row: dict[str, Any]) -> CaseForSync:
+        facts: dict[str, Any] = row["detection_facts"] or {}
+        return CaseForSync(
+            case_id=row["case_id"],
+            salesforce_id=row["salesforce_id"],
+            case_type=row["case_type"],
+            status=row["status"],
+            severity=row["severity"],
+            customer_region=row["customer_region"],
+            site_icao=row["site_icao"],
+            flight_id=row["flight_id"],
+            subject=_format_subject(row["case_type"], row["site_icao"], facts),
+            summary=row["summary"],
+            severity_justification=row["severity_justification"],
+            detection_facts=facts,
+            runbook_refs=list(row["runbook_refs"] or []),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            resolved_at=row["resolved_at"],
+        )

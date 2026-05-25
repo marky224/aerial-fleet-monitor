@@ -36,6 +36,7 @@ from pipelines.assets import (
     case_detector,
     flight_plan_enrichment,
     foundry_aircraft_reconcile,
+    foundry_cases_sync,
     foundry_flight_enrichment,
     foundry_positions_sync,
     foundry_sites_sync,
@@ -100,6 +101,12 @@ foundry_aircraft_reconcile_job = define_asset_job(
 foundry_flight_enrichment_job = define_asset_job(
     name="foundry_flight_enrichment_job",
     selection=AssetSelection.assets(foundry_flight_enrichment),
+)
+
+
+foundry_cases_sync_job = define_asset_job(
+    name="foundry_cases_sync_job",
+    selection=AssetSelection.assets(foundry_cases_sync),
 )
 
 
@@ -189,6 +196,22 @@ def case_sync_retry_sensor(_context: SensorEvaluationContext) -> RunRequest:
     description="Mirrors Salesforce Case changes into app.cases every ~60s (watermark-driven).",
 )
 def sf_case_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Mirrors app.cases → Foundry Case ontology (Phase 05 task #5). 60s cadence
+# matches sf_case_sync_sensor so the end-to-end SF→PG→Foundry latency is
+# ~120s worst case. Watermark-driven + idempotent (upsert keyed on case_id),
+# so an overlapping run is harmless; a Foundry-unreachable run materializes
+# as a skip with the cursor untouched (the standalone contract).
+@sensor(
+    job=foundry_cases_sync_job,
+    name="foundry_cases_sync_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Mirrors app.cases into the Foundry Case ontology every ~60s (cursor-driven).",
+)
+def foundry_cases_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
@@ -300,6 +323,7 @@ defs = Definitions(
         foundry_sites_sync,
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
+        foundry_cases_sync,
         flight_plan_enrichment,
         sf_case_push,
         sf_case_sync,
@@ -314,6 +338,7 @@ defs = Definitions(
         foundry_sites_sync_job,
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
+        foundry_cases_sync_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
         sf_case_sync_job,
@@ -335,6 +360,7 @@ defs = Definitions(
         foundry_positions_sync_sensor,
         case_sync_retry_sensor,
         sf_case_sync_sensor,
+        foundry_cases_sync_sensor,
     ],
     resources={
         "postgres": postgres,

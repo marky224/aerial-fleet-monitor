@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
 from afm_foundry_sync.models import (
+    CaseForSync,
     FlightDetail,
     PositionsLiveResponse,
     SiteDetail,
@@ -363,4 +365,118 @@ async def test_validation_error_on_malformed_payload(
     async with AfmApiClient(settings) as client:
         with pytest.raises(ValidationError):
             await client.fetch_positions_live()
+    assert route.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Cases (Phase 05 task #5)
+# ---------------------------------------------------------------------------
+
+
+def _case_for_sync_dict(case_id: str, updated_at_iso: str) -> dict[str, Any]:
+    return {
+        "case_id": case_id,
+        "salesforce_id": None,
+        "case_type": "lost_signal",
+        "status": "open",
+        "severity": "high",
+        "customer_region": "west",
+        "site_icao": "KSFO",
+        "flight_id": "a12345-1747308600",
+        "subject": "Lost signal during cruise — UAL1234 near KSFO",
+        "summary": None,
+        "severity_justification": None,
+        "detection_facts": {"callsign": "UAL1234"},
+        "runbook_refs": ["lost-signal-cruise"],
+        "created_at": updated_at_iso,
+        "updated_at": updated_at_iso,
+        "resolved_at": None,
+    }
+
+
+@respx.mock
+async def test_fetch_cases_for_sync_single_page(settings: FoundrySettings) -> None:
+    """One non-truncated page → returns its items + next_cursor verbatim."""
+    body = {
+        "items": [
+            _case_for_sync_dict("CASE-1", "2026-05-24T10:00:00Z"),
+            _case_for_sync_dict("CASE-2", "2026-05-24T10:05:00Z"),
+        ],
+        "next_cursor": "2026-05-24T10:05:00Z",
+        "truncated": False,
+    }
+    route = respx.get("http://api.test/v1/cases/all-for-sync").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    async with AfmApiClient(settings) as client:
+        items, cursor = await client.fetch_cases_for_sync()
+    assert route.call_count == 1
+    assert [i.case_id for i in items] == ["CASE-1", "CASE-2"]
+    assert isinstance(items[0], CaseForSync)
+    assert cursor == datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC)
+
+
+@respx.mock
+async def test_fetch_cases_for_sync_paginates_until_not_truncated(
+    settings: FoundrySettings,
+) -> None:
+    """Two truncated pages then a final non-truncated page → all items merged, cursor walks."""
+    page_1 = {
+        "items": [_case_for_sync_dict("CASE-1", "2026-05-24T10:00:00Z")],
+        "next_cursor": "2026-05-24T10:00:00Z",
+        "truncated": True,
+    }
+    page_2 = {
+        "items": [_case_for_sync_dict("CASE-2", "2026-05-24T10:05:00Z")],
+        "next_cursor": "2026-05-24T10:05:00Z",
+        "truncated": True,
+    }
+    page_3 = {
+        "items": [_case_for_sync_dict("CASE-3", "2026-05-24T10:10:00Z")],
+        "next_cursor": "2026-05-24T10:10:00Z",
+        "truncated": False,
+    }
+    route = respx.get("http://api.test/v1/cases/all-for-sync").mock(
+        side_effect=[
+            httpx.Response(200, json=page_1),
+            httpx.Response(200, json=page_2),
+            httpx.Response(200, json=page_3),
+        ]
+    )
+    async with AfmApiClient(settings) as client:
+        items, cursor = await client.fetch_cases_for_sync()
+    assert route.call_count == 3
+    assert [i.case_id for i in items] == ["CASE-1", "CASE-2", "CASE-3"]
+    assert cursor == datetime(2026, 5, 24, 10, 10, 0, tzinfo=UTC)
+
+
+@respx.mock
+async def test_fetch_cases_for_sync_empty_returns_since_unchanged(
+    settings: FoundrySettings,
+) -> None:
+    """Zero rows → cursor is the original `since` (watermark untouched)."""
+    body = {"items": [], "next_cursor": None, "truncated": False}
+    respx.get("http://api.test/v1/cases/all-for-sync").mock(
+        return_value=httpx.Response(200, json=body)
+    )
+    prior = datetime(2026, 5, 24, 9, 0, 0, tzinfo=UTC)
+    async with AfmApiClient(settings) as client:
+        items, cursor = await client.fetch_cases_for_sync(since=prior)
+    assert items == []
+    assert cursor == prior
+
+
+@respx.mock
+async def test_fetch_cases_for_sync_passes_since_param(
+    settings: FoundrySettings,
+) -> None:
+    """`since` is forwarded as the query param when provided."""
+    body = {"items": [], "next_cursor": None, "truncated": False}
+    since = datetime(2026, 5, 24, 9, 30, 0, tzinfo=UTC)
+    route = respx.get(
+        "http://api.test/v1/cases/all-for-sync",
+        params={"limit": "500", "since": since.isoformat()},
+    ).mock(return_value=httpx.Response(200, json=body))
+    async with AfmApiClient(settings) as client:
+        await client.fetch_cases_for_sync(since=since)
     assert route.call_count == 1

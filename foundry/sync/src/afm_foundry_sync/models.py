@@ -12,7 +12,7 @@ other auth-side types from ``app.models.common`` are out of scope here.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -186,6 +186,50 @@ class SiteFlightListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Cases (Phase 05 task #5 — Foundry sync read path)
+# ---------------------------------------------------------------------------
+
+
+class CaseForSync(BaseModel):
+    """One row from `GET /v1/cases/all-for-sync` — mirror of api/app/models/cases.py.
+
+    Server-to-server snapshot, no scope filter. Carries every column the
+    Foundry Case ontology object surfaces; `subject` is derived on the API
+    side by the same formatter the SF push uses.
+    """
+
+    case_id: str
+    salesforce_id: str | None = None
+    case_type: str
+    status: str
+    severity: str
+    customer_region: str
+    site_icao: str
+    flight_id: str
+    subject: str
+    summary: str | None = None
+    severity_justification: str | None = None
+    detection_facts: dict[str, Any] = Field(default_factory=dict)
+    runbook_refs: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+
+
+class CasesForSyncPage(BaseModel):
+    """One page of `GET /v1/cases/all-for-sync`.
+
+    The reader walks pages until `truncated=False`, accumulating items
+    and advancing the cursor. `next_cursor` is None when the page is
+    empty (zero rows → sync writes nothing, watermark unchanged).
+    """
+
+    items: list[CaseForSync] = Field(default_factory=list)
+    next_cursor: datetime | None = None
+    truncated: bool
+
+
+# ---------------------------------------------------------------------------
 # Ontology objects (Foundry-side shapes — targets of transforms.py)
 # ---------------------------------------------------------------------------
 
@@ -317,3 +361,36 @@ class Flight(BaseModel):
     # History (serialized as JSON strings on the wire by ontology_writers)
     status_timeline: list[FlightStatusEvent]
     trail_2h: list[TrailPoint]
+
+
+class Case(BaseModel):
+    """Foundry Ontology object: an AFM-detected anomaly mirrored from app.cases.
+
+    Phase 05 task #5 — wires the Case ontology (see foundry/ontology/case.yaml)
+    so App 1's Cases panel can render real Cases. The shape is identical to
+    the API-side `CaseForSync`; the dedicated type lives here so
+    `ontology_writers.case_params` has a typed Foundry-side anchor and
+    future Foundry-only enrichment fields have a place to land without
+    disturbing the API model.
+
+    `flight_id` may be the synthesized Flight PK (`{icao24}-{unix_takeoff_ts}`,
+    a real Flight) OR the `WX-{site_icao}` sentinel (site-level rules with
+    no flight); the Case→Flight link returns empty in the sentinel case.
+    """
+
+    case_id: str
+    salesforce_id: str | None
+    case_type: str
+    status: str
+    severity: str
+    customer_region: str
+    site_icao: str
+    flight_id: str
+    subject: str | None
+    summary: str | None
+    severity_justification: str | None
+    detection_facts: dict[str, Any]
+    runbook_refs: list[str]
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None

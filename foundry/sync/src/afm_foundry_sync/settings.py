@@ -89,6 +89,28 @@ class FoundrySettings(BaseSettings):
             "distinct from the lowercase upsert object-locator."
         ),
     )
+    FOUNDRY_ACTION_UPSERT_CASE: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "apiName of the modify-or-create Action that upserts Case objects "
+            "(Phase 05 task #5). Unlike upsert-aircraft/site/flight, this "
+            "action exposes NO separate PK string parameter (``caseId``) — "
+            "the ``case`` object-locator handles both create (becomes the PK) "
+            "and modify (looks up by PK). See foundry/ontology/case.yaml."
+        ),
+    )
+    FOUNDRY_ACTION_DELETE_CASE: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "apiName of the delete Action for Case objects. Single parameter "
+            "key is the PascalCase object-type name (``Case``), same shape "
+            "as delete-aircraft. Provisioned but not wired in v1 — the cases "
+            "sync is upsert-only; resolved cases age out of the API's "
+            "moving updated_at window naturally."
+        ),
+    )
     AFM_API_BASE: str = Field(
         default="http://localhost:8000",
         description="Base URL of the local AFM /v1 API the sync reads from.",

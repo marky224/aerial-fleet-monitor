@@ -11,6 +11,8 @@ from typing import Any
 
 from afm_foundry_sync.models import (
     Aircraft,
+    Case,
+    CaseForSync,
     Flight,
     FlightDetail,
     FlightStatusEvent,
@@ -24,6 +26,7 @@ from afm_foundry_sync.models import (
     TrailResponse,
 )
 from afm_foundry_sync.transforms import (
+    case_for_sync_to_case,
     flight_detail_to_flight,
     position_to_aircraft,
     site_to_site,
@@ -435,3 +438,69 @@ def test_flight_detail_to_flight_preserves_timezone() -> None:
     f = flight_detail_to_flight(_FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail())
     assert f.takeoff_ts.tzinfo is not None
     assert f.status_timeline[0].occurred_at.tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# Case (Phase 05 task #5)
+# ---------------------------------------------------------------------------
+
+
+def _make_case_for_sync(**overrides: Any) -> CaseForSync:
+    base: dict[str, Any] = dict(
+        case_id="CASE-2026-000001",
+        salesforce_id="500X000000abc",
+        case_type="lost_signal",
+        status="open",
+        severity="high",
+        customer_region="west",
+        site_icao="KSFO",
+        flight_id="a12345-1747308600",
+        subject="Lost signal during cruise — UAL1234 near KSFO",
+        summary=None,
+        severity_justification=None,
+        detection_facts={"callsign": "UAL1234", "gap_minutes": 12},
+        runbook_refs=["lost-signal-cruise"],
+        created_at=datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC),
+        resolved_at=None,
+    )
+    base.update(overrides)
+    return CaseForSync(**base)
+
+
+def test_case_for_sync_to_case_passes_every_field_through() -> None:
+    item = _make_case_for_sync()
+    c = case_for_sync_to_case(item)
+    assert isinstance(c, Case)
+    assert c.case_id == item.case_id
+    assert c.salesforce_id == item.salesforce_id
+    assert c.case_type == item.case_type
+    assert c.status == item.status
+    assert c.severity == item.severity
+    assert c.customer_region == item.customer_region
+    assert c.site_icao == item.site_icao
+    assert c.flight_id == item.flight_id
+    assert c.subject == item.subject
+    assert c.summary == item.summary
+    assert c.severity_justification == item.severity_justification
+    assert c.detection_facts == item.detection_facts
+    assert c.runbook_refs == item.runbook_refs
+    assert c.created_at == item.created_at
+    assert c.updated_at == item.updated_at
+    assert c.resolved_at == item.resolved_at
+
+
+def test_case_for_sync_to_case_preserves_none_optionals() -> None:
+    """Pending push (salesforce_id None) + still-open (resolved_at None) round-trip."""
+    item = _make_case_for_sync(salesforce_id=None, resolved_at=None)
+    c = case_for_sync_to_case(item)
+    assert c.salesforce_id is None
+    assert c.resolved_at is None
+
+
+def test_case_for_sync_to_case_carries_wx_sentinel_flight_id() -> None:
+    """Site-level cases use a `WX-{site_icao}` sentinel for flight_id."""
+    item = _make_case_for_sync(case_type="weather_impact", flight_id="WX-KJFK", site_icao="KJFK")
+    c = case_for_sync_to_case(item)
+    assert c.flight_id == "WX-KJFK"
+    assert c.site_icao == "KJFK"

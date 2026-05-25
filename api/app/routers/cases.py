@@ -1,6 +1,6 @@
 """Case endpoints.
 
-Two system-internal sync triggers, each driven by a pipelines asset:
+Three system-internal triggers, each driven by a pipelines asset:
 
 * `POST /v1/cases/sync-pending` (push) — drains `sf_sync_status='pending'`
   cases into Salesforce via `CaseSyncService`. The `sf_case_push` asset
@@ -9,20 +9,25 @@ Two system-internal sync triggers, each driven by a pipelines asset:
 * `POST /v1/cases/sync-from-sf` (pull) — mirrors Cases modified in
   Salesforce back into `app.cases` since the persisted watermark. The
   `sf_case_sync` asset polls it (PIPELINES.md §3.5).
+* `GET /v1/cases/all-for-sync` (read) — paginated server-to-server snapshot
+  of `app.cases` for the Foundry sync (`foundry_cases_sync` asset). No
+  scope filter; the customer-facing scope-gated reads (`GET /v1/cases`,
+  `GET /v1/cases/{id}`) land in a later Phase-05 slice.
 
-Both keep the SF field/region translation inside `SalesforceService`
+The two SF endpoints keep field/region translation inside `SalesforceService`
 (SALESFORCE.md §10.1); the pipelines venv reaches Salesforce only through
-the API. The customer-facing read endpoints (`GET /v1/cases`,
-`GET /v1/cases/{id}`) land in a later Phase-05 slice.
+the API.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
 from app.dependencies import get_postgres_pool, get_salesforce_service
+from app.models.cases import CasesForSyncPage
 from app.models.salesforce import CasePullSummary, CaseSyncSummary
 from app.services.case_sync import CaseSyncService
 from app.services.postgres import PostgresPool
@@ -49,3 +54,16 @@ async def sync_from_sf(
 ) -> CasePullSummary:
     """Pull up to `limit` Salesforce-modified Cases into app.cases; advance watermark."""
     return await CaseSyncService(postgres, sf).pull_from_sf(limit=limit)
+
+
+@router.get("/all-for-sync", response_model=CasesForSyncPage)
+async def all_for_sync(
+    postgres: Annotated[PostgresPool, Depends(get_postgres_pool)],
+    since: Annotated[
+        datetime | None,
+        Query(description="Return rows with updated_at > since (incremental cursor)."),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+) -> CasesForSyncPage:
+    """Paginated server-to-server snapshot of `app.cases` for Foundry sync."""
+    return await CaseSyncService(postgres).list_for_sync(since=since, limit=limit)
