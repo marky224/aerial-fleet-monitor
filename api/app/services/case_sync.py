@@ -122,9 +122,7 @@ class CaseSyncService:
     without SF — `salesforce=None` is accepted for that path.
     """
 
-    def __init__(
-        self, postgres: PostgresPool, salesforce: SalesforceService | None = None
-    ) -> None:
+    def __init__(self, postgres: PostgresPool, salesforce: SalesforceService | None = None) -> None:
         self._pg = postgres
         self._sf = salesforce
 
@@ -466,9 +464,7 @@ class CaseSyncService:
         )
         return CasesForSyncPage(items=items, next_cursor=next_cursor, truncated=truncated)
 
-    def _fetch_for_sync(
-        self, since: datetime | None, limit: int
-    ) -> list[dict[str, Any]]:
+    def _fetch_for_sync(self, since: datetime | None, limit: int) -> list[dict[str, Any]]:
         if since is None:
             return self._pg.fetchall(
                 f"SELECT {_FOR_SYNC_COLUMNS} FROM app.cases "
