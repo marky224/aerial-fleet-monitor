@@ -3,7 +3,6 @@
 > Real-time fleet operations console — built on public US aviation data.
 
 [![Build](https://github.com/marky224/aerial-fleet-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/marky224/aerial-fleet-monitor/actions)
-[![Coverage](https://codecov.io/gh/marky224/aerial-fleet-monitor/branch/main/graph/badge.svg)](https://codecov.io/gh/marky224/aerial-fleet-monitor)
 [![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red)](./LICENSE.md)
 
 ---

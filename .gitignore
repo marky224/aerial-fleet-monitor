@@ -19,7 +19,23 @@ secrets/
 
 # Service tokens and JWT keys
 *.jwt
+*.token
 service-tokens/
+
+# Common credential filenames (defense in depth)
+secrets.json
+credentials.json
+service-account*.json
+gha-creds-*.json
+*.pem.bak
+*.key.bak
+
+# SSH private keys
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+!*.pub
 
 # ----------------------------------------------------------------------------
 # Python (api/, pipelines/)
