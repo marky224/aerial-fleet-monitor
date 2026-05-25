@@ -6,8 +6,12 @@ from FastAPI's event loop (SALESFORCE.md §"Async wrapping convention").
 
 Auth is OAuth 2.0 Client Credentials against the org's My Domain token
 endpoint (no stored user password; the Connected App's "Run As" user is
-the effective principal). The token is fetched lazily and cached, then
-refreshed once on an auth failure.
+the effective principal). The token is fetched lazily and cached;
+``_with_session_retry`` drops the cached client and re-fetches once on
+a 401 ``INVALID_SESSION_ID`` (token TTL expired between requests on
+this app-wide singleton), and ``_translate_sf_error`` maps a residual
+401 to a transient ``UpstreamUnavailable`` so the push retries the
+row rather than parking it permanently ``failed``.
 
 This module is the single place region values are translated to
 Salesforce TitleCase and snake_case inputs are mapped to `AFM_*__c` API
@@ -27,14 +31,17 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from simple_salesforce import Salesforce  # type: ignore[attr-defined]
+from simple_salesforce.exceptions import SalesforceError
 
-from app.exceptions import BadRequest, UpstreamUnavailable
+from app.exceptions import AFMException, BadRequest, UpstreamUnavailable
 from app.logging import get_logger
 from app.models.common import Region
-from app.models.salesforce import CaseCreateInput, SalesforceCaseRef
+from app.models.salesforce import CaseCreateInput, CaseSyncRecord, SalesforceCaseRef
 from app.settings import Settings
 
 log = get_logger(__name__)
@@ -43,8 +50,44 @@ log = get_logger(__name__)
 REGION_TO_SF: dict[str, str] = {"west": "West", "east": "East", "all": "All"}
 REGION_FROM_SF: dict[str, Region] = {"West": "west", "East": "east", "All": "all"}
 
+# SF→AFM translation for the pull half (mirror of the AFM→SF write maps).
+# Status: SF Fleet_Operations picklist (New/Working/Escalated/Closed) → AFM
+# cases.status (open|acknowledged|in_progress|resolved|closed). Crosswalk
+# locked by user 2026-05-21: 'acknowledged' is unused (no SF equivalent in
+# the 4-value picklist); 'Closed' maps to 'resolved' and carries ClosedDate.
+STATUS_FROM_SF: dict[str, str] = {
+    "New": "open",
+    "Working": "in_progress",
+    "Escalated": "in_progress",
+    "Closed": "resolved",
+}
+# Defensive default if the org adds a Status value we don't map yet — never
+# silently drop a Case, just treat the unknown state as open.
+_DEFAULT_AFM_STATUS = "open"
+
+# Priority carries AFM severity (CaseCreateInput); reverse of _SEVERITY_TO_PRIORITY
+# in case_sync.py. Note 'critical' collapsed to High on the way out, so it
+# round-trips back as 'high' — lossy by design (build-doc decision log).
+SEVERITY_FROM_SF: dict[str, str] = {"Low": "low", "Medium": "medium", "High": "high"}
+
 _SF_API_VERSION = "62.0"  # REST data API; independent of metadata sourceApiVersion
 _TOKEN_TIMEOUT_S = 20
+
+# How far back to look on the very first pull (no watermark row yet).
+_FIRST_PULL_LOOKBACK = timedelta(hours=1)
+# SystemModstamp is monotonic but a `>` query never re-reads the boundary
+# row; LIMIT bounds one cycle's batch (PIPELINES.md §3.5 uses 200).
+_PULL_PAGE_LIMIT = 200
+
+
+def _parse_sf_datetime(value: str | None) -> datetime | None:
+    """Parse a Salesforce datetime ('2026-05-21T22:00:00.000+0000') to aware UTC.
+
+    Python 3.11+ `fromisoformat` accepts the millisecond + `+0000` offset SF
+    emits. Returns None for null/empty (e.g. an open Case's ClosedDate)."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
 
 
 class SalesforceService:
@@ -121,6 +164,24 @@ class SalesforceService:
         self._case_record_type_id = None
         return self._client()
 
+    def _with_session_retry(self, fn: Callable[[], Any]) -> Any:
+        """Run ``fn``; on a 401 INVALID_SESSION_ID, drop the cached client
+        and retry once. The Connected App's client-credentials access token
+        has a finite TTL (org rotation policy) and the SalesforceService
+        instance is an app-wide singleton, so an expired token would
+        otherwise 401 every subsequent call until process restart. A
+        second 401 indicates a real auth problem (revoked creds, IP
+        block) and is left to propagate — `_translate_sf_error` will
+        surface it as a transient `UpstreamUnavailable` so the push
+        retries the row rather than parking it `failed`."""
+        try:
+            return fn()
+        except SalesforceError as exc:
+            if getattr(exc, "status", None) != 401:
+                raise
+            self._reauth()
+            return fn()
+
     # -- field mapping ----------------------------------------------------
 
     def _case_record_type(self) -> str:
@@ -129,7 +190,7 @@ class SalesforceService:
                 "SELECT Id FROM RecordType WHERE SobjectType='Case' "
                 f"AND DeveloperName='{self._record_type_dev_name}'"
             )
-            res = self._client().query(soql)
+            res = self._with_session_retry(lambda: self._client().query(soql))
             recs = res.get("records", [])
             if not recs:
                 raise UpstreamUnavailable(
@@ -178,11 +239,71 @@ class SalesforceService:
 
     # -- writes -----------------------------------------------------------
 
+    @staticmethod
+    def _translate_sf_error(exc: SalesforceError, message: str) -> AFMException:
+        """Map a ``simple_salesforce`` HTTP error to AFM's error hierarchy.
+
+        ``simple_salesforce`` *raises* a ``SalesforceError`` subclass on a
+        non-2xx before returning the result dict, so callers that only check
+        ``result["success"]`` never see a 4xx (e.g. a restricted-picklist
+        rejection → ``INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST``, HTTP 400).
+        Left untranslated it bubbles out as an unhandled 500 and aborts the
+        whole push batch. The split mirrors ``push_pending``'s contract: a
+        4xx is the request's own fault → permanent ``BadRequest`` (case
+        parked ``failed``); a 5xx / network / unknown status is degradation
+        → transient ``UpstreamUnavailable`` (case stays ``pending`` to retry).
+        """
+        status = getattr(exc, "status", None)
+        details = {"sf_status": status, "sf_errors": getattr(exc, "content", None)}
+        # 401 = session/auth, treated as transient so the push retries the row
+        # (`_with_session_retry` already attempts one in-process refresh before
+        # this point; a residual 401 here usually means revoked creds or an IP
+        # block that may clear on its own).
+        if status == 401:
+            return UpstreamUnavailable(message, details=details)
+        if isinstance(status, int) and 400 <= status < 500:
+            return BadRequest(message, details=details)
+        return UpstreamUnavailable(message, details=details)
+
+    @staticmethod
+    def _is_duplicate_external_id(exc: SalesforceError) -> bool:
+        """True if the error is a DUPLICATE_VALUE on the unique external id.
+
+        The push is at-least-once (a retry, or a concurrent pass, can
+        re-submit a row whose Case already exists). AFM_External_Id__c is
+        unique, so the second insert fails DUPLICATE_VALUE rather than
+        creating a twin — we treat that as "already created" and reconcile.
+        """
+        content = getattr(exc, "content", None)
+        if not isinstance(content, list):
+            return False
+        return any(isinstance(e, dict) and e.get("errorCode") == "DUPLICATE_VALUE" for e in content)
+
+    def _find_case_id_by_external_id_sync(self, external_id: str) -> str | None:
+        safe = external_id.replace("\\", "\\\\").replace("'", "\\'")
+        soql = f"SELECT Id FROM Case WHERE AFM_External_Id__c = '{safe}' LIMIT 1"
+        records = self._with_session_retry(lambda: self._client().query(soql)).get("records", [])
+        return cast(str, records[0]["Id"]) if records else None
+
     def _create_case_sync(self, payload: CaseCreateInput) -> SalesforceCaseRef:
         sf_fields = self.to_sf_fields(payload)
-        result = self._client().Case.create(sf_fields)
+        try:
+            result = self._with_session_retry(lambda: self._client().Case.create(sf_fields))
+        except SalesforceError as exc:
+            # Idempotent recovery: a Case already exists for this external id
+            # (retry / concurrent push) → adopt the existing record instead of
+            # failing a row that is, in fact, synced.
+            if self._is_duplicate_external_id(exc):
+                existing = self._find_case_id_by_external_id_sync(payload.external_id)
+                if existing is not None:
+                    return SalesforceCaseRef(
+                        salesforce_id=existing, external_id=payload.external_id
+                    )
+            raise self._translate_sf_error(exc, "Salesforce Case create failed") from exc
         if not result.get("success"):
-            raise UpstreamUnavailable(
+            # 2xx with success=False is rare but carries validation errors —
+            # treat as a permanent bad request, not transient degradation.
+            raise BadRequest(
                 "Salesforce Case create failed",
                 details={"errors": result.get("errors", [])},
             )
@@ -195,13 +316,19 @@ class SalesforceService:
         """Insert a Case. Returns both cross-system ids (DATA_MODEL §6)."""
         return await asyncio.to_thread(self._create_case_sync, payload)
 
+    def _update_case_sync(self, case_id: str, updates: dict[str, Any]) -> None:
+        self._with_session_retry(lambda: self._client().Case.update(case_id, updates))
+
     async def update_case(self, case_id: str, updates: dict[str, Any]) -> None:
         """Patch a Case by Salesforce Id. `updates` uses SF field names."""
-        await asyncio.to_thread(self._client().Case.update, case_id, updates)
+        await asyncio.to_thread(self._update_case_sync, case_id, updates)
+
+    def _delete_case_sync(self, case_id: str) -> None:
+        self._with_session_retry(lambda: self._client().Case.delete(case_id))
 
     async def delete_case(self, case_id: str) -> None:
         """Hard-delete a Case by Salesforce Id (used by the dev smoke test)."""
-        await asyncio.to_thread(self._client().Case.delete, case_id)
+        await asyncio.to_thread(self._delete_case_sync, case_id)
 
     # -- scope read (Half-A: provided + tested, not yet wired) ------------
 
@@ -211,21 +338,21 @@ class SalesforceService:
         # and CustomPermission's API-name column is `DeveloperName` not `Name`.
         # The mock-based unit test never exercised real SOQL; the Phase-04
         # integration suite (test_salesforce_integration.py) caught both.
-        client = self._client()
         access_soql = (
             "SELECT SetupEntityId FROM SetupEntityAccess "
             "WHERE SetupEntityType='CustomPermission' AND ParentId IN ("
             "SELECT PermissionSetId FROM PermissionSetAssignment "
             f"WHERE AssigneeId = '{user_id}')"
         )
-        access_recs = client.query(access_soql).get("records", [])
+        access_recs = self._with_session_retry(lambda: self._client().query(access_soql)).get(
+            "records", []
+        )
         cp_ids = [cast(str, r["SetupEntityId"]) for r in access_recs]
         if not cp_ids:
             return []
         id_list = ", ".join(f"'{i}'" for i in cp_ids)
-        cp_recs = client.query(
-            f"SELECT DeveloperName FROM CustomPermission WHERE Id IN ({id_list})"
-        ).get("records", [])
+        cp_soql = f"SELECT DeveloperName FROM CustomPermission WHERE Id IN ({id_list})"
+        cp_recs = self._with_session_retry(lambda: self._client().query(cp_soql)).get("records", [])
         return [cast(str, r["DeveloperName"]) for r in cp_recs]
 
     async def get_user_custom_perms(self, user_id: str) -> list[str]:
@@ -235,3 +362,56 @@ class SalesforceService:
         query is implemented + integration-testable now.
         """
         return await asyncio.to_thread(self._user_custom_perms_sync, user_id)
+
+    # -- reads: the SF→Postgres pull (Phase 05) ---------------------------
+
+    @staticmethod
+    def default_pull_watermark() -> datetime:
+        """Watermark to use on the first pull (no `sync_watermarks` row yet)."""
+        return datetime.now(tz=UTC) - _FIRST_PULL_LOOKBACK
+
+    def _to_sync_record(self, rec: dict[str, Any]) -> CaseSyncRecord:
+        """Translate one SF Case query row to the AFM-side `CaseSyncRecord`.
+
+        The ONE place SF→AFM Status/Priority translation happens (the mirror
+        of `to_sf_fields`). Unknown Status → open (never drop a Case); unknown
+        Priority → None (leaves the local severity untouched downstream)."""
+        refs_raw = cast("str | None", rec.get("AFM_Runbook_Refs__c")) or ""
+        runbook_refs = [r.strip() for r in refs_raw.split(",") if r.strip()]
+        return CaseSyncRecord(
+            salesforce_id=cast(str, rec["Id"]),
+            external_id=cast(str, rec.get("AFM_External_Id__c") or ""),
+            status=STATUS_FROM_SF.get(cast(str, rec.get("Status") or ""), _DEFAULT_AFM_STATUS),
+            severity=SEVERITY_FROM_SF.get(cast(str, rec.get("Priority") or "")),
+            summary=cast("str | None", rec.get("Description")),
+            severity_justification=cast("str | None", rec.get("AFM_Severity_Justification__c")),
+            runbook_refs=runbook_refs,
+            resolved_at=_parse_sf_datetime(cast("str | None", rec.get("ClosedDate"))),
+            system_modstamp=cast(datetime, _parse_sf_datetime(cast(str, rec["SystemModstamp"]))),
+        )
+
+    def _query_cases_modified_since_sync(
+        self, watermark: datetime, limit: int
+    ) -> list[CaseSyncRecord]:
+        # SOQL datetime literals are UNQUOTED and need a UTC `Z`/offset form.
+        soql_ts = watermark.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        soql = (
+            "SELECT Id, AFM_External_Id__c, Status, Priority, Description, "
+            "AFM_Severity_Justification__c, AFM_Runbook_Refs__c, ClosedDate, SystemModstamp "
+            "FROM Case "
+            f"WHERE RecordType.DeveloperName = '{self._record_type_dev_name}' "
+            f"AND SystemModstamp > {soql_ts} "
+            "ORDER BY SystemModstamp ASC "
+            f"LIMIT {int(limit)}"
+        )
+        records = self._with_session_retry(lambda: self._client().query(soql)).get("records", [])
+        return [self._to_sync_record(r) for r in records]
+
+    async def query_cases_modified_since(
+        self, watermark: datetime, limit: int = _PULL_PAGE_LIMIT
+    ) -> list[CaseSyncRecord]:
+        """Fleet_Operations Cases with SystemModstamp > watermark, oldest first.
+
+        Returns AFM-translated rows; `system_modstamp` drives the caller's
+        watermark advance (PIPELINES.md §3.5)."""
+        return await asyncio.to_thread(self._query_cases_modified_since_sync, watermark, limit)

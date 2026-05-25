@@ -57,6 +57,7 @@ from afm_foundry_sync.models import Flight, FlightDetail, Position
 from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
+    case_for_sync_to_case,
     flight_detail_to_flight,
     position_to_aircraft,
     site_to_site,
@@ -123,6 +124,25 @@ class ReconcileResult:
     orphans: int
     deleted: int
     skipped_empty_live: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CaseSyncResult:
+    """Outcome of one cases sync run (Phase 05 task #5).
+
+    ``cursor`` is the value the caller should persist and pass back as
+    ``since`` next run (= max ``updated_at`` observed across this run's
+    pages, or the unchanged prior ``since`` when the API returned zero
+    rows; ``None`` only on the very first run with an empty backlog).
+    The cases sync is upsert-only — no reconcile/eviction. Resolved
+    cases just stop advancing ``updated_at`` and fall out of the moving
+    window naturally (and App 1's panel applies its own status filter).
+    """
+
+    attempted: int
+    succeeded: int
+    failed: int = 0
+    cursor: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,7 +643,65 @@ async def run_flight_enrichment() -> FlightEnrichmentResult:
             return await enriched_sync_flights(client, writer)
 
 
+async def incremental_sync_cases(
+    client: AfmApiClient,
+    writer: FoundryWriter,
+    *,
+    since: datetime | None = None,
+) -> CaseSyncResult:
+    """Sync ``GET /v1/cases/all-for-sync`` → Case Ontology objects.
+
+    Drains every page from the API (paginated incrementally on
+    ``updated_at``), maps each row to a Foundry ``Case`` via
+    :func:`case_for_sync_to_case`, and upserts the batch via
+    ``upsert-case``. Returns the new cursor (max ``updated_at``
+    observed, or the unchanged ``since`` when zero rows) for the
+    Dagster asset to persist as the watermark for the next tick.
+
+    Upsert-only — no Foundry-side delete. Resolved cases stop
+    advancing ``updated_at`` and fall out of the API's moving window
+    naturally; the App 1 Cases panel applies its own ``status``
+    filter at display time, so leaving resolved Cases in the tenant
+    is harmless.
+
+    Cursor is persisted *post-write* by the caller (the Dagster
+    asset's ``MaterializeResult`` metadata) so a transient Foundry
+    failure raised before the return leaves the watermark untouched
+    and the next tick re-reads the same window — same skip-as-success
+    convention as the other foundry-sync assets.
+    """
+    items, cursor = await client.fetch_cases_for_sync(since=since)
+    logger.info(
+        "foundry_cases_sync",
+        since=since.isoformat() if since else None,
+        received=len(items),
+        cursor=cursor.isoformat() if cursor else None,
+    )
+    cases = [case_for_sync_to_case(item) for item in items]
+    batch: BatchResult = await writer.upsert_case_batch(cases)
+    return CaseSyncResult(
+        attempted=batch.attempted,
+        succeeded=batch.succeeded,
+        failed=batch.failed,
+        cursor=cursor,
+    )
+
+
+async def run_cases_sync(*, since: datetime | None = None) -> CaseSyncResult:
+    """Entrypoint the Dagster cases asset calls. Skip-guarded.
+
+    Same standalone discipline as the other entrypoints: an absent
+    ``_private/foundry/.env`` or an unreachable endpoint (Foundry-side
+    or local AFM API) surfaces as ``FoundrySyncSkipped``, not a crash.
+    """
+    async with guarded_sync("cases"):
+        settings = FoundrySettings()
+        async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+            return await incremental_sync_cases(client, writer, since=since)
+
+
 __all__ = [
+    "CaseSyncResult",
     "FlightEnrichmentResult",
     "FoundrySyncSkipped",
     "ReconcileResult",
@@ -633,10 +711,12 @@ __all__ = [
     "enriched_sync_flights",
     "full_sync_sites",
     "guarded_sync",
+    "incremental_sync_cases",
     "incremental_sync_positions",
     "parse_flight_id",
     "reconcile_aircraft",
     "run_aircraft_reconcile",
+    "run_cases_sync",
     "run_flight_enrichment",
     "run_positions_sync",
     "run_sites_sync",

@@ -28,6 +28,10 @@ dependencies = [
     "pyarrow>=17,<20",
     "requests>=2.32,<3",
     "numpy>=1.26,<3",
+    # Phase 05 — the case-detector rule engine operates on tabular
+    # last-hour position frames; DuckDB reads the lakehouse straight to a
+    # pandas DataFrame via `.df()`.
+    "pandas>=2.2,<3",
     # Phase 03 — the Foundry sync assets import `afm_foundry_sync`. It is a
     # sibling monorepo package with its own venv/pyproject, not on PyPI, so
     # it is editable-installed by `make install` (see Makefile) rather than
@@ -49,6 +53,10 @@ dev = [
     # explicitly + the corresponding code annotation keeps local and CI
     # in lockstep.
     "types-requests>=2.32",
+    # Stubs for the pandas runtime dep (Phase 05 rule engine). Without
+    # these mypy treats pandas as untyped; pandas-stubs gives real
+    # DataFrame/Series signatures under strict mode.
+    "pandas-stubs>=2.2",
 ]
 
 # Flat-layout package: pyproject.toml sits alongside __init__.py and
@@ -60,6 +68,8 @@ packages = [
     "pipelines.assets",
     "pipelines.data",
     "pipelines.resources",
+    "pipelines.rules",
+    "pipelines.services",
     # subpackages added in later phases: pipelines.jobs.
 ]
 package-dir = {"pipelines" = "."}

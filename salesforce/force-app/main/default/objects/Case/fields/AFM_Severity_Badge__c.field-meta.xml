@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Severity_Badge__c</fullName>
+    <label>Severity Badge</label>
+    <description>Visual badge for AFM Priority — colored flag for High/Medium/Low. Read-only formula derived from standard Priority. Renders in list views, compact layout highlights, record page, and reports.</description>
+    <type>Text</type>
+    <formula>IMAGE(
+  CASE(TEXT(Priority),
+    "High",   "/img/samples/flag_red.gif",
+    "Medium", "/img/samples/flag_yellow.gif",
+    "Low",    "/img/samples/flag_green.gif",
+    "/s.gif"),
+  TEXT(Priority), 16, 16)</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+</CustomField>

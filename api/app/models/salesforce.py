@@ -13,6 +13,7 @@ the Foundry-as-dashboard pivot) — see docs/build/04_salesforce_setup.md.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -63,6 +64,56 @@ class SalesforceCaseRef(BaseModel):
 
     salesforce_id: str = Field(description="Salesforce Case Id (15/18-char).")
     external_id: str = Field(description="AFM_External_Id__c (== Postgres cases.case_id).")
+
+
+class CaseSyncSummary(BaseModel):
+    """Outcome of a `POST /v1/cases/sync-pending` push pass."""
+
+    attempted: int = Field(description="Pending cases pulled this pass.")
+    synced: int = Field(description="Created in Salesforce + marked synced.")
+    retrying: int = Field(description="Transient failure; left pending for the next pass.")
+    failed: int = Field(description="Permanent failure (or max attempts); parked failed.")
+
+
+class CaseSyncRecord(BaseModel):
+    """One Salesforce Case translated to the AFM (Postgres) side.
+
+    Produced by `SalesforceService.query_cases_modified_since` — the single
+    place SF→AFM translation happens (SALESFORCE.md §10.1, the mirror of
+    `CaseCreateInput`'s AFM→SF direction). `status`/`severity` are already
+    AFM-lowercase here; this model never carries an SF picklist value or an
+    `AFM_*__c` field name."""
+
+    salesforce_id: str = Field(description="Salesforce Case Id. Match key into app.cases.")
+    external_id: str = Field(
+        description="AFM_External_Id__c (== app.cases.case_id). Fallback match key."
+    )
+    status: str = Field(description="AFM status: open|acknowledged|in_progress|resolved|closed.")
+    severity: str | None = Field(
+        default=None, description="AFM severity from standard Priority (low|medium|high)."
+    )
+    summary: str | None = Field(
+        default=None, description="From standard Description (Agentforce-authored)."
+    )
+    severity_justification: str | None = Field(
+        default=None, description="From AFM_Severity_Justification__c."
+    )
+    runbook_refs: list[str] = Field(
+        default_factory=list, description="From AFM_Runbook_Refs__c (comma-split)."
+    )
+    resolved_at: datetime | None = Field(default=None, description="From standard ClosedDate.")
+    system_modstamp: datetime = Field(description="SF SystemModstamp — drives the sync watermark.")
+
+
+class CasePullSummary(BaseModel):
+    """Outcome of a `POST /v1/cases/sync-from-sf` pull pass."""
+
+    fetched: int = Field(description="Cases returned by SF since the watermark.")
+    updated: int = Field(description="Matched app.cases rows updated.")
+    unmatched: int = Field(description="SF Cases with no local app.cases row (skipped).")
+    watermark: datetime | None = Field(
+        default=None, description="New watermark (max SystemModstamp); None if nothing changed."
+    )
 
 
 class SfTestCaseResult(BaseModel):

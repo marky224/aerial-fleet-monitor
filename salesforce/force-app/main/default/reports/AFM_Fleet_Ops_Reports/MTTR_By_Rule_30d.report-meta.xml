@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Report xmlns="http://soap.sforce.com/2006/04/metadata">
+    <name>MTTR by Rule (30d)</name>
+    <description>Mean resolution hours for AFM Cases closed in the last 30 days, grouped by rule. Average aggregated from AFM_Resolution_Hours__c (= ClosedDate − CreatedDate, in hours).</description>
+    <reportType>CaseList</reportType>
+    <format>Summary</format>
+    <showDetails>false</showDetails>
+    <showGrandTotal>true</showGrandTotal>
+    <showSubTotals>true</showSubTotals>
+    <groupingsDown>
+        <field>Case.AFM_Case_Type__c</field>
+        <sortOrder>Asc</sortOrder>
+    </groupingsDown>
+    <columns>
+        <field>Case.CaseNumber</field>
+    </columns>
+    <columns>
+        <field>Case.AFM_Resolution_Hours__c</field>
+        <aggregateTypes>Average</aggregateTypes>
+    </columns>
+    <columns>
+        <field>Case.CreatedDate</field>
+    </columns>
+    <filter>
+        <criteriaItems>
+            <column>Case.AFM_External_Id__c</column>
+            <operator>notEqual</operator>
+            <value></value>
+        </criteriaItems>
+    </filter>
+    <timeFrameFilter>
+            <dateColumn>CLOSED_DATE</dateColumn>
+            <interval>INTERVAL_LAST30</interval>
+        </timeFrameFilter>
+</Report>

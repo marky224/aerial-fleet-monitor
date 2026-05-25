@@ -20,14 +20,14 @@
                 <label>Diversion</label>
             </value>
             <value>
-                <fullName>hold</fullName>
+                <fullName>excessive_hold</fullName>
                 <default>false</default>
-                <label>Hold</label>
+                <label>Excessive Hold</label>
             </value>
             <value>
-                <fullName>weather</fullName>
+                <fullName>weather_impact</fullName>
                 <default>false</default>
-                <label>Weather</label>
+                <label>Weather Impact</label>
             </value>
             <value>
                 <fullName>go_around</fullName>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Resolution_Hours__c</fullName>
+    <label>Resolution Hours</label>
+    <description>Elapsed hours from CreatedDate to ClosedDate for closed AFM Cases. NULL while the case is open. Drives the MTTR_By_Rule_30d report; standard Case reports can't aggregate `ClosedDate - CreatedDate` directly.</description>
+    <type>Number</type>
+    <precision>10</precision>
+    <scale>2</scale>
+    <formula>IF(ISBLANK(ClosedDate), NULL, (ClosedDate - CreatedDate) * 24)</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+</CustomField>

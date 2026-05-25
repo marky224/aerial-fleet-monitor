@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Dashboard xmlns="http://soap.sforce.com/2006/04/metadata">
+    <backgroundEndColor>#FFFFFF</backgroundEndColor>
+    <backgroundFadeDirection>Diagonal</backgroundFadeDirection>
+    <backgroundStartColor>#FFFFFF</backgroundStartColor>
+    <dashboardType>LoggedInUser</dashboardType>
+    <description>Internal-ops dashboard for AFM Fleet Operations Cases: open by rule, severity mix, MTTR by rule, recurrence by aircraft, sites, and creation over time.</description>
+    <isGridLayout>false</isGridLayout>
+    <runningUser>markymark0224.2e8c70a7240a@agentforce.com</runningUser>
+    <textColor>#000000</textColor>
+    <title>AFM Fleet Operations</title>
+    <titleColor>#000000</titleColor>
+    <titleSize>14</titleSize>
+    <leftSection>
+        <columnSize>Medium</columnSize>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Bar</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: Open_Cases_By_Rule_Type</footer>
+            <header>Open Cases by Rule</header>
+            <legendPosition>Bottom</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/Open_Cases_By_Rule_Type</report>
+            <showTotal>true</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowValueDescending</sortBy>
+            <title>Open Cases by Rule Type</title>
+        </components>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Bar</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: Cases_Per_Aircraft_30d</footer>
+            <header>Recurrence: Cases per Aircraft (30d)</header>
+            <legendPosition>Bottom</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/Cases_Per_Aircraft_30d</report>
+            <showTotal>true</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowValueDescending</sortBy>
+            <title>Cases per Aircraft</title>
+        </components>
+    </leftSection>
+    <middleSection>
+        <columnSize>Medium</columnSize>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Donut</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: Severity_Mix_Open</footer>
+            <header>Severity Mix (Open)</header>
+            <legendPosition>Right</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/Severity_Mix_Open</report>
+            <showTotal>true</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowValueDescending</sortBy>
+            <title>Open Cases by Priority</title>
+        </components>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Bar</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: Cases_Per_Site_30d</footer>
+            <header>Cases per Site (30d)</header>
+            <legendPosition>Bottom</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/Cases_Per_Site_30d</report>
+            <showTotal>true</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowValueDescending</sortBy>
+            <title>Cases per Site</title>
+        </components>
+    </middleSection>
+    <rightSection>
+        <columnSize>Medium</columnSize>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Bar</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: MTTR_By_Rule_30d</footer>
+            <header>MTTR by Rule (30d, hours)</header>
+            <legendPosition>Bottom</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/MTTR_By_Rule_30d</report>
+            <showTotal>false</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowValueDescending</sortBy>
+            <title>Mean Resolution Hours by Rule</title>
+        </components>
+        <components>
+            <chartAxisRange>Auto</chartAxisRange>
+            <componentType>Line</componentType>
+            <displayUnits>Auto</displayUnits>
+            <footer>Source: Created_Over_Time_30d</footer>
+            <header>Cases Created Over Time (30d)</header>
+            <legendPosition>Bottom</legendPosition>
+            <report>AFM_Fleet_Ops_Reports/Created_Over_Time_30d</report>
+            <showTotal>true</showTotal>
+            <showValues>true</showValues>
+            <sortBy>RowLabelAscending</sortBy>
+            <title>AFM Cases Created per Day</title>
+        </components>
+    </rightSection>
+</Dashboard>

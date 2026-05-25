@@ -53,6 +53,8 @@ COPY pipelines/definitions.py ./
 COPY pipelines/assets ./assets
 COPY pipelines/data ./data
 COPY pipelines/resources ./resources
+COPY pipelines/rules ./rules
+COPY pipelines/services ./services
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -89,6 +91,8 @@ COPY --chown=afm:afm pipelines/definitions.py ./
 COPY --chown=afm:afm pipelines/assets ./assets
 COPY --chown=afm:afm pipelines/data ./data
 COPY --chown=afm:afm pipelines/resources ./resources
+COPY --chown=afm:afm pipelines/rules ./rules
+COPY --chown=afm:afm pipelines/services ./services
 
 USER afm
 

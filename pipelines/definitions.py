@@ -33,13 +33,18 @@ from dagster import (
 )
 
 from pipelines.assets import (
+    case_detector,
+    flight_plan_enrichment,
     foundry_aircraft_reconcile,
+    foundry_cases_sync,
     foundry_flight_enrichment,
     foundry_positions_sync,
     foundry_sites_sync,
     noaa_weather,
     opensky_positions,
     prune_stale_positions,
+    sf_case_push,
+    sf_case_sync,
     static_reference,
 )
 from pipelines.resources import (
@@ -99,6 +104,36 @@ foundry_flight_enrichment_job = define_asset_job(
 )
 
 
+foundry_cases_sync_job = define_asset_job(
+    name="foundry_cases_sync_job",
+    selection=AssetSelection.assets(foundry_cases_sync),
+)
+
+
+flight_plan_enrichment_job = define_asset_job(
+    name="flight_plan_enrichment_job",
+    selection=AssetSelection.assets(flight_plan_enrichment),
+)
+
+
+sf_case_push_job = define_asset_job(
+    name="sf_case_push_job",
+    selection=AssetSelection.assets(sf_case_push),
+)
+
+
+sf_case_sync_job = define_asset_job(
+    name="sf_case_sync_job",
+    selection=AssetSelection.assets(sf_case_sync),
+)
+
+
+case_detector_job = define_asset_job(
+    name="case_detector_job",
+    selection=AssetSelection.assets(case_detector),
+)
+
+
 # Dagster's cron schedules are minute-resolution at the finest. OpenSky's
 # spec-mandated 30s cadence (PIPELINES.md §5) needs a sensor with
 # minimum_interval_seconds=30 returning a RunRequest every fire. Returning
@@ -127,6 +162,56 @@ def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
     description="Upserts Aircraft to the Foundry Ontology every 30s.",
 )
 def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Pushes pending app.cases rows to Salesforce. A sensor (not a schedule)
+# for the ~60s cadence the dashboard expects (build-doc §5/§7) — finer than
+# Dagster's minute-resolution cron. Each fire launches a fresh run
+# (run_key=None), and each run re-scans whatever is still pending, so a case
+# left pending by a transient SF failure is retried on the next tick — this
+# sensor IS the case-sync retry mechanism (build-doc §8).
+@sensor(
+    job=sf_case_push_job,
+    name="case_sync_retry_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Pushes pending cases to Salesforce every ~60s; re-scan provides retry.",
+)
+def case_sync_retry_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Pulls Salesforce-modified Cases back into app.cases (PIPELINES.md §3.5).
+# A sensor at ~60s for the same reason as the push: the spec's 60s cadence is
+# finer than Dagster's minute-resolution cron, and a fresh RunRequest each
+# fire launches a run. The pull is watermark-driven + idempotent, so an
+# overlapping run is harmless; an API/SF outage materializes as a skip with
+# the watermark untouched, so the next tick re-reads the same window.
+@sensor(
+    job=sf_case_sync_job,
+    name="sf_case_sync_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Mirrors Salesforce Case changes into app.cases every ~60s (watermark-driven).",
+)
+def sf_case_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
+    return RunRequest(run_key=None)
+
+
+# Mirrors app.cases → Foundry Case ontology (Phase 05 task #5). 60s cadence
+# matches sf_case_sync_sensor so the end-to-end SF→PG→Foundry latency is
+# ~120s worst case. Watermark-driven + idempotent (upsert keyed on case_id),
+# so an overlapping run is harmless; a Foundry-unreachable run materializes
+# as a skip with the cursor untouched (the standalone contract).
+@sensor(
+    job=foundry_cases_sync_job,
+    name="foundry_cases_sync_sensor",
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Mirrors app.cases into the Foundry Case ontology every ~60s (cursor-driven).",
+)
+def foundry_cases_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
@@ -199,6 +284,36 @@ foundry_flight_enrichment_schedule = ScheduleDefinition(
 )
 
 
+flight_plan_enrichment_schedule = ScheduleDefinition(
+    name="flight_plan_enrichment_schedule",
+    job=flight_plan_enrichment_job,
+    # :15 past the hour — staggered between the :00 reconcile/prune and
+    # the :30 Foundry flight enrichment to avoid contending on OpenSky
+    # rate-limit credits or the API host's HTTP capacity.
+    cron_schedule="15 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :15: refresh origin/destination for active icao24s "
+        "via OpenSky /flights/aircraft. 12h cache TTL in app.flight_plans."
+    ),
+)
+
+
+case_detector_schedule = ScheduleDefinition(
+    name="case_detector_schedule",
+    job=case_detector_job,
+    cron_schedule="*/5 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Every 5 minutes: run the anomaly rule engine over the last hour of "
+        "positions and insert detected cases into app.cases (pending). The SF "
+        "write is decoupled — case_sync_retry_sensor pushes pending rows."
+    ),
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -208,6 +323,11 @@ defs = Definitions(
         foundry_sites_sync,
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
+        foundry_cases_sync,
+        flight_plan_enrichment,
+        sf_case_push,
+        sf_case_sync,
+        case_detector,
         prune_stale_positions,
     ],
     jobs=[
@@ -218,6 +338,11 @@ defs = Definitions(
         foundry_sites_sync_job,
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
+        foundry_cases_sync_job,
+        flight_plan_enrichment_job,
+        sf_case_push_job,
+        sf_case_sync_job,
+        case_detector_job,
         prune_stale_positions_job,
     ],
     schedules=[
@@ -226,9 +351,17 @@ defs = Definitions(
         foundry_sites_sync_schedule,
         foundry_aircraft_reconcile_schedule,
         foundry_flight_enrichment_schedule,
+        flight_plan_enrichment_schedule,
+        case_detector_schedule,
         prune_stale_positions_schedule,
     ],
-    sensors=[opensky_positions_sensor, foundry_positions_sync_sensor],
+    sensors=[
+        opensky_positions_sensor,
+        foundry_positions_sync_sensor,
+        case_sync_retry_sensor,
+        sf_case_sync_sensor,
+        foundry_cases_sync_sensor,
+    ],
     resources={
         "postgres": postgres,
         "watchlist": watchlist,

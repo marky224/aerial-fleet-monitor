@@ -49,6 +49,14 @@
         <editable>true</editable>
     </fieldPermissions>
     <fieldPermissions>
+        <field>Case.AFM_Severity_Badge__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <field>Case.AFM_Resolution_Hours__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
         <field>Case.AFM_Flight_Id__c</field>
         <readable>true</readable>
         <editable>true</editable>

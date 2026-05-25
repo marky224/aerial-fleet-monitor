@@ -48,12 +48,14 @@ import json
 from datetime import datetime
 
 from afm_foundry_sync.sync_jobs import (
+    CaseSyncResult,
     FlightEnrichmentResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
     TakeoffDetector,
     run_aircraft_reconcile,
+    run_cases_sync,
     run_flight_enrichment,
     run_positions_sync,
     run_sites_sync,
@@ -213,6 +215,20 @@ def _enrichment_metadata(result: FlightEnrichmentResult) -> dict[str, MetadataVa
     }
 
 
+def _cases_metadata(result: CaseSyncResult) -> dict[str, MetadataValue]:
+    meta: dict[str, MetadataValue] = {
+        "attempted": MetadataValue.int(result.attempted),
+        "succeeded": MetadataValue.int(result.succeeded),
+        "failed": MetadataValue.int(result.failed),
+    }
+    # Persist the cursor under the same ``_CURSOR_KEY`` the positions asset
+    # uses so ``_prior_cursor`` round-trips it on the next tick (the helper
+    # is asset-key scoped — same code path, per-asset state).
+    if result.cursor is not None:
+        meta[_CURSOR_KEY] = MetadataValue.text(result.cursor.isoformat())
+    return meta
+
+
 @asset(
     group_name="foundry_sync",
     description=(
@@ -259,3 +275,38 @@ def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResu
         result.fetch_failed,
     )
     return MaterializeResult(metadata=_enrichment_metadata(result))
+
+
+@asset(
+    group_name="foundry_sync",
+    description=(
+        "Mirrors app.cases into the Foundry Case ontology so App 1 renders "
+        "real cases (Phase 05 task #5). Incremental on updated_at — the "
+        "cursor is persisted in this asset's materialization metadata and "
+        "passed back as ``since`` next tick."
+    ),
+    metadata={"target": "Foundry Ontology: Case", "cadence": "60s"},
+)
+def foundry_cases_sync(context: AssetExecutionContext) -> MaterializeResult:
+    """Drain `/v1/cases/all-for-sync` since the prior cursor → upsert-case batch.
+
+    Upsert-only: resolved cases stop advancing ``updated_at`` and fall out
+    of the moving window naturally; App 1's Cases panel applies a
+    ``status`` filter at display time so leaving resolved Cases in the
+    tenant is harmless. Cursor is persisted post-write so a transient
+    Foundry failure (``FoundrySyncSkipped``) leaves the watermark
+    untouched and the next tick re-reads the same window.
+    """
+    since = _prior_cursor(context)
+    try:
+        result = asyncio.run(run_cases_sync(since=since))
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    context.log.info(
+        "cases sync: attempted=%d succeeded=%d failed=%d cursor=%s",
+        result.attempted,
+        result.succeeded,
+        result.failed,
+        result.cursor.isoformat() if result.cursor else None,
+    )
+    return MaterializeResult(metadata=_cases_metadata(result))

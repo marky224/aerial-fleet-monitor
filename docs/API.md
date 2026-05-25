@@ -493,6 +493,119 @@ class CaseRunbooksResponse(BaseModel):
 
 (See §8 for `Runbook` model.)
 
+### 6.4 `POST /v1/cases/sync-pending`
+
+System-internal push trigger for the decoupled AFM→Salesforce write path
+(Phase 05). The case detector writes local cases as
+`sf_sync_status='pending'` and never touches Salesforce; this endpoint
+drains up to `limit` pending rows into the connected org via the §10.1
+write path and reconciles `app.cases` (`salesforce_id`, `sf_sync_status`)
++ `app.case_timeline`. The pipelines `sf_case_push` asset polls it on a
+~60s cadence; each call also retries cases left `pending` by a prior
+transient failure (so the endpoint is the retry surface too).
+
+Failure handling per row: a transient Salesforce failure (`503`) leaves
+the case `pending` for the next pass (until an attempts cap parks it
+`failed`); a permanent failure (`400`/`409`) parks it `failed` at once.
+
+The call is safe to repeat and to overlap: it is single-flighted (a
+concurrent call returns a no-op `attempted: 0`) and idempotent on the
+unique case external id (a row whose Case already exists reconciles to it
+and is marked `synced` rather than failing as a duplicate).
+
+**Query params:**
+- `limit`: max pending cases to push this pass (default `50`, 1–500).
+
+**Response 200:**
+```python
+class CaseSyncSummary(BaseModel):
+    attempted: int                           # pending cases pulled this pass
+    synced: int                              # created in SF + marked synced
+    retrying: int                            # transient failure; left pending
+    failed: int                              # permanent failure / max attempts
+```
+
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
+
+### 6.5 `POST /v1/cases/sync-from-sf`
+
+System-internal pull trigger for the SF→Postgres mirror (Phase 05), the
+inverse of §6.4. Reads the persisted `sf_case_sync` watermark, fetches up
+to `limit` `Fleet_Operations` Cases with `SystemModstamp` greater than the
+watermark via the §10.1 read path, mirrors each onto its `app.cases` row
+(matched by `salesforce_id`, falling back to the external id), writes
+`app.case_timeline` events for material changes (`status_changed`,
+`severity_changed`, `resolved`), and advances the watermark to the maximum
+`SystemModstamp` observed (leaving it untouched when nothing changed). The
+pipelines `sf_case_sync` asset polls it on a ~60s cadence. SF→AFM
+translation (Status/Priority/Description → `app.cases` status/severity/
+summary) lives only in the §10.1 service.
+
+**Query params:**
+- `limit`: max modified Cases to pull this pass (default `200`, 1–200).
+
+**Response 200:**
+```python
+class CasePullSummary(BaseModel):
+    fetched: int                             # cases returned by SF since the watermark
+    updated: int                             # matched app.cases rows updated
+    unmatched: int                           # SF cases with no local row (skipped)
+    watermark: datetime | None               # new watermark; null if nothing changed
+```
+
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
+
+### 6.6 `GET /v1/cases/all-for-sync`
+
+System-internal read for the Foundry sync (Phase 05). Returns a paginated
+snapshot of `app.cases` for the `foundry_cases_sync` pipelines asset to
+ingest. No scope filter — this endpoint is server-to-server. The
+customer-facing scope-gated reads (§6.1, §6.2) are a separate slice.
+
+Rows are ordered by `(updated_at, case_id)` ASC so a `since`-cursor walk
+is deterministic. Resolved cases are included (App 1's panel applies its
+own status filter); once a Case resolves, its `updated_at` stops
+advancing, so it falls out of the moving window naturally.
+
+The subject field is derived at response time from `case_type` +
+`detection_facts` by the same formatter the SF push uses
+(`CaseSyncService._format_subject`).
+
+**Query params:**
+- `since`: timestamp; return rows with `updated_at > since`. Omit for the first page.
+- `limit`: max rows in this page (default `200`, 1–1000).
+
+**Response 200:**
+```python
+class CaseForSync(BaseModel):
+    case_id: str
+    salesforce_id: str | None
+    case_type: str
+    status: str                                  # open/acknowledged/in_progress/resolved
+    severity: str                                # low/medium/high/critical
+    customer_region: str                         # west/east/all
+    site_icao: str
+    flight_id: str                               # 'WX-{site_icao}' for site-level cases
+    subject: str                                 # derived from case_type + facts
+    summary: str | None
+    severity_justification: str | None
+    detection_facts: dict
+    runbook_refs: list[str]
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None
+
+class CasesForSyncPage(BaseModel):
+    items: list[CaseForSync]
+    next_cursor: datetime | None                 # max(updated_at) in this page
+    truncated: bool                              # True when len(items) == limit
+```
+
+The caller persists `next_cursor` and passes it as `since` on the next
+call; pages until `truncated=False`. Foundry-side upserts are idempotent
+on `case_id`, so a boundary tie at `updated_at == since` that re-ships a
+previous page's tail row is harmless.
+
 ## 7. Briefs
 
 ### 7.1 `GET /v1/briefs`
@@ -627,6 +740,9 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/cases` | case list | yes |
 | GET | `/v1/cases/{case_id}` | case detail | yes |
 | GET | `/v1/cases/{case_id}/runbooks` | linked runbooks | yes |
+| POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
+| POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
+| GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) | yes |
 | GET | `/v1/briefs` | brief list | yes |
 | GET | `/v1/briefs/{brief_id}` | brief content | yes |
 | GET | `/v1/runbooks` | runbook list | yes |

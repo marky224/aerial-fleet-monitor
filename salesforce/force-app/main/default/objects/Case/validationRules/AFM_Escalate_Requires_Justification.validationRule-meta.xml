@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>AFM_Escalate_Requires_Justification</fullName>
+    <active>true</active>
+    <description>An Escalated AFM Case must carry a substantive severity justification (>=10 chars). Scoped to the Fleet_Operations record type so non-AFM Cases are unaffected.</description>
+    <errorConditionFormula>AND(
+  ISPICKVAL(Status, "Escalated"),
+  RecordType.DeveloperName = "Fleet_Operations",
+  OR(
+    ISBLANK(AFM_Severity_Justification__c),
+    LEN(AFM_Severity_Justification__c) &lt; 10
+  )
+)</errorConditionFormula>
+    <errorMessage>Severity Justification is required (≥10 chars) when escalating an AFM Case.</errorMessage>
+    <errorDisplayField>AFM_Severity_Justification__c</errorDisplayField>
+</ValidationRule>

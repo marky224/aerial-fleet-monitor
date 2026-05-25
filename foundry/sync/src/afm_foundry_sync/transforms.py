@@ -22,6 +22,8 @@ from datetime import datetime
 
 from afm_foundry_sync.models import (
     Aircraft,
+    Case,
+    CaseForSync,
     Flight,
     FlightDetail,
     FlightStage,
@@ -171,6 +173,36 @@ def takeoff_to_flight(flight_id: str, icao24: str, takeoff_ts: datetime) -> Flig
         open_case_ids=[],
         status_timeline=[FlightStatusEvent(stage="departed", occurred_at=takeoff_ts)],
         trail_2h=[],
+    )
+
+
+def case_for_sync_to_case(item: CaseForSync) -> Case:
+    """Map a `/v1/cases/all-for-sync` row to a Case Ontology object.
+
+    Strict 1:1 field passthrough — the AFM API has already done every
+    derivation (subject formatting via `_format_subject`, status/severity
+    crosswalks via the SF pull). The two types diverge only in nullability
+    on `subject` (the API guarantees a value via the formatter; the
+    Foundry Case keeps it nullable so future Foundry-only enrichment
+    paths aren't forced to compute it).
+    """
+    return Case(
+        case_id=item.case_id,
+        salesforce_id=item.salesforce_id,
+        case_type=item.case_type,
+        status=item.status,
+        severity=item.severity,
+        customer_region=item.customer_region,
+        site_icao=item.site_icao,
+        flight_id=item.flight_id,
+        subject=item.subject,
+        summary=item.summary,
+        severity_justification=item.severity_justification,
+        detection_facts=item.detection_facts,
+        runbook_refs=item.runbook_refs,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+        resolved_at=item.resolved_at,
     )
 
 

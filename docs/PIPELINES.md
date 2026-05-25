@@ -10,7 +10,8 @@ The full pipelines specification documents AFM's Dagster asset-oriented pipeline
   - `opensky_positions` — 30-second polling, US bounding box, Parquet snapshot + Postgres upsert
   - `noaa_weather` — 5-minute batch fetch for watched airports
   - `static_reference` — weekly airport + aircraft-registry refresh
-  - `case_detector` — 5-minute rules engine across 6 anomaly types with dedup-and-write to both Postgres and Salesforce
+  - `case_detector` — 5-minute rules engine across 6 anomaly types; dedups and writes new cases to Postgres only (marked `pending`)
+  - `sf_case_push` — ~60-second sensor-driven push that drains `pending` cases into Salesforce (decoupled from detection; idempotent, single-flighted, retrying)
   - `sf_case_sync` — 60-second SF → Postgres mirror with persistent watermark
   - `site_metrics_refresh` — 15-minute SLA recomputation
   - `daily_brief_generator` — per-region 7am-local brief synthesis

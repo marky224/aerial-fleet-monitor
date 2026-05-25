@@ -49,7 +49,7 @@ from typing import Any, Self
 import httpx
 import structlog
 
-from afm_foundry_sync.models import Aircraft, Flight, Site, TrailPoint
+from afm_foundry_sync.models import Aircraft, Case, Flight, Site, TrailPoint
 from afm_foundry_sync.retry import transient_retry
 from afm_foundry_sync.settings import FoundrySettings
 
@@ -252,6 +252,52 @@ def flight_params(f: Flight) -> dict[str, Any]:
     return {_camel(k): v for k, v in params.items()}
 
 
+def case_params(c: Case) -> dict[str, Any]:
+    """Serialize a Case to the upsert-case parameter map.
+
+    Phase 05 task #5. **PK divergence from Aircraft/Site/Flight:** the
+    upsert-case action has NO separate PK string parameter (``caseId``);
+    the ``case`` object-locator alone handles both create (becomes the
+    new Case's PK) and modify (looks up by PK). Confirmed against the
+    live tenant 2026-05-24 when provisioning the Case action — the
+    auto-derived param set omits the PK param because the locator's
+    ``displayName=caseId`` already covers it.
+
+    Same JSON-encoded-string contract as Site / Flight for the dict + list
+    fields (``detection_facts`` / ``runbook_refs``): Foundry Action
+    parameters don't support struct/list natively, so empty collections
+    serialize to ``"{}"`` / ``"[]"`` (never None — the field is non-null
+    on the tenant side).
+    """
+    params: dict[str, Any] = {
+        # Object-locator: bare PK string. Foundry uses this for both
+        # create (sets the new Case's PK) and modify (looks up by PK).
+        # NO separate `caseId` param — different from upsert-aircraft.
+        "case": c.case_id,
+        "case_type": c.case_type,
+        "status": c.status,
+        "severity": c.severity,
+        "customer_region": c.customer_region,
+        "site_icao": c.site_icao,
+        "flight_id": c.flight_id,
+        # array<dict>/array<string> → JSON-encoded `string` (tenant model).
+        "detection_facts": json.dumps(c.detection_facts),
+        "runbook_refs": json.dumps(c.runbook_refs),
+        "created_at": _iso_utc(c.created_at),
+        "updated_at": _iso_utc(c.updated_at),
+    }
+    _put_optional(params, "salesforce_id", c.salesforce_id)
+    _put_optional(params, "subject", c.subject)
+    _put_optional(params, "summary", c.summary)
+    _put_optional(params, "severity_justification", c.severity_justification)
+    _put_optional(
+        params,
+        "resolved_at",
+        _iso_utc(c.resolved_at) if c.resolved_at is not None else None,
+    )
+    return {_camel(k): v for k, v in params.items()}
+
+
 def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
@@ -269,6 +315,8 @@ class FoundryWriter:
         self._action_site = settings.FOUNDRY_ACTION_UPSERT_SITE
         self._action_flight = settings.FOUNDRY_ACTION_UPSERT_FLIGHT
         self._action_delete_aircraft = settings.FOUNDRY_ACTION_DELETE_AIRCRAFT
+        self._action_case = settings.FOUNDRY_ACTION_UPSERT_CASE
+        self._action_delete_case = settings.FOUNDRY_ACTION_DELETE_CASE
         self._client = httpx.AsyncClient(
             base_url=str(settings.FOUNDRY_TENANT_URL).rstrip("/"),
             timeout=_REQUEST_TIMEOUT,
@@ -397,3 +445,45 @@ class FoundryWriter:
             if not page_token:
                 break
         return pks
+
+    async def upsert_case_batch(self, cases: list[Case]) -> BatchResult:
+        """Upsert a batch of Cases. No-op (no HTTP call) on an empty list."""
+        if not cases:
+            return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(self._action_case, [case_params(c) for c in cases])
+
+    async def list_case_pks(self) -> set[str]:
+        """Return the case_id primary key of every Case object in the tenant.
+
+        Exact pattern of ``list_aircraft_pks`` / ``list_flight_pks``;
+        paginates ``GET .../objects/Case`` and pulls ``caseId`` (with
+        ``__primaryKey`` as the documented fallback). Provided for
+        future tenant-side reconciles (the cases sync is upsert-only
+        in v1; no caller exercises this yet).
+        """
+        pks: set[str] = set()
+        page_token: str | None = None
+        while True:
+            body = await self._get_objects_page("Case", page_token)
+            for obj in body.get("data", []):
+                pk = obj.get("caseId") or obj.get("__primaryKey")
+                if pk:
+                    pks.add(str(pk))
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+        return pks
+
+    async def delete_case_batch(self, case_ids: list[str]) -> BatchResult:
+        """Delete a batch of Cases by case_id. No-op on an empty list.
+
+        Same shape as ``delete_aircraft_batch``: the ``delete-case``
+        Action's single parameter key is the PascalCase object-type name
+        ``Case`` (NOT routed through ``_camel`` — literal). Provided
+        for completeness; the cases sync is upsert-only in v1.
+        """
+        if not case_ids:
+            return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(
+            self._action_delete_case, [{"Case": pk} for pk in case_ids]
+        )

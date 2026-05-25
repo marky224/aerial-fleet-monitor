@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>AFM Fleet Ops Console Access</label>
+    <description>Layers on AFM_Internal_Ops: adds AFM_Fleet_Ops_Console app vis + the 2 formula fields (Severity_Badge, Resolution_Hours). Case CRUD + other AFM_*__c fields + Fleet_Operations RT come from AFM_Internal_Ops.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <applicationVisibilities>
+        <application>AFM_Fleet_Ops_Console</application>
+        <visible>true</visible>
+    </applicationVisibilities>
+    <fieldPermissions>
+        <field>Case.AFM_Severity_Badge__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <field>Case.AFM_Resolution_Hours__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+</PermissionSet>

@@ -22,6 +22,7 @@ broken — that's a different failure domain than a missing Foundry tenant.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
 
@@ -29,6 +30,8 @@ import httpx
 import structlog
 
 from afm_foundry_sync.models import (
+    CaseForSync,
+    CasesForSyncPage,
     FlightDetail,
     PositionsLiveResponse,
     SiteDetail,
@@ -152,3 +155,39 @@ class AfmApiClient:
     ) -> SiteFlightListResponse:
         data = await self._get_json(f"/v1/sites/{icao}/{direction}")
         return SiteFlightListResponse.model_validate(data)
+
+    async def fetch_cases_for_sync(
+        self, since: datetime | None = None, *, page_size: int = 500
+    ) -> tuple[list[CaseForSync], datetime | None]:
+        """Drain every page of `/v1/cases/all-for-sync` with updated_at > since.
+
+        Walks the endpoint's truncated/next_cursor protocol, accumulating
+        all items into one list and returning the final cursor (max
+        updated_at observed across all pages, or `since` when the API
+        returned zero rows). The caller (`sync_jobs.incremental_sync_cases`)
+        upserts the accumulated batch in one Foundry pass; the cursor is
+        persisted post-write so a transient Foundry failure leaves the
+        watermark unmoved and the next tick re-reads the same window.
+
+        Buffering all-pages-in-memory is intentional: `app.cases` is
+        single-digit-thousands at steady state (vs. tens-of-thousands for
+        positions), so the memory cost is bounded; the trail-batch lesson
+        (chunked streaming) doesn't apply here. If cases volume ever
+        explodes, switch to per-page-flush in `incremental_sync_cases`
+        rather than streaming here — the cursor handling is cleaner with
+        the all-at-once contract.
+        """
+        items: list[CaseForSync] = []
+        cursor = since
+        while True:
+            params: dict[str, str] = {"limit": str(page_size)}
+            if cursor is not None:
+                params["since"] = cursor.isoformat()
+            data = await self._get_json("/v1/cases/all-for-sync", params=params)
+            page = CasesForSyncPage.model_validate(data)
+            items.extend(page.items)
+            if page.next_cursor is not None:
+                cursor = page.next_cursor
+            if not page.truncated:
+                break
+        return items, cursor

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from afm_foundry_sync.sync_jobs import (
+    CaseSyncResult,
     FlightEnrichmentResult,
     FoundrySyncSkipped,
     ReconcileResult,
@@ -281,3 +282,97 @@ def test_flight_enrichment_overlap_guard_ignores_own_run(
 
     md = foundry_sync.foundry_flight_enrichment(ctx).metadata or {}
     assert md["enriched"].value == 1  # proceeded — own run is not "another"
+
+
+# ---------------------------------------------------------------------------
+# foundry_cases_sync (Phase 05 task #5)
+# ---------------------------------------------------------------------------
+
+
+def test_cases_sync_skip_is_a_materialization_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise(**_kw: object) -> CaseSyncResult:
+        raise FoundrySyncSkipped("cases: foundry/api unreachable: boom")
+
+    monkeypatch.setattr(foundry_sync, "run_cases_sync", _raise)
+
+    result = foundry_sync.foundry_cases_sync(build_asset_context())
+
+    assert isinstance(result, MaterializeResult)
+    md = result.metadata or {}
+    assert md["skip_reason"].value.startswith("cases: foundry/api unreachable")
+    assert md["attempted"].value == 0
+    assert md["succeeded"].value == 0
+
+
+def test_cases_sync_success_surfaces_counts_and_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = datetime(2026, 5, 24, 10, 5, 0, tzinfo=UTC)
+
+    async def _ok(**_kw: object) -> CaseSyncResult:
+        return CaseSyncResult(attempted=3, succeeded=3, failed=0, cursor=cursor)
+
+    monkeypatch.setattr(foundry_sync, "run_cases_sync", _ok)
+
+    md = foundry_sync.foundry_cases_sync(build_asset_context()).metadata or {}
+    assert md["attempted"].value == 3
+    assert md["succeeded"].value == 3
+    assert md["failed"].value == 0
+    assert "skip_reason" not in md
+    # Cursor persisted under the same key ``_prior_cursor`` reads, so the
+    # next tick picks it up as ``since`` automatically.
+    assert md["cursor"].value == cursor.isoformat()
+
+
+def test_cases_sync_empty_run_omits_cursor_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty initial run (no prior cursor, no new rows) → no cursor metadata
+    (the writer guards on None so the next tick still seeds from None)."""
+
+    async def _ok(**_kw: object) -> CaseSyncResult:
+        return CaseSyncResult(attempted=0, succeeded=0, failed=0, cursor=None)
+
+    monkeypatch.setattr(foundry_sync, "run_cases_sync", _ok)
+
+    md = foundry_sync.foundry_cases_sync(build_asset_context()).metadata or {}
+    assert "cursor" not in md
+    assert md["attempted"].value == 0
+
+
+def test_cases_sync_passes_prior_cursor_as_since(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The asset must seed `since` from the prior materialization's cursor."""
+    captured: dict[str, object] = {}
+
+    async def _capture(**kw: object) -> CaseSyncResult:
+        captured.update(kw)
+        return CaseSyncResult(attempted=0, succeeded=0)
+
+    monkeypatch.setattr(foundry_sync, "run_cases_sync", _capture)
+    ctx = build_asset_context()
+    # Stub _prior_cursor to return a known value (same indirection the
+    # positions tests would use — keeps this test free of instance-DB setup).
+    prior = datetime(2026, 5, 24, 9, 30, 0, tzinfo=UTC)
+    monkeypatch.setattr(foundry_sync, "_prior_cursor", lambda _ctx: prior)
+
+    foundry_sync.foundry_cases_sync(ctx)
+
+    assert captured.get("since") == prior
+
+
+def test_cases_sync_real_defect_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-skip exception (a real bug) must propagate, not become a skip."""
+
+    async def _bug(**_kw: object) -> CaseSyncResult:
+        raise RuntimeError("malformed case upsert payload")
+
+    monkeypatch.setattr(foundry_sync, "run_cases_sync", _bug)
+
+    with pytest.raises(RuntimeError, match="malformed case upsert payload"):
+        foundry_sync.foundry_cases_sync(build_asset_context())

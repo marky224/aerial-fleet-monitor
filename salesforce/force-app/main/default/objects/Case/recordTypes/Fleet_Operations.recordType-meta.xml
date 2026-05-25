@@ -5,4 +5,31 @@
     <businessProcess>AFM_Fleet_Operations</businessProcess>
     <description>AFM-generated fleet operations anomaly cases.</description>
     <label>Fleet Operations</label>
+    <picklistValues>
+        <picklist>AFM_Case_Type__c</picklist>
+        <values>
+            <fullName>lost_signal</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>diversion</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>excessive_hold</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>weather_impact</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>go_around</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>delay</fullName>
+            <default>false</default>
+        </values>
+    </picklistValues>
 </RecordType>

@@ -1,7 +1,10 @@
 """Dagster assets for AFM pipelines."""
 
+from pipelines.assets.detection import case_detector
+from pipelines.assets.flight_plan_enrichment import flight_plan_enrichment
 from pipelines.assets.foundry_sync import (
     foundry_aircraft_reconcile,
+    foundry_cases_sync,
     foundry_flight_enrichment,
     foundry_positions_sync,
     foundry_sites_sync,
@@ -9,14 +12,20 @@ from pipelines.assets.foundry_sync import (
 from pipelines.assets.ingestion import noaa_weather, opensky_positions
 from pipelines.assets.maintenance import prune_stale_positions
 from pipelines.assets.reference import static_reference
+from pipelines.assets.sync import sf_case_push, sf_case_sync
 
 __all__ = [
+    "case_detector",
+    "flight_plan_enrichment",
     "foundry_aircraft_reconcile",
+    "foundry_cases_sync",
     "foundry_flight_enrichment",
     "foundry_positions_sync",
     "foundry_sites_sync",
     "noaa_weather",
     "opensky_positions",
     "prune_stale_positions",
+    "sf_case_push",
+    "sf_case_sync",
     "static_reference",
 ]
