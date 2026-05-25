@@ -1,6 +1,6 @@
 # Aerial Fleet Monitor
 
-> Real-time fleet operations console — built on public US aviation data.
+> Real-time information console for public US aircraft activity.
 
 [![Build](https://github.com/marky224/aerial-fleet-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/marky224/aerial-fleet-monitor/actions)
 [![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red)](./LICENSE.md)
@@ -9,9 +9,9 @@
 
 ## What it is
 
-AFM is a unified fleet operations console with a Salesforce-backed case management spine. It ingests live US aircraft positions and weather data, detects operational anomalies in real time, opens Salesforce Cases for each anomaly, and surfaces everything to internal advocates through region-scoped Foundry dashboards and a Salesforce Service Console.
+AFM is a real-time information console for public US aircraft activity, backed by Salesforce case management. It ingests live aircraft positions and weather data, detects operational anomalies in real time, opens Salesforce Cases for each anomaly, and surfaces everything through Foundry dashboards and a Salesforce Service Console.
 
-The project demonstrates a fleet operations toolchain — telemetry visualization, anomaly detection, CRM-backed case management, and bidirectional sync between an operational data plane and a CRM plane.
+The project covers an end-to-end aircraft-information toolchain — telemetry visualization, anomaly detection, CRM-backed case management, and bidirectional sync between an operational data plane and a CRM plane.
 
 ## Architecture at a glance
 
