@@ -45,7 +45,7 @@ FlightDetail enrichment runs out-of-band in ``foundry_flight_enrichment``
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from afm_foundry_sync.sync_jobs import (
     CaseSyncResult,
@@ -71,6 +71,14 @@ from dagster import (
 
 _CURSOR_KEY = "cursor"
 _DETECTOR_STATE_KEY = "detector_state"
+
+# Overlap guard liveness window. A real enrichment run emits step events
+# every few seconds, so its ``update_timestamp`` stays fresh; a STARTED
+# row whose update_timestamp is older than this is a zombie left by a
+# killed process (container restart, OOM, host reboot) and must not be
+# allowed to coalesce every subsequent hourly tick. Set well above the
+# observed worst-case runtime (~56 min, see PR #19 trail-batch handoff).
+_ENRICHMENT_LIVENESS_WINDOW = timedelta(minutes=90)
 
 
 def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
@@ -255,7 +263,20 @@ def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResu
             ],
         )
     )
-    if any(r.dagster_run.run_id != context.run_id for r in in_progress):
+    # Liveness check on the guard: drop any record whose update_timestamp is
+    # older than the window. Without this, a single killed run (status stuck
+    # at STARTED with no live process) wedges the schedule forever — see the
+    # 2026-05-21 incident where run 0b5b282d froze enrichment for 5 days.
+    # ``update_timestamp`` comes back naive (postgres `timestamp without
+    # time zone`), so strip tzinfo to compare apples-to-apples.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    live_in_progress = [
+        r
+        for r in in_progress
+        if r.dagster_run.run_id != context.run_id
+        and (now - r.update_timestamp) < _ENRICHMENT_LIVENESS_WINDOW
+    ]
+    if live_in_progress:
         return _skipped(
             context,
             "another foundry_flight_enrichment run is already in progress "
