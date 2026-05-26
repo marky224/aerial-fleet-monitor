@@ -1,6 +1,8 @@
 """Case endpoints.
 
-Three system-internal triggers, each driven by a pipelines asset:
+Two consumer families:
+
+System-internal triggers (each driven by a pipelines asset):
 
 * `POST /v1/cases/sync-pending` (push) — drains `sf_sync_status='pending'`
   cases into Salesforce via `CaseSyncService`. The `sf_case_push` asset
@@ -11,8 +13,12 @@ Three system-internal triggers, each driven by a pipelines asset:
   `sf_case_sync` asset polls it (PIPELINES.md §3.5).
 * `GET /v1/cases/all-for-sync` (read) — paginated server-to-server snapshot
   of `app.cases` for the Foundry sync (`foundry_cases_sync` asset). No
-  scope filter; the customer-facing scope-gated reads (`GET /v1/cases`,
-  `GET /v1/cases/{id}`) land in a later Phase-05 slice.
+  scope filter.
+
+Customer-facing scope-gated reads (Phase 05 task #4, API.md §6.1/§6.2):
+
+* `GET /v1/cases` — list cases visible in the caller's scope.
+* `GET /v1/cases/{case_id}` — one case + ordered timeline.
 
 The two SF endpoints keep field/region translation inside `SalesforceService`
 (SALESFORCE.md §10.1); the pipelines venv reaches Salesforce only through
@@ -26,11 +32,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import get_postgres_pool, get_salesforce_service
-from app.models.cases import CasesForSyncPage
+from app.dependencies import (
+    get_postgres_pool,
+    get_query_service,
+    get_salesforce_service,
+    get_scope,
+)
+from app.models.cases import CaseDetail, CaseListResponse, CasesForSyncPage
+from app.models.common import Region, Scope
 from app.models.salesforce import CasePullSummary, CaseSyncSummary
 from app.services.case_sync import CaseSyncService
 from app.services.postgres import PostgresPool
+from app.services.query_service import QueryService
 from app.services.salesforce import SalesforceService
 
 router = APIRouter(prefix="/v1/cases", tags=["cases"])
@@ -67,3 +80,55 @@ async def all_for_sync(
 ) -> CasesForSyncPage:
     """Paginated server-to-server snapshot of `app.cases` for Foundry sync."""
     return await CaseSyncService(postgres).list_for_sync(since=since, limit=limit)
+
+
+# Customer-facing reads — declared LAST so the static `/{name}` routes above
+# (`/all-for-sync`, `/sync-pending`, `/sync-from-sf`) win over `/{case_id}`.
+
+
+@router.get("", response_model=CaseListResponse)
+def list_cases(
+    scope: Annotated[Scope, Depends(get_scope)],
+    query_service: Annotated[QueryService, Depends(get_query_service)],
+    status: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Status filter. Repeatable (`?status=open&status=in_progress`). "
+                "Default: open + acknowledged + in_progress (omits resolved, "
+                "matching the Workshop App-1 panel)."
+            ),
+        ),
+    ] = None,
+    severity: Annotated[
+        str | None,
+        Query(description="Severity filter (low/medium/high/critical)."),
+    ] = None,
+    site: Annotated[
+        str | None,
+        Query(description="Site ICAO filter (uppercased server-side)."),
+    ] = None,
+    region: Annotated[
+        Region | None,
+        Query(
+            description=(
+                "Override scope to a specific region. Rejected with 403 if the "
+                "caller's scope is narrower than the requested region."
+            ),
+        ),
+    ] = None,
+) -> CaseListResponse:
+    """List cases visible in caller's scope (API.md §6.1)."""
+    return query_service.list_cases(
+        scope=scope, status=status, severity=severity, site=site, region=region
+    )
+
+
+@router.get("/{case_id}", response_model=CaseDetail)
+def get_case(
+    case_id: str,
+    scope: Annotated[Scope, Depends(get_scope)],
+    query_service: Annotated[QueryService, Depends(get_query_service)],
+) -> CaseDetail:
+    """One case + ordered timeline (API.md §6.2). 404 / 403 standard."""
+    return query_service.get_case(scope=scope, case_id=case_id)

@@ -412,13 +412,26 @@ class FlightSummary(BaseModel):
 
 ### 6.1 `GET /v1/cases`
 
-List cases visible in caller's scope.
+List cases visible in caller's scope. Scope filter: a narrow-region caller
+sees rows where `customer_region IN (own_region, 'all')` so cross-region
+('all'-tagged) cases surface to both east and west — matches the Workshop
+App-1 panel.
 
 **Query params:**
-- `status`: filter by case status (default: open + acknowledged + in_progress)
-- `severity`: filter by severity
-- `site`: filter by site ICAO
-- `cursor`, `limit`: pagination
+- `status`: filter by case status; repeatable
+  (`?status=open&status=in_progress`). Default omits `resolved` (open +
+  acknowledged + in_progress), matching the Workshop App-1 panel.
+- `severity`: filter by severity (`low`/`medium`/`high`/`critical`).
+- `site`: filter by site ICAO (uppercased server-side).
+- `region`: override scope to a specific region. Rejected with `403` if
+  the caller's scope is narrower than the requested region.
+
+**Pagination:** none. Single bounded page (50k safety ceiling). The
+response carries `truncated=True` if the ceiling is hit (oldest rows
+dropped, since `ORDER BY created_at DESC`). Tenant case volume is
+~1-2k at Phase-05 close, so 50k is ~30-50× headroom. Follows the same
+shape as `/v1/positions/live` (§3.1) so consumers have one pagination
+story to learn. See build-05 Decisions log.
 
 **Response 200:**
 ```python
@@ -428,6 +441,9 @@ class CaseListItem(BaseModel):
     case_type: str
     status: str
     severity: str
+    customer_region: str          # included so the App-1 region dropdown
+                                  # can render per-row counts without a
+                                  # second round-trip
     site_icao: str
     flight_id: str
     summary: str | None
@@ -437,31 +453,31 @@ class CaseListItem(BaseModel):
 class CaseListResponse(BaseModel):
     items: list[CaseListItem]
     count: int
-    next_cursor: str | None
+    truncated: bool               # True when the page hit the 50k ceiling
 ```
 
 ### 6.2 `GET /v1/cases/{case_id}`
 
-Single case detail.
+Single case detail. `404 not_found` if absent; `403 scope_insufficient`
+if the caller's region scope doesn't cover the case's `customer_region`
+(`'all'`-tagged cases are visible to every region).
 
 **Response 200:**
 ```python
 class CaseDetail(BaseModel):
     case_id: str
     salesforce_id: str | None
-    salesforce_url: str | None                       # Lightning deeplink
     case_type: str
     status: str
     severity: str
     severity_justification: str | None
+    customer_region: str
     site_icao: str
     flight_id: str
-    customer_region: str
     summary: str | None
     detection_facts: dict
     runbook_refs: list[str]
-    timeline: list[CaseTimelineEvent]
-    related_tasks: list[CaseTask]                    # synced from SF
+    timeline: list[CaseTimelineEvent]      # ASC by occurred_at, event_id
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
@@ -472,14 +488,15 @@ class CaseTimelineEvent(BaseModel):
     source: str
     actor: str | None
     occurred_at: datetime
-
-class CaseTask(BaseModel):
-    salesforce_id: str
-    subject: str
-    status: str
-    due_date: date | None
-    assigned_to: str | None
 ```
+
+**Not built in this slice** (intentional deferrals, see build-05
+Decisions log):
+- `salesforce_url` (Lightning deeplink) — needs a configured SF base
+  URL; future polish.
+- `related_tasks` — Salesforce Task sync isn't built yet. The runbook
+  slugs in `runbook_refs` already give a path into the runbook lookup
+  via §6.3 when that endpoint lands.
 
 ### 6.3 `GET /v1/cases/{case_id}/runbooks`
 

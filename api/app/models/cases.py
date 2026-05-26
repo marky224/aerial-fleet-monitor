@@ -1,12 +1,16 @@
 """Case-facing models.
 
-Phase 05 task #5 lands one model pair: `CaseForSync` / `CasesForSyncPage`
-for the system-internal `GET /v1/cases/all-for-sync` endpoint the Foundry
-sync (`afm_foundry_sync.api_readers.fetch_cases_for_sync`) consumes.
+Two consumers, two model families:
 
-Customer-facing read models (`CaseListItem`, `CaseDetail`,
-`CaseTimelineEvent`) land here with Phase 05 task #4 (`GET /v1/cases`,
-`GET /v1/cases/{id}`).
+* `CaseForSync` / `CasesForSyncPage` — server-to-server snapshot the
+  Foundry sync (`afm_foundry_sync.api_readers.fetch_cases_for_sync`)
+  consumes via `GET /v1/cases/all-for-sync`. No scope filter; includes
+  resolved cases.
+* `CaseListItem` / `CaseListResponse` / `CaseDetail` /
+  `CaseTimelineEvent` — customer-facing scope-gated reads behind
+  `GET /v1/cases` and `GET /v1/cases/{case_id}`. Scope is applied in
+  `QueryService.list_cases` / `.get_case`; the panel-side status default
+  (open + acknowledged + in_progress) is applied in the route.
 """
 
 from __future__ import annotations
@@ -94,3 +98,83 @@ class CasesForSyncPage(BaseModel):
     truncated: bool = Field(
         description="True when len(items) == limit; more rows likely available.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Customer-facing read models (GET /v1/cases, GET /v1/cases/{case_id})
+# ---------------------------------------------------------------------------
+
+
+class CaseListItem(BaseModel):
+    """One row in `GET /v1/cases`.
+
+    `customer_region` is included so the App-1 region dropdown can render
+    per-row counts without a second round-trip — scope-gating ensures a
+    caller only ever sees rows for their own region(s) plus `all`.
+    """
+
+    case_id: str
+    salesforce_id: str | None = None
+    case_type: str
+    status: str
+    severity: str
+    customer_region: str
+    site_icao: str
+    flight_id: str
+    summary: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CaseListResponse(BaseModel):
+    """`GET /v1/cases` response.
+
+    No cursor pagination — `truncated` follows the `/v1/positions/live`
+    convention (API.md §3.1 / PR #10): a single page bounded by the 50k
+    safety ceiling. Caller knows the result is complete when
+    `truncated=False`. See build-05 Decisions log for the rationale
+    (~1.1k cases tenant-wide; 46x headroom).
+    """
+
+    items: list[CaseListItem] = Field(default_factory=list)
+    count: int
+    truncated: bool = Field(
+        description="True when the page hit the 50k safety ceiling; oldest rows dropped.",
+    )
+
+
+class CaseTimelineEvent(BaseModel):
+    """One row from `app.case_timeline` (case lifecycle event)."""
+
+    event_type: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+    source: str
+    actor: str | None = None
+    occurred_at: datetime
+
+
+class CaseDetail(BaseModel):
+    """`GET /v1/cases/{case_id}` response.
+
+    Core Case fields + ordered timeline. `related_tasks` and
+    `salesforce_url` from API.md §6.2 are intentionally not built in
+    this slice — Tasks sync is future work, and the Lightning deeplink
+    needs a configured SF base URL. See build-05 Decisions log.
+    """
+
+    case_id: str
+    salesforce_id: str | None = None
+    case_type: str
+    status: str
+    severity: str
+    severity_justification: str | None = None
+    customer_region: str
+    site_icao: str
+    flight_id: str
+    summary: str | None = None
+    detection_facts: dict[str, Any] = Field(default_factory=dict)
+    runbook_refs: list[str] = Field(default_factory=list)
+    timeline: list[CaseTimelineEvent] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
