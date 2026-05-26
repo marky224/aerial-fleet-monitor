@@ -397,6 +397,44 @@ async def test_list_for_sync_derives_subject_from_facts() -> None:
     assert page.items[0].subject == "Diversion — UAL42 KJFK→KORD (was KLAX)"
 
 
+async def test_list_for_sync_populates_salesforce_url_when_configured() -> None:
+    """Synced row + instance URL configured → Lightning deeplink in the sync payload."""
+    rows = [
+        _sync_row(
+            "CASE-A",
+            datetime(2026, 5, 24, tzinfo=UTC),
+            salesforce_id="500X000000ABCDE",
+        )
+    ]
+    svc = CaseSyncService(
+        postgres=_FakePG(),  # type: ignore[arg-type]
+        salesforce_instance_url="https://orgfarm-12345.my.salesforce.com",
+    )
+    svc._fetch_for_sync = lambda _since, _limit: rows  # type: ignore[method-assign]
+
+    page = await svc.list_for_sync(since=None, limit=200)
+
+    assert page.items[0].salesforce_url == (
+        "https://orgfarm-12345.my.salesforce.com/lightning/r/Case/500X000000ABCDE/view"
+    )
+
+
+async def test_list_for_sync_salesforce_url_null_when_instance_url_unset() -> None:
+    """No SALESFORCE_INSTANCE_URL configured → salesforce_url stays None."""
+    rows = [
+        _sync_row(
+            "CASE-A",
+            datetime(2026, 5, 24, tzinfo=UTC),
+            salesforce_id="500X000000ABCDE",
+        )
+    ]
+    svc = _sync_service(rows)  # built without salesforce_instance_url
+
+    page = await svc.list_for_sync(since=None, limit=200)
+
+    assert page.items[0].salesforce_url is None
+
+
 async def test_list_for_sync_passes_since_through_to_fetch() -> None:
     """`since` and `limit` arrive at `_fetch_for_sync` verbatim (no munging)."""
     captured: dict[str, Any] = {}

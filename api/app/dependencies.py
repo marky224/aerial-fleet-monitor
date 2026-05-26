@@ -21,6 +21,7 @@ from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool, WatchedAirportsProvider
 from app.services.query_service import QueryService
 from app.services.salesforce import SalesforceService
+from app.settings import settings
 
 
 def get_postgres_pool(request: Request) -> PostgresPool:
@@ -43,7 +44,11 @@ def get_query_service(
     lakehouse: Annotated[LakehouseQuery, Depends(get_lakehouse)],
 ) -> QueryService:
     """Fresh QueryService per request — composes pool + lakehouse references."""
-    return QueryService(postgres=postgres, lakehouse=lakehouse)
+    return QueryService(
+        postgres=postgres,
+        lakehouse=lakehouse,
+        salesforce_instance_url=settings.salesforce_instance_url,
+    )
 
 
 def get_salesforce_service(request: Request) -> SalesforceService:

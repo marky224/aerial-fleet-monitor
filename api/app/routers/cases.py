@@ -45,6 +45,7 @@ from app.services.case_sync import CaseSyncService
 from app.services.postgres import PostgresPool
 from app.services.query_service import QueryService
 from app.services.salesforce import SalesforceService
+from app.settings import settings
 
 router = APIRouter(prefix="/v1/cases", tags=["cases"])
 
@@ -56,7 +57,9 @@ async def sync_pending(
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
 ) -> CaseSyncSummary:
     """Push up to `limit` pending cases to Salesforce; reconcile app.cases."""
-    return await CaseSyncService(postgres, sf).push_pending(limit=limit)
+    return await CaseSyncService(
+        postgres, sf, salesforce_instance_url=settings.salesforce_instance_url
+    ).push_pending(limit=limit)
 
 
 @router.post("/sync-from-sf", response_model=CasePullSummary)
@@ -66,7 +69,9 @@ async def sync_from_sf(
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> CasePullSummary:
     """Pull up to `limit` Salesforce-modified Cases into app.cases; advance watermark."""
-    return await CaseSyncService(postgres, sf).pull_from_sf(limit=limit)
+    return await CaseSyncService(
+        postgres, sf, salesforce_instance_url=settings.salesforce_instance_url
+    ).pull_from_sf(limit=limit)
 
 
 @router.get("/all-for-sync", response_model=CasesForSyncPage)
@@ -79,7 +84,9 @@ async def all_for_sync(
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
 ) -> CasesForSyncPage:
     """Paginated server-to-server snapshot of `app.cases` for Foundry sync."""
-    return await CaseSyncService(postgres).list_for_sync(since=since, limit=limit)
+    return await CaseSyncService(
+        postgres, salesforce_instance_url=settings.salesforce_instance_url
+    ).list_for_sync(since=since, limit=limit)
 
 
 # Customer-facing reads — declared LAST so the static `/{name}` routes above

@@ -189,6 +189,7 @@ def case_for_sync_to_case(item: CaseForSync) -> Case:
     return Case(
         case_id=item.case_id,
         salesforce_id=item.salesforce_id,
+        salesforce_url=item.salesforce_url,
         case_type=item.case_type,
         status=item.status,
         severity=item.severity,

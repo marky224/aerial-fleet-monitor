@@ -393,9 +393,7 @@ def test_flight_detail_to_flight_stage_to_status_mapping() -> None:
 
 
 def test_flight_detail_to_flight_empty_timeline_is_unknown() -> None:
-    f = flight_detail_to_flight(
-        _FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail(status_timeline=[])
-    )
+    f = flight_detail_to_flight(_FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail(status_timeline=[]))
     assert f.current_stage is None
     assert f.status == "unknown"
     assert f.landed_at is None
@@ -427,9 +425,7 @@ def test_flight_detail_to_flight_trail_none_yields_empty_list() -> None:
 
 
 def test_flight_detail_to_flight_trail_points_carried() -> None:
-    f = flight_detail_to_flight(
-        _FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail(), trail=_make_trail()
-    )
+    f = flight_detail_to_flight(_FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail(), trail=_make_trail())
     assert len(f.trail_2h) == 1
     assert f.trail_2h[0].altitude_ft == 8000
 
@@ -474,6 +470,7 @@ def test_case_for_sync_to_case_passes_every_field_through() -> None:
     assert isinstance(c, Case)
     assert c.case_id == item.case_id
     assert c.salesforce_id == item.salesforce_id
+    assert c.salesforce_url == item.salesforce_url
     assert c.case_type == item.case_type
     assert c.status == item.status
     assert c.severity == item.severity
@@ -492,10 +489,21 @@ def test_case_for_sync_to_case_passes_every_field_through() -> None:
 
 def test_case_for_sync_to_case_preserves_none_optionals() -> None:
     """Pending push (salesforce_id None) + still-open (resolved_at None) round-trip."""
-    item = _make_case_for_sync(salesforce_id=None, resolved_at=None)
+    item = _make_case_for_sync(salesforce_id=None, salesforce_url=None, resolved_at=None)
     c = case_for_sync_to_case(item)
     assert c.salesforce_id is None
+    assert c.salesforce_url is None
     assert c.resolved_at is None
+
+
+def test_case_for_sync_to_case_passes_lightning_url_through() -> None:
+    """Composed Lightning URL on the API payload reaches the ontology Case verbatim."""
+    item = _make_case_for_sync(
+        salesforce_id="500X000000abc",
+        salesforce_url="https://orgfarm-12345.my.salesforce.com/lightning/r/Case/500X000000abc/view",
+    )
+    c = case_for_sync_to_case(item)
+    assert c.salesforce_url == item.salesforce_url
 
 
 def test_case_for_sync_to_case_carries_wx_sentinel_flight_id() -> None:

@@ -37,6 +37,13 @@ class CaseForSync(BaseModel):
         default=None,
         description="SF Case Id once the push has succeeded; NULL while pending.",
     )
+    salesforce_url: str | None = Field(
+        default=None,
+        description=(
+            "Lightning UI deeplink to the SF Case record. NULL until the push "
+            "has populated `salesforce_id` (or when `SALESFORCE_INSTANCE_URL` is unset)."
+        ),
+    )
     case_type: str = Field(description="Rule id (lost_signal/diversion/excessive_hold/...).")
     status: str = Field(description="AFM lifecycle: open/acknowledged/in_progress/resolved.")
     severity: str = Field(description="AFM severity: low/medium/high/critical.")
@@ -115,6 +122,7 @@ class CaseListItem(BaseModel):
 
     case_id: str
     salesforce_id: str | None = None
+    salesforce_url: str | None = None
     case_type: str
     status: str
     severity: str
@@ -156,14 +164,15 @@ class CaseTimelineEvent(BaseModel):
 class CaseDetail(BaseModel):
     """`GET /v1/cases/{case_id}` response.
 
-    Core Case fields + ordered timeline. `related_tasks` and
-    `salesforce_url` from API.md §6.2 are intentionally not built in
-    this slice — Tasks sync is future work, and the Lightning deeplink
-    needs a configured SF base URL. See build-05 Decisions log.
+    Core Case fields + ordered timeline. `related_tasks` from API.md §6.2
+    is intentionally not built in this slice — Tasks sync is future work.
+    `salesforce_url` is populated when `SALESFORCE_INSTANCE_URL` is
+    configured and `salesforce_id` is non-null.
     """
 
     case_id: str
     salesforce_id: str | None = None
+    salesforce_url: str | None = None
     case_type: str
     status: str
     severity: str

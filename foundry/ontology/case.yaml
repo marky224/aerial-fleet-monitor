@@ -65,6 +65,17 @@ properties:
       asset successfully creates the SF Case; once set, the push path's
       DUPLICATE_VALUE recovery uses it for the idempotent adopt-existing
       branch.
+  salesforce_url:
+    type: string
+    nullable: true
+    description: |
+      Lightning UI deeplink to the SF Case record. Computed on the AFM
+      API side from `SALESFORCE_INSTANCE_URL` + `salesforce_id` (see
+      `api/app/services/_lightning.py`). NULL until the push has populated
+      `salesforce_id` (or when `SALESFORCE_INSTANCE_URL` is unset). Bound
+      in App-1's Cases panel + the Case Object View as an "Open in
+      Salesforce" link — the canonical bridge from Foundry into the SF
+      Console where the AFM_Fleet_Ops_Console QuickActions live.
 
   # ---- Classification ----
   case_type:
