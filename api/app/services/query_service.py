@@ -44,6 +44,7 @@ from app.models.sites import (
     SiteSla,
     SiteWeather,
 )
+from app.services._lightning import case_lightning_url
 from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool
 
@@ -121,9 +122,15 @@ def _compute_weather_impact(flight_category: FlightCategory | None) -> WeatherIm
 class QueryService:
     """Read-only data access for the API and (in v2) the NL-chat layer."""
 
-    def __init__(self, postgres: PostgresPool, lakehouse: LakehouseQuery) -> None:
+    def __init__(
+        self,
+        postgres: PostgresPool,
+        lakehouse: LakehouseQuery,
+        salesforce_instance_url: str | None = None,
+    ) -> None:
         self._postgres = postgres
         self._lakehouse = lakehouse
+        self._salesforce_instance_url = salesforce_instance_url
 
     # === Positions ===
 
@@ -650,7 +657,15 @@ class QueryService:
                 has_site=site is not None,
             )
 
-        items = [CaseListItem(**row) for row in rows]
+        items = [
+            CaseListItem(
+                **row,
+                salesforce_url=case_lightning_url(
+                    self._salesforce_instance_url, row["salesforce_id"]
+                ),
+            )
+            for row in rows
+        ]
         return CaseListResponse(items=items, count=len(items), truncated=truncated)
 
     def get_case(self, scope: Scope, case_id: str) -> CaseDetail:
@@ -704,6 +719,9 @@ class QueryService:
         return CaseDetail(
             case_id=case_row["case_id"],
             salesforce_id=case_row["salesforce_id"],
+            salesforce_url=case_lightning_url(
+                self._salesforce_instance_url, case_row["salesforce_id"]
+            ),
             case_type=case_row["case_type"],
             status=case_row["status"],
             severity=case_row["severity"],

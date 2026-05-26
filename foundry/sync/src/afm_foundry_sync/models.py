@@ -200,6 +200,7 @@ class CaseForSync(BaseModel):
 
     case_id: str
     salesforce_id: str | None = None
+    salesforce_url: str | None = None
     case_type: str
     status: str
     severity: str
@@ -380,6 +381,7 @@ class Case(BaseModel):
 
     case_id: str
     salesforce_id: str | None
+    salesforce_url: str | None = None
     case_type: str
     status: str
     severity: str

@@ -287,6 +287,7 @@ def case_params(c: Case) -> dict[str, Any]:
         "updated_at": _iso_utc(c.updated_at),
     }
     _put_optional(params, "salesforce_id", c.salesforce_id)
+    _put_optional(params, "salesforce_url", c.salesforce_url)
     _put_optional(params, "subject", c.subject)
     _put_optional(params, "summary", c.summary)
     _put_optional(params, "severity_justification", c.severity_justification)
@@ -484,6 +485,4 @@ class FoundryWriter:
         """
         if not case_ids:
             return BatchResult(attempted=0, succeeded=0)
-        return await self._apply_batch(
-            self._action_delete_case, [{"Case": pk} for pk in case_ids]
-        )
+        return await self._apply_batch(self._action_delete_case, [{"Case": pk} for pk in case_ids])

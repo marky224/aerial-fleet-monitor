@@ -612,9 +612,7 @@ async def test_list_flight_pks_falls_back_to_primary_key(settings: FoundrySettin
 
 
 _CASE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/upsert-case/applyBatch"
-_CASE_DELETE_URL = (
-    "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-case/applyBatch"
-)
+_CASE_DELETE_URL = "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-case/applyBatch"
 _CASE_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Case"
 
 _CREATED_AT = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)

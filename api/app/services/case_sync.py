@@ -40,6 +40,7 @@ from app.models.salesforce import (
     CaseSyncRecord,
     CaseSyncSummary,
 )
+from app.services._lightning import case_lightning_url
 from app.services.postgres import PostgresPool
 from app.services.salesforce import SalesforceService
 
@@ -122,9 +123,15 @@ class CaseSyncService:
     without SF — `salesforce=None` is accepted for that path.
     """
 
-    def __init__(self, postgres: PostgresPool, salesforce: SalesforceService | None = None) -> None:
+    def __init__(
+        self,
+        postgres: PostgresPool,
+        salesforce: SalesforceService | None = None,
+        salesforce_instance_url: str | None = None,
+    ) -> None:
         self._pg = postgres
         self._sf = salesforce
+        self._sf_instance_url = salesforce_instance_url
 
     def _require_sf(self) -> SalesforceService:
         """Return the SalesforceService or raise — guard for push/pull paths.
@@ -453,7 +460,7 @@ class CaseSyncService:
         moving window naturally without a status filter on the SQL side.
         """
         rows = await asyncio.to_thread(self._fetch_for_sync, since, limit)
-        items = [self._row_to_case_for_sync(r) for r in rows]
+        items = [self._row_to_case_for_sync(r, self._sf_instance_url) for r in rows]
         next_cursor = max((c.updated_at for c in items), default=None)
         truncated = len(items) >= limit
         log.info(
@@ -479,11 +486,14 @@ class CaseSyncService:
         )
 
     @staticmethod
-    def _row_to_case_for_sync(row: dict[str, Any]) -> CaseForSync:
+    def _row_to_case_for_sync(
+        row: dict[str, Any], salesforce_instance_url: str | None
+    ) -> CaseForSync:
         facts: dict[str, Any] = row["detection_facts"] or {}
         return CaseForSync(
             case_id=row["case_id"],
             salesforce_id=row["salesforce_id"],
+            salesforce_url=case_lightning_url(salesforce_instance_url, row["salesforce_id"]),
             case_type=row["case_type"],
             status=row["status"],
             severity=row["severity"],

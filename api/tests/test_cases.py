@@ -319,3 +319,74 @@ def test_get_case_internal_scope_sees_any_region(
     # No raise.
     result = query_service.get_case(scope=internal_scope, case_id="CASE-EAST")
     assert result.customer_region == "east"
+
+
+# === salesforce_url integration =========================================
+#
+# Per-row Lightning deeplink composition (relies on
+# `app.services._lightning.case_lightning_url`; the helper itself has
+# direct unit tests in test_lightning.py — these confirm the URL flows
+# through `list_cases` + `get_case` end-to-end).
+
+
+def _query_service_with_sf(
+    mock_postgres: MagicMock, mock_lakehouse: MagicMock, instance_url: str | None
+) -> QueryService:
+    """QueryService variant with `salesforce_instance_url` configured."""
+    return QueryService(
+        postgres=mock_postgres,
+        lakehouse=mock_lakehouse,
+        salesforce_instance_url=instance_url,
+    )
+
+
+def test_list_cases_populates_salesforce_url_when_configured(
+    mock_postgres: MagicMock, mock_lakehouse: MagicMock, internal_scope: Scope
+) -> None:
+    """Synced row + instance URL configured → Lightning deeplink in response."""
+    row = _case_row(case_id="CASE-A", customer_region="east")
+    row["salesforce_id"] = "500X000000ABCDE"
+    mock_postgres.fetchall.return_value = [row]
+
+    svc = _query_service_with_sf(
+        mock_postgres, mock_lakehouse, "https://orgfarm-12345.my.salesforce.com"
+    )
+    result = svc.list_cases(scope=internal_scope)
+
+    assert result.items[0].salesforce_url == (
+        "https://orgfarm-12345.my.salesforce.com/lightning/r/Case/500X000000ABCDE/view"
+    )
+
+
+def test_list_cases_salesforce_url_null_when_pending_push(
+    mock_postgres: MagicMock, mock_lakehouse: MagicMock, internal_scope: Scope
+) -> None:
+    """Row without salesforce_id (pre-push) → salesforce_url is None."""
+    row = _case_row(case_id="CASE-PEND")
+    row["salesforce_id"] = None
+    mock_postgres.fetchall.return_value = [row]
+
+    svc = _query_service_with_sf(
+        mock_postgres, mock_lakehouse, "https://orgfarm-12345.my.salesforce.com"
+    )
+    result = svc.list_cases(scope=internal_scope)
+
+    assert result.items[0].salesforce_url is None
+
+
+def test_get_case_populates_salesforce_url_when_configured(
+    mock_postgres: MagicMock, mock_lakehouse: MagicMock, internal_scope: Scope
+) -> None:
+    row = _detail_row(case_id="CASE-DETAIL", customer_region="east")
+    row["salesforce_id"] = "500X000000XYZAB"
+    mock_postgres.fetchone.return_value = row
+    mock_postgres.fetchall.return_value = []
+
+    svc = _query_service_with_sf(
+        mock_postgres, mock_lakehouse, "https://orgfarm-12345.my.salesforce.com"
+    )
+    result = svc.get_case(scope=internal_scope, case_id="CASE-DETAIL")
+
+    assert result.salesforce_url == (
+        "https://orgfarm-12345.my.salesforce.com/lightning/r/Case/500X000000XYZAB/view"
+    )
