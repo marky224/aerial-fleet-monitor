@@ -134,32 +134,35 @@ case_detector_job = define_asset_job(
 )
 
 
-# Dagster's cron schedules are minute-resolution at the finest. OpenSky's
-# spec-mandated 30s cadence (PIPELINES.md §5) needs a sensor with
-# minimum_interval_seconds=30 returning a RunRequest every fire. Returning
-# a fresh RunRequest each time (no run_key dedupe) means every fire
-# launches a run — exactly the every-30s behavior we want.
+# OpenSky `/states/all` empirically costs 4 cr/call at the CONUS bbox
+# (verified 2026-05-26: 999/999 consecutive paid polls drained
+# `X-Rate-Limit-Remaining` by exactly 4). At 30s cadence x 4 cr =
+# 11,520 cr/day vs the 4,000-cr/day authenticated budget — exhausted
+# daily at ~08:51 UTC. 120s cadence x 4 cr = 2,880 cr/day, leaving
+# 1,120 cr headroom for `/flights/aircraft` traffic. Spec PIPELINES.md
+# §5's "30s mandated" is superseded by this constraint.
 @sensor(
     job=opensky_positions_job,
     name="opensky_positions_sensor",
-    minimum_interval_seconds=30,
+    minimum_interval_seconds=120,
     default_status=DefaultSensorStatus.RUNNING,
-    description="Fires opensky_positions every 30s (sub-minute cadence not supported by Dagster schedules).",
+    description="Fires opensky_positions every 120s (rate-budget constrained — see comment above).",
 )
 def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
 
 
-# Foundry Aircraft sync mirrors OpenSky's 30s cadence (it consumes the same
-# /v1/positions/live snapshot), so it's a sensor for the same sub-minute
-# reason. Independent failure domain: a Foundry-unreachable run materializes
-# as a skip, not a failure, so this never blocks the local pipeline.
+# Foundry Aircraft sync mirrors the upstream `opensky_positions` cadence
+# (it consumes the same /v1/positions/live snapshot — no point running
+# faster than fresh data lands). Independent failure domain: a
+# Foundry-unreachable run materializes as a skip, not a failure, so this
+# never blocks the local pipeline.
 @sensor(
     job=foundry_positions_sync_job,
     name="foundry_positions_sync_sensor",
-    minimum_interval_seconds=30,
+    minimum_interval_seconds=120,
     default_status=DefaultSensorStatus.RUNNING,
-    description="Upserts Aircraft to the Foundry Ontology every 30s.",
+    description="Upserts Aircraft to the Foundry Ontology every 120s (matches opensky_positions cadence).",
 )
 def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)

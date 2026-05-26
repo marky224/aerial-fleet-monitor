@@ -7,12 +7,15 @@ times into ``app.flight_plans`` so the Phase 05 case detector's
 calls.
 
 OpenSky's ``/states/all`` (used by the ingestion asset) does not carry
-flight-plan data; ``/flights/aircraft`` does, but costs 1 credit per
+flight-plan data; ``/flights/aircraft`` does, but costs ~1 credit per
 1-hour window per call. This asset uses a Postgres cache (12h TTL) so
-each watched icao24 incurs at most 2 fetches/day. At ~50 watched
-aircraft x 6h fetch window x 2 refreshes/day, steady-state cost is
-~600 cr/day — comfortably under the ~1,120 cr/day headroom past
-``/states/all``.
+each watched icao24 incurs at most 2 fetches/day. Note: empirically
+``/flights/aircraft`` does NOT drain the same ``X-Rate-Limit-Remaining``
+counter as ``/states/all`` — it appears to live on a separate, smaller,
+shorter-window quota that rate-limits around ~130 successful fetches/day
+in observation. The ``MAX_FETCHES_PER_CYCLE`` cap below remains the
+single-cycle safety bound; the ~130/day ceiling is enforced upstream by
+OpenSky regardless.
 
 Cycle (hourly):
   1. SELECT distinct icao24 from ``app.current_positions`` last hour

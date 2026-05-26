@@ -7,7 +7,7 @@ The full pipelines specification documents AFM's Dagster asset-oriented pipeline
 - Why Dagster (asset model rationale, asset-graph-as-documentation pattern)
 - Asset graph (visual representation of data flow across all assets)
 - Asset-by-asset detail:
-  - `opensky_positions` — 30-second polling, US bounding box, Parquet snapshot + Postgres upsert
+  - `opensky_positions` — 120-second polling, US bounding box, Parquet snapshot + Postgres upsert
   - `noaa_weather` — 5-minute batch fetch for watched airports
   - `static_reference` — weekly airport + aircraft-registry refresh
   - `case_detector` — 5-minute rules engine across 6 anomaly types; dedups and writes new cases to Postgres only (marked `pending`)
