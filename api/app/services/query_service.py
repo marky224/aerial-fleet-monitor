@@ -11,13 +11,19 @@ handler). The caller can't get rows for resources outside scope.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
 from app.exceptions import NotFoundError, ScopeViolation
+from app.models.cases import (
+    CaseDetail,
+    CaseListItem,
+    CaseListResponse,
+    CaseTimelineEvent,
+)
 from app.models.common import (
     FlightCategory,
     Region,
@@ -71,6 +77,19 @@ LIVE_POSITION_WINDOW = "15 minutes"
 # `truncated=True` and a WARNING is logged, so the clip is observable
 # instead of silent (the prior behaviour: a bare `LIMIT 10000`).
 LIVE_POSITION_CEILING = 50_000
+
+# Same shape + rationale as LIVE_POSITION_CEILING, applied to `GET /v1/cases`.
+# Tenant case volume is ~1k-2k at Phase-05 close, so 50k is ~30-50x headroom.
+# Cases also has its own pagination story (see API.md §6.1 / build-05 Decisions
+# log entry "Pagination = 50k ceiling, not cursor"): every page is bounded by
+# the ceiling and the response carries `truncated` so a clip is observable.
+CASE_LIST_CEILING = 50_000
+
+# Default statuses for `GET /v1/cases` when no `status` filter is given —
+# matches the Workshop App-1 panel filter (WORKSHOP_APPS.md §1.4), which
+# hides resolved cases from the operator view. A caller can opt into
+# resolved (or any subset) by passing `status` explicitly.
+DEFAULT_CASE_STATUSES: tuple[str, ...] = ("open", "acknowledged", "in_progress")
 
 logger = structlog.get_logger(__name__)
 
@@ -556,3 +575,147 @@ class QueryService:
             for row in rows
         ]
         return SiteFlightListResponse(items=items, count=len(items))
+
+    # === Cases (customer-facing scope-gated reads, API.md §6.1/§6.2) ===
+
+    def list_cases(
+        self,
+        scope: Scope,
+        status: Sequence[str] | None = None,
+        severity: str | None = None,
+        site: str | None = None,
+        region: Region | None = None,
+    ) -> CaseListResponse:
+        """Scope-gated `GET /v1/cases`.
+
+        Region override is rejected (403) unless scope.region == 'all',
+        matching `list_live_positions`. The scope filter is
+        `customer_region IN (effective_region, 'all')` so a cross-region
+        ('all'-tagged) case surfaces to both east and west callers — same
+        rule the Workshop App-1 panel applies. `status` defaults to
+        `DEFAULT_CASE_STATUSES` (no resolved); pass an explicit list to
+        include resolved. `severity` / `site` are unvalidated pass-through
+        filters; an unknown value just returns zero rows.
+        """
+        if region and region != scope.region and scope.region != "all":
+            raise ScopeViolation(
+                f"User scope '{scope.region}' cannot request region '{region}'",
+                details={"requested_region": region},
+            )
+        effective_region: Region = region or scope.region
+
+        where: list[str] = []
+        params: dict[str, Any] = {}
+
+        if effective_region != "all":
+            where.append("customer_region = ANY(%(regions)s)")
+            params["regions"] = [effective_region, "all"]
+
+        statuses: tuple[str, ...] | Sequence[str] = (
+            tuple(status) if status is not None else DEFAULT_CASE_STATUSES
+        )
+        where.append("status = ANY(%(statuses)s)")
+        params["statuses"] = list(statuses)
+
+        if severity is not None:
+            where.append("severity = %(severity)s")
+            params["severity"] = severity
+
+        if site is not None:
+            where.append("site_icao = %(site)s")
+            params["site"] = site.upper()
+
+        where_sql = " AND ".join(where) if where else "TRUE"
+        rows = self._postgres.fetchall(
+            f"""
+            SELECT case_id, salesforce_id, case_type, status, severity,
+                   customer_region, site_icao, flight_id, summary,
+                   created_at, updated_at
+            FROM app.cases
+            WHERE {where_sql}
+            ORDER BY created_at DESC, case_id DESC
+            LIMIT %(ceiling_probe)s
+            """,
+            {**params, "ceiling_probe": CASE_LIST_CEILING + 1},
+        )
+
+        truncated = len(rows) > CASE_LIST_CEILING
+        if truncated:
+            rows = rows[:CASE_LIST_CEILING]
+            logger.warning(
+                "cases_list_truncated",
+                ceiling=CASE_LIST_CEILING,
+                region=effective_region,
+                has_severity=severity is not None,
+                has_site=site is not None,
+            )
+
+        items = [CaseListItem(**row) for row in rows]
+        return CaseListResponse(items=items, count=len(items), truncated=truncated)
+
+    def get_case(self, scope: Scope, case_id: str) -> CaseDetail:
+        """One case + ordered timeline. 404 if absent; 403 if out of scope.
+
+        Scope check mirrors the list endpoint: a case whose
+        `customer_region` is the caller's region OR `'all'` is visible.
+        `region='all'` scope is a wildcard.
+        """
+        case_row = self._postgres.fetchone(
+            """
+            SELECT case_id, salesforce_id, case_type, status, severity,
+                   severity_justification, customer_region, site_icao,
+                   flight_id, summary, detection_facts, runbook_refs,
+                   created_at, updated_at, resolved_at
+            FROM app.cases
+            WHERE case_id = %(case_id)s
+            """,
+            {"case_id": case_id},
+        )
+        if not case_row:
+            raise NotFoundError(f"Case '{case_id}' not found")
+
+        case_region = case_row["customer_region"]
+        if scope.region != "all" and case_region != "all" and case_region != scope.region:
+            raise ScopeViolation(
+                f"User scope '{scope.region}' cannot access case '{case_id}' "
+                f"in region '{case_region}'",
+                details={"case_region": case_region},
+            )
+
+        timeline_rows = self._postgres.fetchall(
+            """
+            SELECT event_type, detail, source, actor, occurred_at
+            FROM app.case_timeline
+            WHERE case_id = %(case_id)s
+            ORDER BY occurred_at ASC, event_id ASC
+            """,
+            {"case_id": case_id},
+        )
+        timeline = [
+            CaseTimelineEvent(
+                event_type=row["event_type"],
+                detail=row["detail"] or {},
+                source=row["source"],
+                actor=row["actor"],
+                occurred_at=row["occurred_at"],
+            )
+            for row in timeline_rows
+        ]
+        return CaseDetail(
+            case_id=case_row["case_id"],
+            salesforce_id=case_row["salesforce_id"],
+            case_type=case_row["case_type"],
+            status=case_row["status"],
+            severity=case_row["severity"],
+            severity_justification=case_row["severity_justification"],
+            customer_region=case_row["customer_region"],
+            site_icao=case_row["site_icao"],
+            flight_id=case_row["flight_id"],
+            summary=case_row["summary"],
+            detection_facts=case_row["detection_facts"] or {},
+            runbook_refs=list(case_row["runbook_refs"] or []),
+            timeline=timeline,
+            created_at=case_row["created_at"],
+            updated_at=case_row["updated_at"],
+            resolved_at=case_row["resolved_at"],
+        )
