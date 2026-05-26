@@ -8,10 +8,17 @@ The resource is a faithful representation of the API — unit conversions
 (m/s → kt, meters → feet), the icao24 denylist, and region inference all
 happen in the consuming asset.
 
-Bbox ``/states/all`` cost is 1 credit per call (``PIPELINES.md`` §3.1).
-At a 30-second poll that totals 2,880 credits/day, leaving ~1,120 of the
-4,000/day free-tier budget for ``/flights/aircraft`` queries
-(``flight_plan_enrichment``, Phase 05, ~600 cr/day at steady state).
+Bbox ``/states/all`` cost is **4 credits per call** at the CONUS bbox
+(verified 2026-05-26: 999/999 consecutive paid polls drained
+``X-Rate-Limit-Remaining`` by exactly 4 — supersedes the prior
+"1 credit per call" claim in ``PIPELINES.md`` §3.1, which appears to
+have been an assumption, not an OpenSky-documented rate). At 120-second
+cadence (see ``opensky_positions_sensor`` in ``pipelines/definitions.py``)
+that totals 2,880 credits/day, leaving ~1,120 of the 4,000/day
+authenticated-tier budget for ``/flights/aircraft`` queries. Note:
+``/flights/aircraft`` does not appear to drain the same visible
+``X-Rate-Limit-Remaining`` counter — its quota is separate and bounded
+empirically near ~130/day before rate-limiting kicks in.
 
 ``/flights/aircraft`` charges 1 credit per 1-hour window of the
 ``begin``→``end`` range (rounded up) and returns 404 — *not* an error —
@@ -117,7 +124,7 @@ class OpenSkyResponse:
 
     api_time: int  # OpenSky's reported time field (epoch s)
     states: tuple[OpenSkyState, ...]
-    credits_used: int  # 1 per bbox call (PIPELINES.md §3.1)
+    credits_used: int  # 4 per bbox call at CONUS bbox (verified 2026-05-26)
     rate_limit_remaining: int | None  # from X-Rate-Limit-Remaining if present
     http_status: int
 
@@ -362,7 +369,7 @@ class OpenSkyResource(ConfigurableResource):  # type: ignore[type-arg]
         return OpenSkyResponse(
             api_time=api_time,
             states=states,
-            credits_used=1,
+            credits_used=4,
             rate_limit_remaining=rate_limit_remaining,
             http_status=response.status_code,
         )
