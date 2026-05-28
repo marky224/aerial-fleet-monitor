@@ -37,7 +37,15 @@ from pipelines.services.baseline_provider import (
 )
 
 _EARTH_RADIUS_NM = 3440.065
-LOOKBACK_MINUTES = 60
+# Detector input window: positions in the last LOOKBACK_MINUTES are fed to
+# every rule per tick. 30 (down from 60) cuts excessive_hold + go_around
+# volume ~43% by capping the duration window and the valley-shape window.
+# Coupled with rule constants — LOST_MAX_GAP (30) and HOLD_MIN_DURATION (30)
+# both equal LOOKBACK_MINUTES, so cases at the edge of the window still fire.
+# Going below 30 would start clipping real cases (HOLD_MIN_DURATION couldn't
+# be met). Simulation (2026-05-28): 60→30 drops total volume 1,860→1,067/3h
+# without losing operational signal — see PR description for the table.
+LOOKBACK_MINUTES = 30
 
 
 @dataclass(frozen=True)
