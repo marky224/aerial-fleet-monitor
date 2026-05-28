@@ -11,11 +11,14 @@ RULE = LostSignalRule()
 
 
 def test_positive_cruise_aircraft_goes_quiet() -> None:
+    # 32k ft puts the base tier at "medium" so the skip-on-low guard
+    # doesn't suppress this smoke-test detection. 38k would gradate to
+    # "low" (default cell isn't hot) and the rule would skip the fire.
     positions = make_positions(
         [
             {
                 "icao24": "lost01",
-                "altitude_ft": 38_000,
+                "altitude_ft": 32_000,
                 "on_ground": False,
                 "ts_polled": NOW - mins(12),
                 "nearest_site_icao": "KDEN",
@@ -155,8 +158,14 @@ def test_severity_base_30k_to_35k_is_medium() -> None:
     assert [a.severity_hint for a in out] == ["medium"]
 
 
-def test_severity_base_at_or_above_35k_is_low() -> None:
-    """alt >= 35k, non-hot cell, gap < 15min → base 'low'."""
+def test_severity_low_fires_are_skipped() -> None:
+    """alt >= 35k, non-hot cell, gap < 15min would gradate to 'low' — skipped.
+
+    The skip-on-low guard suppresses fires below the operational noise
+    floor: persisting them would just clutter dashboards + sync layers
+    without driving any Task downstream. Historical projection showed
+    83% of all lost_signal fires fall into this band.
+    """
     positions = make_positions(
         [
             {
@@ -169,8 +178,26 @@ def test_severity_base_at_or_above_35k_is_low() -> None:
             {"icao24": "live01", "ts_polled": NOW},
         ]
     )
-    out = RULE.detect(positions, {}, empty_cases(), BASELINE)
-    assert [a.severity_hint for a in out] == ["low"]
+    assert RULE.detect(positions, {}, empty_cases(), BASELINE) == []
+
+
+def test_severity_hot_cell_clamp_to_low_also_skipped() -> None:
+    """alt >= 35k in a hot cell, gap < 15min: base 'low' demoted (clamped
+    to 'low'), then skipped by the guard. Covers the demote-floor edge.
+    """
+    positions = make_positions(
+        [
+            {
+                "icao24": "lost01",
+                "altitude_ft": 38_000,
+                "lat": _HOT_CELL_LAT,
+                "lon": _HOT_CELL_LON,
+                "ts_polled": NOW - mins(10),
+            },
+            {"icao24": "live01", "ts_polled": NOW},
+        ]
+    )
+    assert RULE.detect(positions, {}, empty_cases(), BASELINE) == []
 
 
 def test_severity_hot_cell_demotes_one_tier() -> None:
