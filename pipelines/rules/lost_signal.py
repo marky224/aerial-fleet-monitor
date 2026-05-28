@@ -2,17 +2,26 @@
 
 Fires when an icao24's most recent snapshot is airborne, at cruise
 altitude, in roughly *level* flight, and is older than the latest poll
-by 8-30 minutes — i.e. the feed went quiet on a flight that should still
-be transmitting. Beyond 30 minutes we assume it landed or genuinely left
-coverage, not a fresh signal loss (the dedup window then keeps it from
-re-firing for 6h).
+by 14-30 minutes — i.e. the feed went quiet on a flight that should
+still be transmitting. Beyond 30 minutes we assume it landed or
+genuinely left coverage, not a fresh signal loss (the dedup window
+then keeps it from re-firing for 6h).
 
 Two precision guards keep this off normal OpenSky coverage churn (the
 free `/states/all` feed routinely drops a cruising aircraft for a few
 polls or as it crosses the polled region's edge):
 
-* an 8-minute floor (not 2) — a 2-minute gap is ~4 missed 30s polls,
-  i.e. ordinary feed jitter, not an operationally meaningful silence;
+* a 14-minute floor — at the post-PR-#25 polling cadence of 120s,
+  14 min = 7 missed polls; below that is feed jitter or transient
+  coverage, not an operationally meaningful silence. The floor was
+  8 min when polling was 30s (8 min = ~16 missed polls). The cadence
+  change required recalibration; 14 min was picked as the most
+  aggressive setting that still preserves a useful detection signal
+  (~42 fires/day at this floor vs ~24/day at 15 min, which essentially
+  kills the rule). Coupled to cadence; revisit if OPENSKY_POLL_INTERVAL
+  changes again. Note the [14, 15) range is narrow: most surviving
+  fires immediately cross LONG_GAP_THRESHOLD (15 min) and get promoted
+  one tier — by design, gaps that long are concerning.
 * level flight (|vertical_rate| <= 500 fpm) — "lost *at cruise*" means
   steady cruise, so an aircraft still climbing out or already descending
   to land is excluded (it's transitioning, expected to leave the band).
@@ -23,7 +32,8 @@ Severity is gradated per `_classify_severity` (B+C hybrid; user-approved
 2026-05-26): altitude bands as the base tier, sparse-coverage cells
 demote, long gaps promote. Replaces the pre-2026-05-26 unconditional
 "high" emission that drove the 99.9% high-severity ratio across all
-lost_signal fires.
+lost_signal fires. The skip-on-low guard (PR #28) further suppresses
+fires below the operational noise floor.
 """
 
 from __future__ import annotations
@@ -47,7 +57,7 @@ from pipelines.rules.base import (
 from pipelines.services.baseline_provider import BaselineProvider
 
 CRUISE_FLOOR_FT = 25_000
-LOST_MIN_GAP = timedelta(minutes=8)
+LOST_MIN_GAP = timedelta(minutes=14)
 LOST_MAX_GAP = timedelta(minutes=30)
 LEVEL_VRATE_FPM = 500
 
