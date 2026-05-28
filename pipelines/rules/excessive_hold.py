@@ -25,6 +25,7 @@ from pipelines.rules.base import (
     AirportConditions,
     Anomaly,
     Rule,
+    is_general_aviation_callsign,
     latest_row,
     opt_str,
     region_of,
@@ -69,6 +70,13 @@ class ExcessiveHoldRule(Rule):
             site = near["nearest_site_icao"].mode()
             site_icao = opt_str(site.iloc[0]) if not site.empty else None
             last = latest_row(near)
+            # Skip GA training patterns (N-numbered callsigns). Pattern flying
+            # near a non-towered field looks exactly like a real ATC hold in
+            # the data — same radius, altitude band, duration, sector sweep —
+            # but isn't operationally relevant for a commercial-fleet console.
+            # 81% of pre-filter excessive_hold fires were GA (2026-05-28).
+            if is_general_aviation_callsign(opt_str(last.get("callsign"))):
+                continue
             anomalies.append(
                 Anomaly(
                     rule=self.case_type,

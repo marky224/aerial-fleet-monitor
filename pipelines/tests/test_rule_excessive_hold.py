@@ -82,3 +82,18 @@ def test_negative_just_outside_hold_radius() -> None:
 def test_negative_too_high_altitude() -> None:
     rows = _holding_rows(12, 35, [0, 45, 90, 135, 180, 225, 270, 315], altitude_ft=33_000)
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
+
+
+def test_negative_general_aviation_callsign_filtered() -> None:
+    """Identical holding shape under a GA (N-numbered) callsign → skipped.
+
+    A flight-training aircraft looping near a non-towered field produces
+    the same radius/altitude/duration/sector signature as a real
+    commercial ATC hold; AFM's scope is commercial fleet ops, so GA gets
+    filtered out before the Anomaly is emitted (81% of pre-filter
+    excessive_hold fires were GA in the 2026-05-28 snapshot).
+    """
+    rows = _holding_rows(12, 35, [0, 45, 90, 135, 180, 225, 270, 315])
+    for row in rows:
+        row["callsign"] = "N816M"  # canonical US GA registration
+    assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []

@@ -132,6 +132,29 @@ def opt_float(value: Any) -> float | None:
     return None if value is None or pd.isna(value) else float(value)
 
 
+def is_general_aviation_callsign(callsign: str | None) -> bool:
+    """True for US general-aviation N-numbered callsigns (e.g. 'N816M', 'N5169E').
+
+    AFM's portfolio scope is commercial fleet operations; GA traffic
+    (flight training, scenic, private piston/turbo) produces patterns
+    that look like real holds + go-arounds in the data but aren't
+    operationally relevant for commercial fleet support. Rules opt in
+    to this filter by checking the callsign before emitting an Anomaly.
+
+    Match pattern: starts with 'N' followed by a digit. Covers the
+    dominant US-registered GA population (~80%+ of excessive_hold
+    fires, ~57% of go_around fires per the 2026-05-28 snapshot).
+    Non-US GA prefixes (G-, F-, D-, JA, VH, etc.) and 3-letter
+    operator codes (DAL, UAL, UPS, SKW, RCH) are NOT matched — those
+    stay in scope. Lost-signal at cruise (>=25k ft) is naturally
+    light on GA (6.8% in the same snapshot) so its rule does not
+    apply this filter.
+    """
+    if not callsign or len(callsign) < 2:
+        return False
+    return callsign[0] == "N" and callsign[1].isdigit()
+
+
 def latest_row(frame: pd.DataFrame, ts_col: str = "ts_polled") -> pd.Series:
     """The single row with the max ``ts_col``, typed as a Series.
 

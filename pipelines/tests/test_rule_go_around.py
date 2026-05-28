@@ -84,3 +84,23 @@ def test_negative_not_near_airport() -> None:
 def test_negative_too_few_snapshots() -> None:
     rows = [_row("few01", 1_500, 4), _row("few01", 4_000, 2)]
     assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
+
+
+def test_negative_general_aviation_callsign_filtered() -> None:
+    """Identical descend-then-climb shape under a GA (N-numbered) callsign → skipped.
+
+    A touch-and-go training pattern produces the same valley-shape
+    signature as a real commercial go-around; AFM's scope is commercial
+    fleet ops, so GA gets filtered out before the Anomaly is emitted
+    (57% of pre-filter go_around fires were GA in the 2026-05-28 snapshot).
+    """
+    rows = [
+        _row("ga01", 4_000, 6),
+        _row("ga01", 2_500, 5),
+        _row("ga01", 1_500, 4),
+        _row("ga01", 2_800, 3),
+        _row("ga01", 4_000, 2),
+    ]
+    for row in rows:
+        row["callsign"] = "N444EB"  # canonical US GA registration
+    assert RULE.detect(make_positions(rows), {}, empty_cases(), BASELINE) == []
