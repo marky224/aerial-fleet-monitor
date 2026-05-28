@@ -20,7 +20,7 @@ def test_positive_cruise_aircraft_goes_quiet() -> None:
                 "icao24": "lost01",
                 "altitude_ft": 32_000,
                 "on_ground": False,
-                "ts_polled": NOW - mins(12),
+                "ts_polled": NOW - mins(14.5),
                 "nearest_site_icao": "KDEN",
                 "callsign": "UAL99",
             },
@@ -31,12 +31,12 @@ def test_positive_cruise_aircraft_goes_quiet() -> None:
     assert [a.icao24 for a in out] == ["lost01"]
     assert out[0].rule == "lost_signal"
     assert out[0].site_icao == "KDEN"
-    assert out[0].detection_facts["gap_minutes"] == 12.0
+    assert out[0].detection_facts["gap_minutes"] == 14.5
 
 
 def test_negative_short_gap_is_poll_noise() -> None:
-    # 5-minute gap is below the 8-min floor — ordinary feed jitter, not a
-    # signal loss worth a case.
+    # 5-minute gap is well below the 14-min LOST_MIN_GAP floor (post-PR-#25
+    # 120s polling cadence — 5 min is ~2.5 missed polls, ordinary jitter).
     positions = make_positions(
         [
             {"icao24": "blip01", "altitude_ft": 38_000, "ts_polled": NOW - mins(5)},
@@ -47,15 +47,15 @@ def test_negative_short_gap_is_poll_noise() -> None:
 
 
 def test_negative_climbing_aircraft_excluded() -> None:
-    # Past the 8-min floor and at cruise, but climbing hard — transitioning,
-    # not a steady-cruise signal loss.
+    # At a gap above the 14-min floor (14.5 min) and at cruise altitude, but climbing hard —
+    # transitioning, not a steady-cruise signal loss.
     positions = make_positions(
         [
             {
                 "icao24": "clmb01",
                 "altitude_ft": 30_000,
                 "vertical_rate_fpm": 2_000,
-                "ts_polled": NOW - mins(12),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -123,7 +123,7 @@ _COLD_CELL_LON = -50.0
 
 
 def test_severity_base_below_30k_is_high() -> None:
-    """alt < 30k, non-hot cell, gap < 15min → base 'high', no shift."""
+    """alt < 30k, non-hot cell, gap in [14, 15) min → base 'high', no shift."""
     positions = make_positions(
         [
             {
@@ -131,7 +131,7 @@ def test_severity_base_below_30k_is_high() -> None:
                 "altitude_ft": 28_000,
                 "lat": _COLD_CELL_LAT,
                 "lon": _COLD_CELL_LON,
-                "ts_polled": NOW - mins(10),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -141,7 +141,7 @@ def test_severity_base_below_30k_is_high() -> None:
 
 
 def test_severity_base_30k_to_35k_is_medium() -> None:
-    """30k <= alt < 35k, non-hot cell, gap < 15min → base 'medium'."""
+    """30k <= alt < 35k, non-hot cell, gap in [14, 15) min → base 'medium'."""
     positions = make_positions(
         [
             {
@@ -149,7 +149,7 @@ def test_severity_base_30k_to_35k_is_medium() -> None:
                 "altitude_ft": 32_000,
                 "lat": _COLD_CELL_LAT,
                 "lon": _COLD_CELL_LON,
-                "ts_polled": NOW - mins(10),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -159,12 +159,14 @@ def test_severity_base_30k_to_35k_is_medium() -> None:
 
 
 def test_severity_low_fires_are_skipped() -> None:
-    """alt >= 35k, non-hot cell, gap < 15min would gradate to 'low' — skipped.
+    """alt >= 35k, non-hot cell, gap in [14, 15) min would gradate to 'low' — skipped.
 
     The skip-on-low guard suppresses fires below the operational noise
     floor: persisting them would just clutter dashboards + sync layers
     without driving any Task downstream. Historical projection showed
-    83% of all lost_signal fires fall into this band.
+    83% of all lost_signal fires fall into this band. gap=14.5 keeps the
+    fire above the 14-min LOST_MIN_GAP floor so the guard is exercised,
+    not the floor.
     """
     positions = make_positions(
         [
@@ -173,7 +175,7 @@ def test_severity_low_fires_are_skipped() -> None:
                 "altitude_ft": 38_000,
                 "lat": _COLD_CELL_LAT,
                 "lon": _COLD_CELL_LON,
-                "ts_polled": NOW - mins(10),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -182,8 +184,10 @@ def test_severity_low_fires_are_skipped() -> None:
 
 
 def test_severity_hot_cell_clamp_to_low_also_skipped() -> None:
-    """alt >= 35k in a hot cell, gap < 15min: base 'low' demoted (clamped
-    to 'low'), then skipped by the guard. Covers the demote-floor edge.
+    """alt >= 35k in a hot cell, gap in [14, 15) min: base 'low' demoted
+    (clamped to 'low'), then skipped by the guard. Covers the demote-
+    floor edge. gap=14.5 keeps the fire above LOST_MIN_GAP so the gradation
+    + skip-on-low logic is exercised, not the gap-floor filter.
     """
     positions = make_positions(
         [
@@ -192,7 +196,7 @@ def test_severity_hot_cell_clamp_to_low_also_skipped() -> None:
                 "altitude_ft": 38_000,
                 "lat": _HOT_CELL_LAT,
                 "lon": _HOT_CELL_LON,
-                "ts_polled": NOW - mins(10),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -201,7 +205,7 @@ def test_severity_hot_cell_clamp_to_low_also_skipped() -> None:
 
 
 def test_severity_hot_cell_demotes_one_tier() -> None:
-    """alt < 30k (base 'high'), in hot cell → demoted to 'medium'."""
+    """alt < 30k (base 'high'), in hot cell, gap in [14, 15) min → demoted to 'medium'."""
     positions = make_positions(
         [
             {
@@ -209,7 +213,7 @@ def test_severity_hot_cell_demotes_one_tier() -> None:
                 "altitude_ft": 28_000,
                 "lat": _HOT_CELL_LAT,
                 "lon": _HOT_CELL_LON,
-                "ts_polled": NOW - mins(10),
+                "ts_polled": NOW - mins(14.5),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
