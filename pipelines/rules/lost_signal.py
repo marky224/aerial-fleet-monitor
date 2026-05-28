@@ -157,6 +157,15 @@ class LostSignalRule(Rule):
                 continue
             last_lat = opt_float(last.get("lat"))
             last_lon = opt_float(last.get("lon"))
+            severity = _classify_severity(int(alt), gap, last_lat, last_lon)
+            # Skip fires the gradation classifies "low": these are below the
+            # operational noise floor (cruise altitude in a sparse-coverage
+            # cell with a short-ish gap). Persisting them is just IO churn —
+            # they wouldn't drive a Task downstream, just clutter dashboards
+            # and sync layers. Backed by the historical-projection split that
+            # showed ~83% of fires fall into this band.
+            if severity == "low":
+                continue
             anomalies.append(
                 Anomaly(
                     rule=self.case_type,
@@ -171,7 +180,7 @@ class LostSignalRule(Rule):
                         "last_seen": last["ts_polled"].isoformat(),
                         "gap_minutes": round(gap.total_seconds() / 60, 1),
                     },
-                    severity_hint=_classify_severity(int(alt), gap, last_lat, last_lon),
+                    severity_hint=severity,
                 )
             )
         return anomalies

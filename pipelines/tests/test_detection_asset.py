@@ -94,7 +94,9 @@ def test_enrich_with_empty_flight_plans_sets_null_plan_columns() -> None:
 def test_detect_and_dedup_runs_rules_and_suppresses_existing() -> None:
     positions = make_positions(
         [
-            {"icao24": "lost01", "altitude_ft": 38_000, "ts_polled": NOW - mins(12)},
+            # 32k (not 38k) so the lost_signal severity gradation stays
+            # above the skip-on-low floor — see pipelines/rules/lost_signal.py.
+            {"icao24": "lost01", "altitude_ft": 32_000, "ts_polled": NOW - mins(12)},
             {"icao24": "live01", "ts_polled": NOW},
         ]
     )
@@ -139,7 +141,8 @@ def test_run_case_detection_creates_a_case(monkeypatch) -> None:
         [
             {
                 "icao24": "lost01",
-                "altitude_ft": 38_000,
+                # 32k → lost_signal severity stays "medium", above skip-on-low.
+                "altitude_ft": 32_000,
                 "customer_region": "west",
                 "ts_polled": NOW - mins(12),
             },
