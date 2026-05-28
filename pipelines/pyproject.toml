@@ -69,6 +69,7 @@ packages = [
     "pipelines.data",
     "pipelines.resources",
     "pipelines.rules",
+    "pipelines.rules.data",
     "pipelines.services",
     # subpackages added in later phases: pipelines.jobs.
 ]
@@ -76,6 +77,11 @@ package-dir = {"pipelines" = "."}
 
 [tool.setuptools.package-data]
 "pipelines.data" = ["*.json", "*.txt"]
+# lost_signal severity gradation reads the sparse-cells JSON from this
+# package at import time via Path(__file__).parent/"data"/... — without
+# the explicit declaration, pip install drops the JSON and the rule
+# loads 0 hot cells (silent degradation, not a crash).
+"pipelines.rules.data" = ["*.json"]
 
 # Dagster discovers the Definitions object via DAGSTER_CODE_LOCATION /
 # workspace.yaml. The module path is `pipelines.definitions`.
