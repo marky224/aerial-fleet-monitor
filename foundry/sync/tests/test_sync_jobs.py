@@ -590,7 +590,8 @@ async def test_reconcile_propagates_skip_on_unreachable_api(
 
 
 # ---------------------------------------------------------------------------
-# reconcile_flights (Phase A — tenant-side eviction of completed flights)
+# reconcile_flights (tenant-side eviction; Phase B deletes STUBS ONLY —
+# completed flights are left for the archive asset)
 # ---------------------------------------------------------------------------
 
 _FLIGHT_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Flight"
@@ -771,6 +772,54 @@ async def test_flight_reconcile_keeps_unparseable_pk_conservatively(
     assert (result.tenant, result.keep, result.orphans, result.deleted) == (3, 2, 1, 1)
     body = json.loads(del_route.calls.last.request.content)
     assert {r["parameters"]["Flight"] for r in body["requests"]} == {old}
+
+
+@respx.mock
+async def test_flight_reconcile_excludes_completed_flights_from_delete(
+    settings: FoundrySettings,
+) -> None:
+    """Phase-B split: a COMPLETED orphan (landedAt set, old, not airborne) is
+    left in the tenant for the archive asset; only the STUB orphan (no
+    landedAt) is deleted, and completed_skipped counts the one held back."""
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_positions_payload([_pos("abc123", on_ground=False, seen=now)], now)
+        )
+    )
+    keep = synthesize_flight_id("abc123", now - timedelta(minutes=30))  # airborne latest -> KEEP
+    completed_old = synthesize_flight_id("ddd444", now - timedelta(hours=48))  # completed -> SKIP
+    stub_old = synthesize_flight_id("eee555", now - timedelta(hours=48))  # stub -> DELETE
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"flightId": keep},
+                    {"flightId": completed_old, "landedAt": "2026-05-13T00:00:00Z"},
+                    {"flightId": stub_old},
+                ]
+            },
+        )
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    # orphans = {completed_old, stub_old} = 2; completed left for the archive
+    # asset (completed_skipped=1); only the stub deleted.
+    assert (result.orphans, result.completed_skipped, result.deleted, result.remaining) == (
+        2,
+        1,
+        1,
+        0,
+    )
+    # Invariant: orphans == completed_skipped + deleted + remaining.
+    assert result.orphans == result.completed_skipped + result.deleted + result.remaining
+    body = json.loads(del_route.calls.last.request.content)
+    sent = {r["parameters"]["Flight"] for r in body["requests"]}
+    assert sent == {stub_old}  # the completed flight is NOT deleted here
 
 
 @respx.mock

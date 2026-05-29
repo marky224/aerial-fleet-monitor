@@ -33,10 +33,14 @@ from dagster import (
 )
 
 from pipelines.assets import (
+    archive_and_tenant_disjoint,
+    archive_retention_enforced,
     case_detector,
     flight_plan_enrichment,
     foundry_aircraft_reconcile,
     foundry_cases_sync,
+    foundry_flight_archive,
+    foundry_flight_archive_purge,
     foundry_flight_enrichment,
     foundry_flight_reconcile,
     foundry_positions_sync,
@@ -108,6 +112,18 @@ foundry_flight_enrichment_job = define_asset_job(
 foundry_flight_reconcile_job = define_asset_job(
     name="foundry_flight_reconcile_job",
     selection=AssetSelection.assets(foundry_flight_reconcile),
+)
+
+
+foundry_flight_archive_job = define_asset_job(
+    name="foundry_flight_archive_job",
+    selection=AssetSelection.assets(foundry_flight_archive),
+)
+
+
+foundry_flight_archive_purge_job = define_asset_job(
+    name="foundry_flight_archive_purge_job",
+    selection=AssetSelection.assets(foundry_flight_archive_purge),
 )
 
 
@@ -297,6 +313,40 @@ foundry_flight_reconcile_schedule = ScheduleDefinition(
 )
 
 
+foundry_flight_archive_schedule = ScheduleDefinition(
+    name="foundry_flight_archive_schedule",
+    job=foundry_flight_archive_job,
+    # :50 past the hour — after the :45 reconcile (which leaves completed
+    # flights in the tenant for exactly this asset), so it reads a stable
+    # post-reconcile Flight set, and offset from every other foundry job.
+    cron_schedule="50 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :50 (Phase B): archive completed Foundry Flights (landed_at "
+        "older than the grace window) to the flights_archive/ cold store, then "
+        "delete them from Foundry — the sole path that removes completed "
+        "flights, archive-before-delete."
+    ),
+)
+
+
+foundry_flight_archive_purge_schedule = ScheduleDefinition(
+    name="foundry_flight_archive_purge_schedule",
+    job=foundry_flight_archive_purge_job,
+    # Daily at 03:15 UTC — off-peak, and offset from the hourly :50 archive so
+    # a purge never overlaps an archive write. Retention is day-granular, so a
+    # daily cadence is ample.
+    cron_schedule="15 3 * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Daily at 03:15 UTC (Phase B): drop flights_archive/ day-partition "
+        "directories older than 30 days (directory unlink, never DELETE+VACUUM)."
+    ),
+)
+
+
 foundry_flight_enrichment_schedule = ScheduleDefinition(
     name="foundry_flight_enrichment_schedule",
     job=foundry_flight_enrichment_job,
@@ -353,6 +403,8 @@ defs = Definitions(
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
         foundry_flight_reconcile,
+        foundry_flight_archive,
+        foundry_flight_archive_purge,
         foundry_cases_sync,
         flight_plan_enrichment,
         sf_case_push,
@@ -369,6 +421,8 @@ defs = Definitions(
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
         foundry_flight_reconcile_job,
+        foundry_flight_archive_job,
+        foundry_flight_archive_purge_job,
         foundry_cases_sync_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
@@ -383,6 +437,8 @@ defs = Definitions(
         foundry_aircraft_reconcile_schedule,
         foundry_flight_enrichment_schedule,
         foundry_flight_reconcile_schedule,
+        foundry_flight_archive_schedule,
+        foundry_flight_archive_purge_schedule,
         flight_plan_enrichment_schedule,
         case_detector_schedule,
         prune_stale_positions_schedule,
@@ -393,6 +449,10 @@ defs = Definitions(
         case_sync_retry_sensor,
         sf_case_sync_sensor,
         foundry_cases_sync_sensor,
+    ],
+    asset_checks=[
+        archive_and_tenant_disjoint,
+        archive_retention_enforced,
     ],
     resources={
         "postgres": postgres,
