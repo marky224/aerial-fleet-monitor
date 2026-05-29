@@ -23,8 +23,8 @@ from afm_foundry_sync.models import Position
 from afm_foundry_sync.ontology_writers import FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.sync_jobs import (
+    FlightLifecycleDetector,
     FoundrySyncSkipped,
-    TakeoffDetector,
     _dedupe_latest,
     enriched_sync_flights,
     full_sync_sites,
@@ -99,52 +99,108 @@ def test_synthesize_flight_id_is_icao_plus_unix_ts() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# TakeoffDetector
+# FlightLifecycleDetector (takeoff + landing edges)
 # --------------------------------------------------------------------------- #
+
+_T2 = datetime(2026, 5, 15, 12, 1, 0, tzinfo=UTC)
 
 
 def test_first_sighting_seeds_state_no_edge() -> None:
-    det = TakeoffDetector()
-    assert det.observe([_pos("abc123", on_ground=False, seen=_T0)]) == []
+    det = FlightLifecycleDetector()
+    edges = det.observe([_pos("abc123", on_ground=False, seen=_T0)])
+    assert edges.takeoffs == []
+    assert edges.landings == []
 
 
 def test_takeoff_edge_detected_on_ground_to_airborne() -> None:
-    det = TakeoffDetector()
+    det = FlightLifecycleDetector()
     det.observe([_pos("abc123", on_ground=True, seen=_T0)])
-    takeoffs = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    edges = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
 
-    assert len(takeoffs) == 1
-    assert takeoffs[0].icao24 == "abc123"
-    assert takeoffs[0].takeoff_ts == _T1
-    assert takeoffs[0].flight_id == synthesize_flight_id("abc123", _T1)
+    assert edges.landings == []
+    assert len(edges.takeoffs) == 1
+    assert edges.takeoffs[0].icao24 == "abc123"
+    assert edges.takeoffs[0].takeoff_ts == _T1
+    assert edges.takeoffs[0].flight_id == synthesize_flight_id("abc123", _T1)
 
 
-def test_no_edge_when_staying_airborne_or_landing() -> None:
-    det = TakeoffDetector()
+def test_no_takeoff_when_staying_airborne() -> None:
+    det = FlightLifecycleDetector()
     det.observe([_pos("abc123", on_ground=False, seen=_T0)])
-    assert det.observe([_pos("abc123", on_ground=False, seen=_T1)]) == []  # stays up
-    det.observe([_pos("def456", on_ground=False, seen=_T0)])
-    assert det.observe([_pos("def456", on_ground=True, seen=_T1)]) == []  # lands
+    edges = det.observe([_pos("abc123", on_ground=False, seen=_T1)])  # stays up
+    assert edges.takeoffs == []
+    assert edges.landings == []
 
 
-def test_takeoff_detector_seeds_from_prior_state() -> None:
-    """A detector seeded with prior on-ground state detects an edge on the
-    very first observe (the cross-restart path the asset relies on)."""
-    det = TakeoffDetector({"abc123": True})
-    takeoffs = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
-    assert len(takeoffs) == 1
-    assert takeoffs[0].flight_id == synthesize_flight_id("abc123", _T1)
+def test_landing_edge_stamps_the_open_leg_and_clears_it() -> None:
+    """A landing emits a Landing carrying the flight_id minted at the matching
+    takeoff (not a re-synthesis from the landing time), then clears the open
+    flight so a repeated on-ground tick is not a duplicate landing."""
+    det = FlightLifecycleDetector()
+    det.observe([_pos("abc123", on_ground=True, seen=_T0)])
+    takeoff_edges = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    open_fid = takeoff_edges.takeoffs[0].flight_id
+
+    edges = det.observe([_pos("abc123", on_ground=True, seen=_T2)])
+    assert edges.takeoffs == []
+    assert len(edges.landings) == 1
+    assert edges.landings[0].icao24 == "abc123"
+    assert edges.landings[0].flight_id == open_fid  # the minted leg, not a new synth
+    assert edges.landings[0].landed_at == _T2
+    # A subsequent on-ground tick is NOT a second landing (open flight cleared).
+    again = det.observe([_pos("abc123", on_ground=True, seen=_T2)])
+    assert again.landings == []
 
 
-def test_takeoff_detector_does_not_alias_prior_state() -> None:
-    prior = {"abc123": True}
-    det = TakeoffDetector(prior)
+def test_landing_without_known_takeoff_emits_no_landing() -> None:
+    """An aircraft first seen airborne (we never minted its flight_id) then
+    landing emits no Landing — we don't own a leg to stamp; enrichment +
+    reconcile handle it."""
+    det = FlightLifecycleDetector({"abc123": False})  # seeded airborne, no open flight
+    edges = det.observe([_pos("abc123", on_ground=True, seen=_T1)])
+    assert edges.takeoffs == []
+    assert edges.landings == []
+
+
+def test_full_lifecycle_round_trip() -> None:
+    det = FlightLifecycleDetector()
+    det.observe([_pos("abc123", on_ground=True, seen=_T0)])
+    t = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    assert len(t.takeoffs) == 1 and not t.landings
+    lz = det.observe([_pos("abc123", on_ground=True, seen=_T2)])
+    assert not lz.takeoffs and len(lz.landings) == 1
+    assert lz.landings[0].flight_id == t.takeoffs[0].flight_id
+
+
+def test_detector_seeds_from_prior_on_ground_state() -> None:
+    """Seeded with prior on-ground state, a takeoff is detected on the very
+    first observe (the cross-restart path the asset relies on)."""
+    det = FlightLifecycleDetector({"abc123": True})
+    edges = det.observe([_pos("abc123", on_ground=False, seen=_T1)])
+    assert len(edges.takeoffs) == 1
+    assert edges.takeoffs[0].flight_id == synthesize_flight_id("abc123", _T1)
+
+
+def test_detector_seeds_from_prior_open_flight_for_landing() -> None:
+    """Seeded with a prior open-flight map (the cross-restart path), a landing
+    stamps that persisted leg rather than re-synthesizing it."""
+    det = FlightLifecycleDetector({"abc123": False}, {"abc123": "abc123-1747000000"})
+    edges = det.observe([_pos("abc123", on_ground=True, seen=_T1)])
+    assert len(edges.landings) == 1
+    assert edges.landings[0].flight_id == "abc123-1747000000"
+
+
+def test_detector_does_not_alias_prior_state() -> None:
+    prior_og = {"abc123": True}
+    prior_of = {"abc123": "abc123-1747000000"}
+    det = FlightLifecycleDetector(prior_og, prior_of)
     det.observe([_pos("abc123", on_ground=False, seen=_T1)])
-    assert prior == {"abc123": True}  # caller's dict untouched
+    assert prior_og == {"abc123": True}  # caller's dicts untouched
+    assert prior_of == {"abc123": "abc123-1747000000"}
 
 
-def test_takeoff_detector_state_for_bounds_to_given_icao24s() -> None:
-    det = TakeoffDetector()
+def test_detector_state_for_bounds_to_given_icao24s() -> None:
+    det = FlightLifecycleDetector()
     det.observe(
         [
             _pos("abc123", on_ground=True, seen=_T0),
@@ -155,6 +211,15 @@ def test_takeoff_detector_state_for_bounds_to_given_icao24s() -> None:
     assert det.state_for(["abc123"]) == {"abc123": True}
     assert det.state_for(["abc123", "def456"]) == {"abc123": True, "def456": False}
     assert det.state_for(["ghost"]) == {}  # absent → dropped, not error
+
+
+def test_detector_open_flight_state_for_bounds_to_given_icao24s() -> None:
+    det = FlightLifecycleDetector()
+    det.observe([_pos("abc123", on_ground=True, seen=_T0)])
+    edges = det.observe([_pos("abc123", on_ground=False, seen=_T1)])  # takeoff → open flight
+    fid = edges.takeoffs[0].flight_id
+    assert det.open_flight_state_for(["abc123"]) == {"abc123": fid}
+    assert det.open_flight_state_for(["def456"]) == {}  # absent icao24 dropped
 
 
 # --------------------------------------------------------------------------- #
@@ -224,7 +289,7 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
     """
     batch_route = respx.post(_AIRCRAFT_BATCH).mock(return_value=httpx.Response(200, json={}))
     flight_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
-    det = TakeoffDetector()
+    det = FlightLifecycleDetector()
 
     async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
         # Tick 1: abc123 on the ground — seeds state, no edge.
@@ -255,7 +320,66 @@ async def test_takeoff_detected_across_runs_with_caller_owned_detector(
     assert r2.flights_written == 1
     # Post-run detector state is returned, bounded to the run's batch.
     assert r2.detector_state == {"abc123": False}
+    # Open-flight map tracks the minted leg so the matching landing can stamp it.
+    assert r2.open_flight_state == {"abc123": synthesize_flight_id("abc123", _T1)}
     assert b"abc123-" in flight_route.calls.last.request.content  # synthesized PK
+
+
+@respx.mock
+async def test_landing_stamps_open_flight_across_runs(
+    settings: FoundrySettings,
+) -> None:
+    """Full lifecycle through the positions sync: a takeoff mints + tracks a
+    Flight, then a later on-ground tick stamps THAT leg landed via the partial
+    (enrichment-preserving) upsert, and the open-flight map clears."""
+    _T3 = datetime(2026, 5, 15, 12, 2, 0, tzinfo=UTC)
+    respx.post(_AIRCRAFT_BATCH).mock(return_value=httpx.Response(200, json={}))
+    flight_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        det = FlightLifecycleDetector()
+        # Tick 1: on ground (seed).
+        respx.get(_POS_URL).mock(
+            return_value=httpx.Response(
+                200, json=_positions_payload([_pos("abc123", on_ground=True, seen=_T1)], _T1)
+            )
+        )
+        await incremental_sync_positions(client, writer, detector=det)
+        # Tick 2: airborne → takeoff (create-only upsert).
+        respx.get(_POS_URL).mock(
+            return_value=httpx.Response(
+                200, json=_positions_payload([_pos("abc123", on_ground=False, seen=_T2)], _T2)
+            )
+        )
+        await incremental_sync_positions(client, writer, detector=det)
+        # Tick 3: back on ground → landing stamp.
+        respx.get(_POS_URL).mock(
+            return_value=httpx.Response(
+                200, json=_positions_payload([_pos("abc123", on_ground=True, seen=_T3)], _T3)
+            )
+        )
+        result = await incremental_sync_positions(client, writer, detector=det)
+
+    fid = synthesize_flight_id("abc123", _T2)
+    assert result.landings_detected == 1
+    assert result.flights_landed == 1
+    # The flight route saw the takeoff create (status=departed) AND the landing
+    # stamp (status=landed); identify the stamp by content, not call position.
+    sent = [
+        json.loads(call.request.content)["requests"][0]["parameters"] for call in flight_route.calls
+    ]
+    stamps = [p for p in sent if p.get("status") == "landed"]
+    assert len(stamps) == 1
+    params = stamps[0]
+    assert params["flightId"] == fid
+    assert params["landedAt"] == "2026-05-15T12:02:00Z"
+    assert params["currentStage"] == "landed"
+    # Clobber-avoidance: the stamp omits the enrichment fields entirely.
+    assert "statusTimeline" not in params
+    assert "trail2h" not in params
+    # Open-flight map cleared after landing; on-ground state recorded.
+    assert result.open_flight_state == {}
+    assert result.detector_state == {"abc123": True}
 
 
 @respx.mock

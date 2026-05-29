@@ -313,7 +313,7 @@ class Site(BaseModel):
 class Flight(BaseModel):
     """Foundry Ontology object: a synthesized flight leg.
 
-    The PK is minted by ``sync_jobs.TakeoffDetector`` on the first observed
+    The PK is minted by ``sync_jobs.FlightLifecycleDetector`` on the first observed
     on-ground->airborne edge for an airframe; identity/routing/status are
     enriched from ``FlightDetail`` (+ trail) via a later modify-or-create
     re-upsert. Only the three takeoff-synthesized fields are non-optional;

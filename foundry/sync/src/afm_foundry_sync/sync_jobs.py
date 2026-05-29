@@ -16,11 +16,15 @@ writes) into runnable jobs. It owns:
     ``FoundrySyncSkipped``. A 4xx from a malformed Action payload, or any
     other exception, is a *defect* and propagates unchanged.
   - ``incremental_sync_positions`` / ``full_sync_sites`` — the two jobs.
-  - ``TakeoffDetector`` — stateful on-ground→airborne edge detection that
-    synthesizes ``Flight`` primary keys. **Now wired** (Flight schema +
-    ``upsert-flight`` proven 2026-05-16): a detected takeoff triggers a
-    *create-only* ``upsert_flight_batch`` of the takeoff-shaped Flight
-    (``transforms.takeoff_to_flight``).
+  - ``FlightLifecycleDetector`` — stateful on-ground edge detection over the
+    full takeoff→landing lifecycle that synthesizes ``Flight`` primary keys.
+    A detected *takeoff* (on-ground→airborne) triggers a *create-only*
+    ``upsert_flight_batch`` of the takeoff-shaped Flight
+    (``transforms.takeoff_to_flight``); a detected *landing* (airborne→
+    on-ground) triggers a *partial* ``stamp_flight_landed_batch`` that sets
+    ``landed_at`` / ``status='landed'`` on the tracked open leg without
+    clobbering its enrichment (the modify path preserves omitted params —
+    verified live 2026-05-29).
   - ``enriched_sync_flights`` — the deferred FlightDetail/trail backfill,
     a per-icao24 ``/v1/flights`` (+ 2h trail) fanout off a slower cadence
     (hourly), out of scope for the 30s positions tick. ``/v1/flights`` is
@@ -30,14 +34,14 @@ writes) into runnable jobs. It owns:
 Cursor & detector state are *returned* (``SyncResult.cursor`` /
 ``SyncResult.detector_state``), never persisted here: this module stays
 I/O-pure for unit testing. The Dagster asset owns persistence — it seeds
-a fresh ``TakeoffDetector(prior_state)`` from its prior materialization
-metadata each tick and writes the post-run state back, so detector state
-survives process restarts (an in-process-only detector would reset and
-miss every cross-restart edge). ``state_for`` bounds the persisted map to
-aircraft seen *this run* (a >1-tick absence is treated as a fresh
-sighting — acceptable per the detector's "first sighting only seeds"
-rule, and it keeps the metadata blob proportional to live traffic, not
-to every icao24 ever observed).
+a fresh ``FlightLifecycleDetector(prior_on_ground, prior_open_flight)`` from
+its prior materialization metadata each tick and writes the post-run state
+back, so detector state survives process restarts (an in-process-only
+detector would reset and miss every cross-restart edge). ``state_for`` /
+``open_flight_state_for`` bound the persisted maps to aircraft seen *this
+run* (a >1-tick absence is treated as a fresh sighting — acceptable per the
+detector's "first sighting only seeds" rule, and it keeps the metadata blob
+proportional to live traffic, not to every icao24 ever observed).
 """
 
 from __future__ import annotations
@@ -54,7 +58,7 @@ from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
 from afm_foundry_sync.models import Flight, FlightDetail, Position
-from afm_foundry_sync.ontology_writers import BatchResult, FoundryWriter
+from afm_foundry_sync.ontology_writers import BatchResult, FlightLandedStamp, FoundryWriter
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
     case_for_sync_to_case,
@@ -86,11 +90,13 @@ class SyncResult:
 
     ``cursor`` is the value the caller should persist and pass back as
     ``since`` next run (positions only; ``None`` for the full site sync).
-    ``takeoffs_detected`` counts state-machine edges this run;
-    ``flights_written`` is the create-only Flight upsert count from those
-    edges (≤ takeoffs_detected; equal on full success). ``detector_state``
-    is the post-run on-ground map the caller persists and seeds next
-    tick's detector with (positions w/ detector only; ``None`` otherwise).
+    ``takeoffs_detected`` / ``landings_detected`` count the lifecycle edges
+    this run; ``flights_written`` is the create-only Flight upsert count from
+    takeoffs and ``flights_landed`` the landing-stamp count (each ≤ its edge
+    count; equal on full success). ``detector_state`` is the post-run
+    on-ground map and ``open_flight_state`` the post-run icao24→open-flight
+    map; the caller persists both and seeds next tick's detector with them
+    (positions w/ detector only; ``None`` otherwise).
     """
 
     attempted: int
@@ -99,7 +105,10 @@ class SyncResult:
     cursor: datetime | None = None
     takeoffs_detected: int = 0
     flights_written: int = 0
+    landings_detected: int = 0
+    flights_landed: int = 0
     detector_state: dict[str, bool] | None = None
+    open_flight_state: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,21 +284,60 @@ class Takeoff:
     flight_id: str
 
 
-class TakeoffDetector:
-    """Per-icao24 on-ground edge detector.
+@dataclass(frozen=True, slots=True)
+class Landing:
+    """A detected airborne→on-ground transition for a tracked open flight.
 
-    A transition from a previously-observed ``on_ground=True`` to
-    ``on_ground=False`` is a takeoff; ``takeoff_ts`` is that row's
-    ``last_seen_at``. First sighting of an aircraft only seeds state (no
-    edge — we cannot infer a transition without a prior sample). State is
-    caller-owned (see module docstring): the Dagster asset seeds a fresh
-    instance from persisted state each tick and writes the post-run state
-    back, so edges survive process restarts.
+    ``flight_id`` is the PK minted at this aircraft's most recent takeoff
+    (carried in the detector's open-flight map), so the landing stamps the
+    *correct* leg rather than re-synthesizing from the landing timestamp.
+    ``landed_at`` is the on-ground row's ``last_seen_at``.
     """
 
-    def __init__(self, prior_on_ground: dict[str, bool] | None = None) -> None:
+    icao24: str
+    flight_id: str
+    landed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DetectedEdges:
+    """The takeoff + landing edges from one ``observe`` pass over a batch."""
+
+    takeoffs: list[Takeoff]
+    landings: list[Landing]
+
+
+class FlightLifecycleDetector:
+    """Per-icao24 on-ground edge detector for the full takeoff→landing lifecycle.
+
+    A previously-observed ``on_ground=True`` → ``on_ground=False`` is a
+    *takeoff* (``takeoff_ts`` = that row's ``last_seen_at``, minting a Flight
+    PK); the reverse ``on_ground=False`` → ``on_ground=True`` is a *landing*.
+    First sighting of an aircraft only seeds state (no edge — we cannot infer
+    a transition without a prior sample).
+
+    Two state maps, both caller-owned (see module docstring) and persisted to
+    the asset's materialization metadata each tick so edges survive process
+    restarts:
+
+      - ``_on_ground`` — the last observed on-ground bool per icao24 (drives
+        edge detection).
+      - ``_open_flight`` — icao24 → the flight_id minted at its most recent
+        takeoff. Set on a takeoff edge; consumed + cleared on the matching
+        landing edge so the landing stamps that exact leg. A landing for an
+        icao24 with no open flight (we never saw its takeoff — e.g. it was
+        already airborne when tracking began) emits no Landing: we don't own
+        a flight_id to stamp, and the hourly enrichment + reconcile handle it.
+    """
+
+    def __init__(
+        self,
+        prior_on_ground: dict[str, bool] | None = None,
+        prior_open_flight: dict[str, str] | None = None,
+    ) -> None:
         # Copy: callers pass deserialized metadata we must not alias/mutate.
         self._on_ground: dict[str, bool] = dict(prior_on_ground or {})
+        self._open_flight: dict[str, str] = dict(prior_open_flight or {})
 
     def state_for(self, icao24s: Iterable[str]) -> dict[str, bool]:
         """On-ground state restricted to the given icao24s (the run's batch).
@@ -298,22 +346,44 @@ class TakeoffDetector:
         are dropped, so a >1-tick gap re-seeds as a first sighting (no
         edge) rather than growing the map unboundedly.
         """
-        return {k: self._on_ground[k] for k in set(icao24s) if k in self._on_ground}
+        seen = set(icao24s)
+        return {k: self._on_ground[k] for k in seen if k in self._on_ground}
 
-    def observe(self, positions: Iterable[Position]) -> list[Takeoff]:
+    def open_flight_state_for(self, icao24s: Iterable[str]) -> dict[str, str]:
+        """Open-flight map restricted to the given icao24s (bounds the blob).
+
+        Same discipline as ``state_for``: an aircraft absent this run drops
+        its open-flight entry (a flight whose aircraft vanishes mid-air loses
+        landing tracking — acceptable; the TTL reconcile and enrichment 404
+        handle it), keeping the persisted map proportional to live traffic.
+        """
+        seen = set(icao24s)
+        return {k: self._open_flight[k] for k in seen if k in self._open_flight}
+
+    def observe(self, positions: Iterable[Position]) -> DetectedEdges:
         takeoffs: list[Takeoff] = []
+        landings: list[Landing] = []
         for p in positions:
             prev = self._on_ground.get(p.icao24)
             if prev is True and p.on_ground is False:
+                flight_id = synthesize_flight_id(p.icao24, p.last_seen_at)
                 takeoffs.append(
-                    Takeoff(
-                        icao24=p.icao24,
-                        takeoff_ts=p.last_seen_at,
-                        flight_id=synthesize_flight_id(p.icao24, p.last_seen_at),
-                    )
+                    Takeoff(icao24=p.icao24, takeoff_ts=p.last_seen_at, flight_id=flight_id)
                 )
+                # Track the open flight so the matching landing stamps this leg.
+                self._open_flight[p.icao24] = flight_id
+            elif prev is False and p.on_ground is True:
+                open_flight_id = self._open_flight.pop(p.icao24, None)
+                if open_flight_id is not None:
+                    landings.append(
+                        Landing(
+                            icao24=p.icao24,
+                            flight_id=open_flight_id,
+                            landed_at=p.last_seen_at,
+                        )
+                    )
             self._on_ground[p.icao24] = p.on_ground
-        return takeoffs
+        return DetectedEdges(takeoffs=takeoffs, landings=landings)
 
 
 async def incremental_sync_positions(
@@ -321,18 +391,25 @@ async def incremental_sync_positions(
     writer: FoundryWriter,
     *,
     since: datetime | None = None,
-    detector: TakeoffDetector | None = None,
+    detector: FlightLifecycleDetector | None = None,
 ) -> SyncResult:
     """Sync /v1/positions/live → Aircraft Ontology objects.
 
     ``since`` is the previous run's cursor; the v1 API returns the full
     live set (no server-side delta), so it is advisory/logged for now and
     the cursor returned is the response ``server_time``. If a ``detector``
-    is supplied, its on-ground→airborne edges trigger a *create-only*
-    ``upsert_flight_batch`` (takeoff-shaped Flight per
-    ``takeoff_to_flight``; FlightDetail enrichment is deferred — see module
-    docstring) and the post-run detector state is returned for the caller
-    to persist and re-seed next tick.
+    is supplied, its lifecycle edges drive two Flight writes:
+
+      - **takeoffs** → a *create-only* ``upsert_flight_batch`` (takeoff-shaped
+        Flight per ``takeoff_to_flight``; FlightDetail enrichment is deferred,
+        see module docstring).
+      - **landings** → a *partial* ``stamp_flight_landed_batch`` that sets
+        ``landed_at`` / ``status='landed'`` on the open leg WITHOUT clobbering
+        the route / timeline / trail enrichment already on the object
+        (the modify path preserves omitted params — verified live 2026-05-29).
+
+    The post-run on-ground + open-flight maps are returned for the caller to
+    persist and re-seed next tick.
     """
     response = await client.fetch_positions_live()
     deduped = _dedupe_latest(response.items)
@@ -344,9 +421,11 @@ async def incremental_sync_positions(
         server_time=response.server_time.isoformat(),
     )
 
-    takeoffs = detector.observe(deduped) if detector is not None else []
-    if takeoffs:
-        logger.info("foundry_takeoffs_detected", count=len(takeoffs))
+    edges = detector.observe(deduped) if detector is not None else DetectedEdges([], [])
+    if edges.takeoffs:
+        logger.info("foundry_takeoffs_detected", count=len(edges.takeoffs))
+    if edges.landings:
+        logger.info("foundry_landings_detected", count=len(edges.landings))
 
     batch: BatchResult = await writer.upsert_aircraft_batch(
         [position_to_aircraft(p) for p in deduped]
@@ -354,17 +433,37 @@ async def incremental_sync_positions(
     # Create-only Flight write off detected takeoffs. Empty list → no-op
     # (upsert_flight_batch short-circuits), so this is safe with no detector.
     flight_batch: BatchResult = await writer.upsert_flight_batch(
-        [takeoff_to_flight(t.flight_id, t.icao24, t.takeoff_ts) for t in takeoffs]
+        [takeoff_to_flight(t.flight_id, t.icao24, t.takeoff_ts) for t in edges.takeoffs]
+    )
+    # Partial landing stamp off detected landings (preserves enrichment).
+    # Empty list → no-op (stamp_flight_landed_batch short-circuits).
+    landed_batch: BatchResult = await writer.stamp_flight_landed_batch(
+        [
+            FlightLandedStamp(
+                flight_id=lz.flight_id,
+                icao24=lz.icao24,
+                takeoff_ts=parse_flight_id(lz.flight_id)[1],
+                landed_at=lz.landed_at,
+            )
+            for lz in edges.landings
+        ]
     )
     return SyncResult(
         attempted=batch.attempted,
         succeeded=batch.succeeded,
         failed=batch.failed,
         cursor=response.server_time,
-        takeoffs_detected=len(takeoffs),
+        takeoffs_detected=len(edges.takeoffs),
         flights_written=flight_batch.succeeded,
+        landings_detected=len(edges.landings),
+        flights_landed=landed_batch.succeeded,
         detector_state=(
             detector.state_for(p.icao24 for p in deduped) if detector is not None else None
+        ),
+        open_flight_state=(
+            detector.open_flight_state_for(p.icao24 for p in deduped)
+            if detector is not None
+            else None
         ),
     )
 
@@ -743,7 +842,7 @@ async def enriched_sync_flights(
 async def run_positions_sync(
     *,
     since: datetime | None = None,
-    detector: TakeoffDetector | None = None,
+    detector: FlightLifecycleDetector | None = None,
 ) -> SyncResult:
     """Entrypoint the Dagster positions asset calls. Skip-guarded.
 
@@ -870,7 +969,6 @@ __all__ = [
     "ReconcileResult",
     "SyncResult",
     "Takeoff",
-    "TakeoffDetector",
     "enriched_sync_flights",
     "full_sync_sites",
     "guarded_sync",

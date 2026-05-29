@@ -39,14 +39,18 @@ run. The v1 API returns the full live snapshot (no server-side delta), so
 ``since`` is advisory/logged for now — the mechanism is wired so a future
 delta endpoint needs no asset change.
 
-Takeoff detection (``afm_foundry_sync.sync_jobs.TakeoffDetector``) is
-wired into ``foundry_positions_sync``: a detected on-ground→airborne edge
-triggers a create-only ``Flight`` upsert. The detector is stateful across
-ticks but a per-process instance would reset on restart and miss every
-cross-restart edge, so its on-ground map is persisted to this asset's
-materialization metadata (same mechanism as the cursor, stored as a JSON
-string) and a fresh ``TakeoffDetector`` is seeded from it each run.
-FlightDetail enrichment runs out-of-band in ``foundry_flight_enrichment``
+Flight lifecycle detection (``afm_foundry_sync.sync_jobs.
+FlightLifecycleDetector``) is wired into ``foundry_positions_sync``: a
+detected on-ground→airborne edge triggers a create-only ``Flight`` upsert,
+and the reverse airborne→on-ground edge triggers a *partial*
+landing stamp (``landed_at`` / ``status='landed'``) on the tracked open leg
+without clobbering its enrichment. The detector is stateful across ticks but
+a per-process instance would reset on restart and miss every cross-restart
+edge, so BOTH its maps — the on-ground map and the open-flight map (icao24 →
+open flight_id, needed to stamp the right leg at landing) — are persisted to
+this asset's materialization metadata (same mechanism as the cursor, each a
+JSON string) and a fresh ``FlightLifecycleDetector`` is seeded from them each
+run. FlightDetail enrichment runs out-of-band in ``foundry_flight_enrichment``
 (the per-icao24 ``/v1/flights`` fanout — out of scope for the 30s tick).
 """
 
@@ -57,11 +61,11 @@ from datetime import datetime
 from afm_foundry_sync.sync_jobs import (
     CaseSyncResult,
     FlightEnrichmentResult,
+    FlightLifecycleDetector,
     FlightReconcileResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
-    TakeoffDetector,
     run_aircraft_reconcile,
     run_cases_sync,
     run_flight_enrichment,
@@ -80,6 +84,7 @@ from dagster import (
 
 _CURSOR_KEY = "cursor"
 _DETECTOR_STATE_KEY = "detector_state"
+_OPEN_FLIGHT_STATE_KEY = "open_flight_state"
 
 
 def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
@@ -101,9 +106,9 @@ def _prior_cursor(context: AssetExecutionContext) -> datetime | None:
 
 
 def _prior_detector_state(context: AssetExecutionContext) -> dict[str, bool] | None:
-    """Read the previous run's TakeoffDetector on-ground map (JSON string)
-    from this asset's latest materialization metadata. Any miss returns
-    None — the detector then starts empty (first sightings only seed).
+    """Read the previous run's FlightLifecycleDetector on-ground map (JSON
+    string) from this asset's latest materialization metadata. Any miss
+    returns None — the detector then starts empty (first sightings only seed).
     """
     try:
         event = context.instance.get_latest_materialization_event(context.asset_key)
@@ -118,6 +123,29 @@ def _prior_detector_state(context: AssetExecutionContext) -> dict[str, bool] | N
         return {str(k): bool(v) for k, v in raw.items()}
     except (ValueError, AttributeError) as exc:
         context.log.warning("could not read prior detector state: %s", exc)
+        return None
+
+
+def _prior_open_flight_state(context: AssetExecutionContext) -> dict[str, str] | None:
+    """Read the previous run's open-flight map (icao24 → open flight_id) from
+    this asset's latest materialization metadata. Mirrors
+    ``_prior_detector_state`` exactly — same JSON-string round-trip — so the
+    landing detector can stamp the correct leg across the 120s ticks (and
+    across process restarts). Any miss returns None (no open flights tracked).
+    """
+    try:
+        event = context.instance.get_latest_materialization_event(context.asset_key)
+        if event is None or event.asset_materialization is None:
+            return None
+        entry = event.asset_materialization.metadata.get(_OPEN_FLIGHT_STATE_KEY)
+        if entry is None:
+            return None
+        raw = json.loads(str(entry.value))
+        if not isinstance(raw, dict):
+            return None
+        return {str(k): str(v) for k, v in raw.items()}
+    except (ValueError, AttributeError) as exc:
+        context.log.warning("could not read prior open-flight state: %s", exc)
         return None
 
 
@@ -140,6 +168,8 @@ def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
         "failed": MetadataValue.int(result.failed),
         "takeoffs_detected": MetadataValue.int(result.takeoffs_detected),
         "flights_written": MetadataValue.int(result.flights_written),
+        "landings_detected": MetadataValue.int(result.landings_detected),
+        "flights_landed": MetadataValue.int(result.flights_landed),
     }
     if result.cursor is not None:
         meta[_CURSOR_KEY] = MetadataValue.text(result.cursor.isoformat())
@@ -147,6 +177,8 @@ def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
         # JSON string (not MetadataValue.json) so read-back uses the same
         # entry.value access path as the cursor — no Dagster-version risk.
         meta[_DETECTOR_STATE_KEY] = MetadataValue.text(json.dumps(result.detector_state))
+    if result.open_flight_state is not None:
+        meta[_OPEN_FLIGHT_STATE_KEY] = MetadataValue.text(json.dumps(result.open_flight_state))
     return meta
 
 
@@ -157,7 +189,9 @@ def _result_metadata(result: SyncResult) -> dict[str, MetadataValue]:
 )
 def foundry_positions_sync(context: AssetExecutionContext) -> MaterializeResult:
     since = _prior_cursor(context)
-    detector = TakeoffDetector(_prior_detector_state(context))
+    detector = FlightLifecycleDetector(
+        _prior_detector_state(context), _prior_open_flight_state(context)
+    )
     try:
         result = asyncio.run(run_positions_sync(since=since, detector=detector))
     except FoundrySyncSkipped as exc:

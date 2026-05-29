@@ -17,11 +17,11 @@ import pytest
 from afm_foundry_sync.sync_jobs import (
     CaseSyncResult,
     FlightEnrichmentResult,
+    FlightLifecycleDetector,
     FlightReconcileResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
-    TakeoffDetector,
 )
 from dagster import MaterializeResult, build_asset_context
 
@@ -101,10 +101,55 @@ def test_positions_sync_surfaces_flights_written_and_detector_state(
     assert json.loads(md["detector_state"].value) == {"abc123": False, "def456": True}
 
 
+def test_positions_sync_surfaces_landings_and_open_flight_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The landing counts surface as metadata, and the open-flight map is
+    persisted (as a JSON string, like detector_state) so the next tick can
+    stamp the right leg at landing across the 120s ticks + restarts."""
+
+    async def _ok(**_kw: object) -> SyncResult:
+        return SyncResult(
+            attempted=4,
+            succeeded=4,
+            cursor=datetime(2026, 5, 16, 1, 0, 0, tzinfo=UTC),
+            takeoffs_detected=1,
+            flights_written=1,
+            landings_detected=1,
+            flights_landed=1,
+            detector_state={"abc123": True, "def456": False},
+            open_flight_state={"def456": "def456-1747000000"},
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_positions_sync", _ok)
+
+    md = foundry_sync.foundry_positions_sync(build_asset_context()).metadata or {}
+    assert md["landings_detected"].value == 1
+    assert md["flights_landed"].value == 1
+    assert json.loads(md["open_flight_state"].value) == {"def456": "def456-1747000000"}
+
+
+def test_positions_sync_omits_open_flight_state_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No detector (or detector-less result) → open_flight_state is None and
+    the writer guards on None, so the key is absent (next tick seeds empty)."""
+
+    async def _ok(**_kw: object) -> SyncResult:
+        return SyncResult(attempted=1, succeeded=1)
+
+    monkeypatch.setattr(foundry_sync, "run_positions_sync", _ok)
+
+    md = foundry_sync.foundry_positions_sync(build_asset_context()).metadata or {}
+    assert "open_flight_state" not in md
+    assert md["landings_detected"].value == 0
+    assert md["flights_landed"].value == 0
+
+
 def test_positions_sync_seeds_a_detector_into_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The asset must construct + pass a TakeoffDetector (seeded from prior
+    """The asset must construct + pass a FlightLifecycleDetector (seeded from prior
     metadata) so cross-tick edges are observable."""
     captured: dict[str, object] = {}
 
@@ -116,7 +161,7 @@ def test_positions_sync_seeds_a_detector_into_run(
 
     foundry_sync.foundry_positions_sync(build_asset_context())
 
-    assert isinstance(captured.get("detector"), TakeoffDetector)
+    assert isinstance(captured.get("detector"), FlightLifecycleDetector)
 
 
 def test_sites_sync_does_not_emit_detector_state(
