@@ -84,6 +84,25 @@ class BatchResult:
     failed: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class FlightLandedStamp:
+    """A real-time landing edge to stamp onto an existing Flight (Phase A2).
+
+    Carries only the identity (``flight_id`` + its parsed ``icao24`` /
+    ``takeoff_ts``) and the landing moment. ``stamp_flight_landed_batch``
+    turns this into a *partial* upsert that sets ``landed_at`` /
+    ``status='landed'`` / ``current_stage='landed'`` and **omits** every
+    enrichment field, so the route / status_timeline / trail_2h / open-cases
+    already on the object are preserved (the modify-or-create Action leaves
+    omitted params unchanged — verified against the live tenant 2026-05-29).
+    """
+
+    flight_id: str
+    icao24: str
+    takeoff_ts: datetime
+    landed_at: datetime
+
+
 def _camel(name: str) -> str:
     """snake_case → camelCase. Identity for single-token names (icao24, position).
 
@@ -316,6 +335,7 @@ class FoundryWriter:
         self._action_site = settings.FOUNDRY_ACTION_UPSERT_SITE
         self._action_flight = settings.FOUNDRY_ACTION_UPSERT_FLIGHT
         self._action_delete_aircraft = settings.FOUNDRY_ACTION_DELETE_AIRCRAFT
+        self._action_delete_flight = settings.FOUNDRY_ACTION_DELETE_FLIGHT
         self._action_case = settings.FOUNDRY_ACTION_UPSERT_CASE
         self._action_delete_case = settings.FOUNDRY_ACTION_DELETE_CASE
         self._client = httpx.AsyncClient(
@@ -446,6 +466,60 @@ class FoundryWriter:
             if not page_token:
                 break
         return pks
+
+    async def delete_flight_batch(self, flight_ids: list[str]) -> BatchResult:
+        """Delete a batch of Flights by flight_id. No-op on an empty list.
+
+        Same shape as ``delete_aircraft_batch`` / ``delete_case_batch``: the
+        ``delete-flight`` Action's single parameter key is the PascalCase
+        object-type name ``Flight`` (verified against the live tenant —
+        param ``Flight``, required, object-ref Flight), distinct from the
+        lowercase ``flight`` upsert object-locator, so it is NOT routed
+        through ``_camel``; the literal key passes through ``_apply_batch``
+        unchanged. Used by the tenant Flight-reconcile (Phase A) to evict
+        completed/departed flights the upsert-only path never removes.
+        """
+        if not flight_ids:
+            return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(
+            self._action_delete_flight, [{"Flight": pk} for pk in flight_ids]
+        )
+
+    async def stamp_flight_landed_batch(self, stamps: list[FlightLandedStamp]) -> BatchResult:
+        """Stamp ``landed_at`` + ``status='landed'`` on existing Flights (Phase A2).
+
+        A landing edge is detected in the positions tick (no per-flight
+        ``/v1/flights`` fetch), so unlike ``upsert_flight_batch`` this does
+        NOT route through ``flight_params`` — that serializer always emits
+        ``status_timeline`` / ``trail_2h`` / ``open_case_*``, which an
+        enrichment-less stamp would clobber to empty. Instead it sends a
+        **minimal partial upsert** through the same modify-or-create
+        ``upsert-flight`` Action: the PK (twice — ``flight_id`` param +
+        ``flight`` locator), ``icao24``, ``takeoff_ts``, and the three
+        lifecycle fields. Every omitted param (route, registration, timeline,
+        trail, cases) is left unchanged by the modify path — verified against
+        the live tenant 2026-05-29 (partial upsert preserved origin / callsign
+        / status_timeline / trail_2h while applying the landing). No-op on an
+        empty list.
+        """
+        if not stamps:
+            return BatchResult(attempted=0, succeeded=0)
+        param_dicts = [
+            {
+                _camel(k): v
+                for k, v in {
+                    "flight_id": s.flight_id,
+                    "flight": s.flight_id,
+                    "icao24": s.icao24,
+                    "takeoff_ts": _iso_utc(s.takeoff_ts),
+                    "landed_at": _iso_utc(s.landed_at),
+                    "status": "landed",
+                    "current_stage": "landed",
+                }.items()
+            }
+            for s in stamps
+        ]
+        return await self._apply_batch(self._action_flight, param_dicts)
 
     async def upsert_case_batch(self, cases: list[Case]) -> BatchResult:
         """Upsert a batch of Cases. No-op (no HTTP call) on an empty list."""

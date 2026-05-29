@@ -10,7 +10,7 @@ Flight (its object type stays TBD); Case lands in Phase 05.
 
 Flight has two construction paths, mirroring the modify-or-create write
 model: ``takeoff_to_flight`` builds the minimal create payload from the
-synthesized identity that ``sync_jobs.TakeoffDetector`` mints (passed as
+synthesized identity that ``sync_jobs.FlightLifecycleDetector`` mints (passed as
 primitives, not a ``Takeoff`` object, to keep this module decoupled from
 the sync_jobs orchestration layer); ``flight_detail_to_flight`` builds the
 full enriched payload from a later ``/v1/flights`` + trail fetch.
@@ -143,7 +143,7 @@ def takeoff_to_flight(flight_id: str, icao24: str, takeoff_ts: datetime) -> Flig
     """Build the minimal create payload from a detected takeoff edge.
 
     Takes the synthesized identity as primitives (the values
-    ``sync_jobs.TakeoffDetector`` produces) rather than importing the
+    ``sync_jobs.FlightLifecycleDetector`` produces) rather than importing the
     ``Takeoff`` type, so transforms stays a leaf module under sync_jobs.
 
     A detected on-ground->airborne edge *is* a departure at ``takeoff_ts``,

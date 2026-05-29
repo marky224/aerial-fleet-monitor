@@ -20,6 +20,7 @@ from afm_foundry_sync.models import (
     TrailPoint,
 )
 from afm_foundry_sync.ontology_writers import (
+    FlightLandedStamp,
     FoundryWriter,
     _camel,
     aircraft_params,
@@ -562,6 +563,60 @@ async def test_list_aircraft_pks_retries_on_503_then_succeeds(
 
     assert pks == set()
     assert route.call_count == 2  # transient_retry covers the GET too
+
+
+# ---------------------------------------------------------------------------
+# Landing stamp (Phase A2): partial upsert that must NOT clobber enrichment
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_stamp_flight_landed_batch_sends_minimal_partial_upsert(
+    settings: FoundrySettings,
+) -> None:
+    """The landing stamp goes through the upsert-flight (modify-or-create)
+    Action carrying ONLY identity + the three lifecycle fields. The
+    clobber-avoidance contract: it must NOT send status_timeline / trail_2h /
+    open_case_* (which flight_params always emits) — those stay as enrichment
+    left them (verified against the live tenant 2026-05-29). camelCase keys,
+    PK sent twice (flightId param + flight locator)."""
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    stamp = FlightLandedStamp(
+        flight_id="abc123-1748480400",
+        icao24="abc123",
+        takeoff_ts=datetime(2026, 5, 29, 1, 0, 0, tzinfo=UTC),
+        landed_at=datetime(2026, 5, 29, 3, 30, 0, tzinfo=UTC),
+    )
+    async with FoundryWriter(settings) as w:
+        result = await w.stamp_flight_landed_batch([stamp])
+
+    assert (result.attempted, result.succeeded) == (1, 1)
+    params = json.loads(route.calls.last.request.content)["requests"][0]["parameters"]
+    assert params == {
+        "flightId": "abc123-1748480400",
+        "flight": "abc123-1748480400",
+        "icao24": "abc123",
+        "takeoffTs": "2026-05-29T01:00:00Z",
+        "landedAt": "2026-05-29T03:30:00Z",
+        "status": "landed",
+        "currentStage": "landed",
+    }
+    # Clobber-avoidance: enrichment fields are absent, so the modify path
+    # leaves them unchanged.
+    for clobberable in ("statusTimeline", "trail2h", "trailPath", "openCaseCount", "openCaseIds"):
+        assert clobberable not in params
+
+
+@respx.mock
+async def test_stamp_flight_landed_batch_empty_makes_no_http_call(
+    settings: FoundrySettings,
+) -> None:
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.stamp_flight_landed_batch([])
+
+    assert (result.attempted, result.succeeded) == (0, 0)
+    assert not route.called
 
 
 # ---------------------------------------------------------------------------

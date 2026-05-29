@@ -89,6 +89,18 @@ class FoundrySettings(BaseSettings):
             "distinct from the lowercase upsert object-locator."
         ),
     )
+    FOUNDRY_ACTION_DELETE_FLIGHT: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "apiName of the delete Action for Flight objects. Used by the "
+            "tenant Flight-reconcile (Phase A) to evict completed/departed "
+            "flights the upsert-only takeoff + enrichment path never removes "
+            "(mirror of delete-aircraft / Fix C on the Flight side). NB: its "
+            "single parameter key is the PascalCase object-type name "
+            "(``Flight``), distinct from the lowercase upsert object-locator."
+        ),
+    )
     FOUNDRY_ACTION_UPSERT_CASE: str = Field(
         ...,
         min_length=1,

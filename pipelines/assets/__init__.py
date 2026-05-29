@@ -6,6 +6,7 @@ from pipelines.assets.foundry_sync import (
     foundry_aircraft_reconcile,
     foundry_cases_sync,
     foundry_flight_enrichment,
+    foundry_flight_reconcile,
     foundry_positions_sync,
     foundry_sites_sync,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "foundry_aircraft_reconcile",
     "foundry_cases_sync",
     "foundry_flight_enrichment",
+    "foundry_flight_reconcile",
     "foundry_positions_sync",
     "foundry_sites_sync",
     "noaa_weather",
