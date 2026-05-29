@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -33,6 +33,7 @@ from afm_foundry_sync.sync_jobs import (
     incremental_sync_positions,
     parse_flight_id,
     reconcile_aircraft,
+    reconcile_flights,
     synthesize_flight_id,
 )
 
@@ -465,10 +466,207 @@ async def test_reconcile_propagates_skip_on_unreachable_api(
 
 
 # ---------------------------------------------------------------------------
-# Flight enrichment (deferred FlightDetail/trail backfill)
+# reconcile_flights (Phase A — tenant-side eviction of completed flights)
 # ---------------------------------------------------------------------------
 
 _FLIGHT_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Flight"
+_FLIGHT_DELETE_BATCH = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-flight/applyBatch"
+)
+
+
+def _flight_pks_payload(flight_ids: list[str]) -> dict:  # type: ignore[type-arg]
+    return {"data": [{"flightId": fid} for fid in flight_ids]}
+
+
+@respx.mock
+async def test_flight_reconcile_keeps_airborne_latest_and_within_ttl(
+    settings: FoundrySettings,
+) -> None:
+    """The union keep-set in one shot: keep the latest flight of an airborne
+    aircraft AND any recent flight, evict an airborne aircraft's OLD flight
+    (proves latest-per-icao24, not any-airborne) and an old non-airborne one."""
+    now = _T0
+    # abc123 is airborne; def456 is in the feed but ON GROUND (not airborne).
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [
+                    _pos("abc123", on_ground=False, seen=now),
+                    _pos("def456", on_ground=True, seen=now),
+                ],
+                now,
+            ),
+        )
+    )
+    abc_latest = synthesize_flight_id("abc123", now - timedelta(hours=1))  # airborne latest -> KEEP
+    abc_old = synthesize_flight_id("abc123", now - timedelta(hours=48))  # old flight -> EVICT
+    def_recent = synthesize_flight_id("def456", now - timedelta(hours=2))  # within TTL -> KEEP
+    ghi_old = synthesize_flight_id(
+        "ghi789", now - timedelta(hours=48)
+    )  # old, not airborne -> EVICT
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_flight_pks_payload([abc_latest, abc_old, def_recent, ghi_old])
+        )
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.live_airborne, result.tenant, result.keep, result.orphans, result.deleted) == (
+        1,
+        4,
+        2,
+        2,
+        2,
+    )
+    assert result.remaining == 0
+    assert result.skipped_empty_live is False
+    body = json.loads(del_route.calls.last.request.content)
+    sent = {r["parameters"]["Flight"] for r in body["requests"]}
+    assert sent == {abc_old, ghi_old}  # airborne aircraft's OLD flight is still evicted
+
+
+@respx.mock
+async def test_flight_reconcile_skips_on_empty_airborne_without_listing_or_deleting(
+    settings: FoundrySettings,
+) -> None:
+    """Empty-live guard: a feed with NO airborne aircraft (even if it has
+    on-ground rows) means the fleet is momentarily unknown — bail before
+    enumerating the tenant, never delete (else we'd evict all-but-TTL on no
+    knowledge). Stricter than aircraft reconcile: airborne-empty, not all-empty."""
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_positions_payload([_pos("abc123", on_ground=True, seen=_T1)], _T1)
+        )
+    )
+    list_route = respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=_T1)
+
+    assert result.skipped_empty_live is True
+    assert (result.live_airborne, result.tenant, result.keep, result.orphans, result.deleted) == (
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    assert not list_route.called  # bailed before the expensive enumeration
+    assert not del_route.called
+
+
+@respx.mock
+async def test_flight_reconcile_no_orphans_makes_no_delete_call(
+    settings: FoundrySettings,
+) -> None:
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_positions_payload([_pos("abc123", on_ground=False, seen=now)], now)
+        )
+    )
+    # Only the airborne aircraft's latest flight — nothing to evict.
+    keep = synthesize_flight_id("abc123", now - timedelta(minutes=30))
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json=_flight_pks_payload([keep]))
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.orphans, result.deleted, result.remaining) == (0, 0, 0)
+    assert not del_route.called  # empty delete batch → no HTTP call
+
+
+@respx.mock
+async def test_flight_reconcile_caps_deletes_per_run_and_reports_remaining(
+    settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-run drain cap: with a cap of 2 and 3 orphans, delete 2 this run
+    and report remaining=1 (logged, never silently dropped). Orphans are sorted
+    so the drain is deterministic across runs."""
+    monkeypatch.setattr(_sj, "_FLIGHT_RECONCILE_DELETE_CAP", 2)
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_positions_payload([_pos("abc123", on_ground=False, seen=now)], now)
+        )
+    )
+    keep = synthesize_flight_id("abc123", now - timedelta(minutes=30))
+    # Three old, non-airborne orphans — names chosen so the sort order is known.
+    o1 = synthesize_flight_id("aaa111", now - timedelta(hours=48))
+    o2 = synthesize_flight_id("bbb222", now - timedelta(hours=48))
+    o3 = synthesize_flight_id("ccc333", now - timedelta(hours=48))
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json=_flight_pks_payload([keep, o1, o2, o3]))
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.orphans, result.deleted, result.remaining) == (3, 2, 1)
+    body = json.loads(del_route.calls.last.request.content)
+    sent = [r["parameters"]["Flight"] for r in body["requests"]]
+    assert sent == sorted([o1, o2, o3])[:2]  # deterministic: first 2 of the sorted orphans
+
+
+@respx.mock
+async def test_flight_reconcile_keeps_unparseable_pk_conservatively(
+    settings: FoundrySettings,
+) -> None:
+    """A malformed PK can't be classified by age, so it's KEPT (not evicted) —
+    destructive-on-uncertainty is exactly what the guards exist to prevent."""
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200, json=_positions_payload([_pos("abc123", on_ground=False, seen=now)], now)
+        )
+    )
+    keep = synthesize_flight_id("abc123", now - timedelta(minutes=30))
+    old = synthesize_flight_id("ghi789", now - timedelta(hours=48))
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json=_flight_pks_payload([keep, "garbage", old]))
+    )
+    del_route = respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    # tenant=3 (keep, garbage, old); keep-set={keep, garbage}; only `old` evicted.
+    assert (result.tenant, result.keep, result.orphans, result.deleted) == (3, 2, 1, 1)
+    body = json.loads(del_route.calls.last.request.content)
+    assert {r["parameters"]["Flight"] for r in body["requests"]} == {old}
+
+
+@respx.mock
+async def test_flight_reconcile_propagates_skip_on_unreachable_api(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_POS_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+    with pytest.raises(FoundrySyncSkipped, match="unreachable"):
+        async with (
+            guarded_sync("flight_reconcile"),
+            AfmApiClient(settings) as client,
+            FoundryWriter(settings) as writer,
+        ):
+            await reconcile_flights(client, writer, now=_T0)
+
+
+# ---------------------------------------------------------------------------
+# Flight enrichment (deferred FlightDetail/trail backfill)
+# ---------------------------------------------------------------------------
 
 
 def _flight_detail(icao24: str) -> dict:  # type: ignore[type-arg]

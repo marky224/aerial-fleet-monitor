@@ -46,7 +46,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import structlog
@@ -123,6 +123,40 @@ class ReconcileResult:
     tenant: int
     orphans: int
     deleted: int
+    skipped_empty_live: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FlightReconcileResult:
+    """Outcome of one tenant-Flight reconcile (Phase A — the Flight-side mirror
+    of ``ReconcileResult``/Fix C).
+
+    The takeoff + enrichment path is upsert-only, so Flight objects accumulate
+    in the Ontology forever (no delete path existed). This job keeps only the
+    *live working set* — the latest flight_id of each currently-airborne
+    aircraft, plus any flight whose takeoff is still inside the TTL backstop —
+    and evicts the rest via ``delete-flight``.
+
+    ``live_airborne`` is the count of currently-airborne icao24 in the feed;
+    ``tenant`` is every Flight PK in the Ontology; ``keep`` is the union
+    keep-set size; ``orphans`` is ``tenant - keep``; ``deleted`` is how many of
+    those this run actually removed (== ``min(orphans, cap)`` on full success).
+    ``remaining`` is ``orphans - deleted`` — non-zero while the one-time
+    backlog drains under the per-run cap (logged, never silently dropped).
+    ``skipped_empty_live`` is True when the live feed was empty and the
+    reconcile bailed *before* enumerating the tenant or deleting anything — an
+    empty feed means "fleet unknown right now" (e.g. an upstream OpenSky 429),
+    never "fleet is empty", so the airborne keep-set would be empty and we'd
+    evict the entire within-TTL-excepted tenant on no knowledge. Mirrors the
+    aircraft reconcile's empty-live guard exactly.
+    """
+
+    live_airborne: int
+    tenant: int
+    keep: int
+    orphans: int
+    deleted: int
+    remaining: int = 0
     skipped_empty_live: bool = False
 
 
@@ -410,6 +444,121 @@ async def reconcile_aircraft(
     )
 
 
+# Flight-reconcile TTL backstop. A Flight whose takeoff is within this window
+# is kept regardless of whether its aircraft is currently airborne — it
+# catches flights that never produced a landing edge (signal lost at cruise)
+# and the legacy backlog. The real eviction work is done by the airborne
+# keep-set; this only bounds how much recent non-airborne history stays hot.
+# 24 h while there is no archive safety-net (Phase A); tighten toward 12 h /
+# keep-set-only in Phase B once landed flights are archived to cold storage.
+_FLIGHT_RECONCILE_TTL = timedelta(hours=24)
+
+# Per-run delete cap. The first reconcile faces a one-time ~85k backlog; at
+# _MAX_BATCH=100 that is ~850 sequential applyBatch calls in one run against a
+# slow Foundry API on a co-resident host. Cap the deletes per run and let the
+# backlog drain over several hourly ticks (the overlap guard prevents run
+# stacking). Steady-state runs delete far below this, so the cap is invisible
+# after the initial drain. Tunable: raise/lower by watching the first drain.
+_FLIGHT_RECONCILE_DELETE_CAP = 5000
+
+
+async def reconcile_flights(
+    client: AfmApiClient,
+    writer: FoundryWriter,
+    *,
+    now: datetime | None = None,
+) -> FlightReconcileResult:
+    """Evict tenant Flight objects outside the live working set (Phase A).
+
+    The takeoff (``incremental_sync_positions``) + enrichment
+    (``enriched_sync_flights``) path is upsert-only and never deletes, so
+    every flight ever synthesized persists in the Ontology indefinitely
+    (~85k and climbing ~20k/day at design time). This keeps only the **union
+    keep-set** and deletes the complement via the ``delete-flight`` Action:
+
+      keep = (latest flight_id per CURRENTLY-AIRBORNE icao24)
+             UNION (any flight whose takeoff_ts is within ``_FLIGHT_RECONCILE_TTL``)
+
+    The airborne half MUST be *latest-per-icao24*, not "any flight whose
+    icao24 is airborne" — each airborne aircraft carries many historical
+    flights (measured ~7.5x), so the naive form would keep tens of thousands
+    and barely dent the backlog. It is the same latest-per-icao24 collapse
+    ``enriched_sync_flights`` uses, parsed from the PK
+    (``{icao24}-{unix_takeoff_ts}``). A genuinely-airborne long-haul is its
+    aircraft's latest flight (no landing ⇒ no newer takeoff edge), so it is
+    always in the airborne half and protected regardless of the TTL value —
+    the TTL is purely a tenant-size knob, never a clip-a-live-flight risk.
+
+    **Empty-live safety guard** (mirrors ``reconcile_aircraft``): if the live
+    feed is empty, bail *before* enumerating the tenant. An empty feed means
+    the fleet is momentarily unknown (e.g. an OpenSky 429), so the airborne
+    keep-set would be empty and we'd evict everything outside the TTL on no
+    knowledge. Returns a no-op flagged ``skipped_empty_live``.
+
+    **Per-run delete cap**: at most ``_FLIGHT_RECONCILE_DELETE_CAP`` orphans
+    are deleted per run; any excess is reported as ``remaining`` (logged, not
+    silently dropped) and drained by subsequent hourly runs. Orphans are
+    sorted before capping so the drain is deterministic across runs.
+    """
+    now = now or datetime.now(UTC)
+    response = await client.fetch_positions_live()
+    airborne = {p.icao24 for p in response.items if p.on_ground is False}
+    if not airborne:
+        logger.warning("foundry_flight_reconcile_skipped_empty_live")
+        return FlightReconcileResult(
+            live_airborne=0, tenant=0, keep=0, orphans=0, deleted=0, skipped_empty_live=True
+        )
+
+    tenant = await writer.list_flight_pks()
+
+    # Latest flight_id per currently-airborne icao24 (the live-working-set half
+    # of the keep-set). Malformed PKs are skipped with a warning, never crash.
+    latest_airborne: dict[str, tuple[datetime, str]] = {}
+    cutoff = now - _FLIGHT_RECONCILE_TTL
+    keep: set[str] = set()
+    for pk in tenant:
+        try:
+            icao24, takeoff_ts = parse_flight_id(pk)
+        except ValueError:
+            # Unparseable PK "can't happen" (synthesize_flight_id always
+            # yields a parseable id), but if one ever appears we KEEP it —
+            # deleting on "can't classify its age" is destructive on
+            # uncertainty (same conservative stance as the empty-live guard,
+            # and as enriched_sync_flights, which skips/leaves such PKs).
+            logger.warning("foundry_flight_reconcile_bad_flight_id", flight_id=pk)
+            keep.add(pk)
+            continue
+        if takeoff_ts >= cutoff:
+            keep.add(pk)  # TTL-backstop half
+        if icao24 in airborne:
+            current = latest_airborne.get(icao24)
+            if current is None or takeoff_ts > current[0]:
+                latest_airborne[icao24] = (takeoff_ts, pk)
+    keep.update(pk for _, pk in latest_airborne.values())
+
+    orphans = sorted(tenant - keep)
+    to_delete = orphans[:_FLIGHT_RECONCILE_DELETE_CAP]
+    remaining = len(orphans) - len(to_delete)
+    logger.info(
+        "foundry_flight_reconcile",
+        live_airborne=len(airborne),
+        tenant=len(tenant),
+        keep=len(keep),
+        orphans=len(orphans),
+        deleting=len(to_delete),
+        remaining=remaining,
+    )
+    batch = await writer.delete_flight_batch(to_delete)
+    return FlightReconcileResult(
+        live_airborne=len(airborne),
+        tenant=len(tenant),
+        keep=len(keep),
+        orphans=len(orphans),
+        deleted=batch.succeeded,
+        remaining=remaining,
+    )
+
+
 # The upsert-flush unit. Enriched Flights (each carrying a full 2h trail,
 # ~hundreds of points) accumulate to this many, are upserted, then
 # discarded, so peak memory is bounded to one chunk regardless of tenant
@@ -629,6 +778,19 @@ async def run_aircraft_reconcile() -> ReconcileResult:
             return await reconcile_aircraft(client, writer)
 
 
+async def run_flight_reconcile() -> FlightReconcileResult:
+    """Entrypoint the Dagster Flight-reconcile asset calls (Phase A). Skip-guarded.
+
+    Same standalone discipline as the other entrypoints: an absent
+    ``_private/foundry/.env`` or an unreachable endpoint (local API or
+    Foundry) surfaces as ``FoundrySyncSkipped``, not a crash.
+    """
+    async with guarded_sync("flight_reconcile"):
+        settings = FoundrySettings()
+        async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+            return await reconcile_flights(client, writer)
+
+
 async def run_flight_enrichment() -> FlightEnrichmentResult:
     """Entrypoint the Dagster flight-enrichment asset calls. Skip-guarded.
 
@@ -703,6 +865,7 @@ async def run_cases_sync(*, since: datetime | None = None) -> CaseSyncResult:
 __all__ = [
     "CaseSyncResult",
     "FlightEnrichmentResult",
+    "FlightReconcileResult",
     "FoundrySyncSkipped",
     "ReconcileResult",
     "SyncResult",
@@ -715,9 +878,11 @@ __all__ = [
     "incremental_sync_positions",
     "parse_flight_id",
     "reconcile_aircraft",
+    "reconcile_flights",
     "run_aircraft_reconcile",
     "run_cases_sync",
     "run_flight_enrichment",
+    "run_flight_reconcile",
     "run_positions_sync",
     "run_sites_sync",
     "synthesize_flight_id",

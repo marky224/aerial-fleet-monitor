@@ -38,6 +38,7 @@ from pipelines.assets import (
     foundry_aircraft_reconcile,
     foundry_cases_sync,
     foundry_flight_enrichment,
+    foundry_flight_reconcile,
     foundry_positions_sync,
     foundry_sites_sync,
     noaa_weather,
@@ -101,6 +102,12 @@ foundry_aircraft_reconcile_job = define_asset_job(
 foundry_flight_enrichment_job = define_asset_job(
     name="foundry_flight_enrichment_job",
     selection=AssetSelection.assets(foundry_flight_enrichment),
+)
+
+
+foundry_flight_reconcile_job = define_asset_job(
+    name="foundry_flight_reconcile_job",
+    selection=AssetSelection.assets(foundry_flight_reconcile),
 )
 
 
@@ -271,6 +278,25 @@ foundry_aircraft_reconcile_schedule = ScheduleDefinition(
 )
 
 
+foundry_flight_reconcile_schedule = ScheduleDefinition(
+    name="foundry_flight_reconcile_schedule",
+    job=foundry_flight_reconcile_job,
+    # :45 past the hour — after the :30 flight enrichment so the Flight set it
+    # reads is post-enrichment-stable, and offset from the :00 aircraft
+    # reconcile/prune. The per-run delete cap means the first reconcile drains
+    # the one-time backlog over several hourly runs; the asset's overlap guard
+    # prevents a new tick stacking on a still-draining one.
+    cron_schedule="45 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :45 (Phase A): evict Foundry Flight objects outside the "
+        "live working set (latest-per-airborne-icao24 plus within-TTL) — the "
+        "Flight-side mirror of foundry_aircraft_reconcile."
+    ),
+)
+
+
 foundry_flight_enrichment_schedule = ScheduleDefinition(
     name="foundry_flight_enrichment_schedule",
     job=foundry_flight_enrichment_job,
@@ -326,6 +352,7 @@ defs = Definitions(
         foundry_sites_sync,
         foundry_aircraft_reconcile,
         foundry_flight_enrichment,
+        foundry_flight_reconcile,
         foundry_cases_sync,
         flight_plan_enrichment,
         sf_case_push,
@@ -341,6 +368,7 @@ defs = Definitions(
         foundry_sites_sync_job,
         foundry_aircraft_reconcile_job,
         foundry_flight_enrichment_job,
+        foundry_flight_reconcile_job,
         foundry_cases_sync_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
@@ -354,6 +382,7 @@ defs = Definitions(
         foundry_sites_sync_schedule,
         foundry_aircraft_reconcile_schedule,
         foundry_flight_enrichment_schedule,
+        foundry_flight_reconcile_schedule,
         flight_plan_enrichment_schedule,
         case_detector_schedule,
         prune_stale_positions_schedule,

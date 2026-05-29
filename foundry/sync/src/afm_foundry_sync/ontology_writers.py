@@ -316,6 +316,7 @@ class FoundryWriter:
         self._action_site = settings.FOUNDRY_ACTION_UPSERT_SITE
         self._action_flight = settings.FOUNDRY_ACTION_UPSERT_FLIGHT
         self._action_delete_aircraft = settings.FOUNDRY_ACTION_DELETE_AIRCRAFT
+        self._action_delete_flight = settings.FOUNDRY_ACTION_DELETE_FLIGHT
         self._action_case = settings.FOUNDRY_ACTION_UPSERT_CASE
         self._action_delete_case = settings.FOUNDRY_ACTION_DELETE_CASE
         self._client = httpx.AsyncClient(
@@ -446,6 +447,24 @@ class FoundryWriter:
             if not page_token:
                 break
         return pks
+
+    async def delete_flight_batch(self, flight_ids: list[str]) -> BatchResult:
+        """Delete a batch of Flights by flight_id. No-op on an empty list.
+
+        Same shape as ``delete_aircraft_batch`` / ``delete_case_batch``: the
+        ``delete-flight`` Action's single parameter key is the PascalCase
+        object-type name ``Flight`` (verified against the live tenant —
+        param ``Flight``, required, object-ref Flight), distinct from the
+        lowercase ``flight`` upsert object-locator, so it is NOT routed
+        through ``_camel``; the literal key passes through ``_apply_batch``
+        unchanged. Used by the tenant Flight-reconcile (Phase A) to evict
+        completed/departed flights the upsert-only path never removes.
+        """
+        if not flight_ids:
+            return BatchResult(attempted=0, succeeded=0)
+        return await self._apply_batch(
+            self._action_delete_flight, [{"Flight": pk} for pk in flight_ids]
+        )
 
     async def upsert_case_batch(self, cases: list[Case]) -> BatchResult:
         """Upsert a batch of Cases. No-op (no HTTP call) on an empty list."""

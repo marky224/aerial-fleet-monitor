@@ -16,6 +16,13 @@ objects with only their synthesized identity, so this backfills
 route/operator/registration/status + 2h trail from ``/v1/flights`` for
 the latest flight per icao24 (see
 ``afm_foundry_sync.sync_jobs.enriched_sync_flights``).
+``foundry_flight_reconcile`` (hourly at :45, Phase A): the Flight-side
+mirror of ``foundry_aircraft_reconcile`` — the takeoff + enrichment path
+is upsert-only, so completed flights accumulate forever. This keeps only
+the latest flight per currently-airborne aircraft plus any flight within
+the TTL backstop, and evicts the rest via ``delete-flight`` (capped per
+run so the one-time backlog drains over several ticks; see
+``afm_foundry_sync.sync_jobs.reconcile_flights``).
 
 Both assets are an **independent failure domain** from the rest of the
 pipeline: AFM's local stack must run with Foundry creds absent or Foundry
@@ -50,6 +57,7 @@ from datetime import datetime
 from afm_foundry_sync.sync_jobs import (
     CaseSyncResult,
     FlightEnrichmentResult,
+    FlightReconcileResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
@@ -57,6 +65,7 @@ from afm_foundry_sync.sync_jobs import (
     run_aircraft_reconcile,
     run_cases_sync,
     run_flight_enrichment,
+    run_flight_reconcile,
     run_positions_sync,
     run_sites_sync,
 )
@@ -275,6 +284,75 @@ def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResu
         result.fetch_failed,
     )
     return MaterializeResult(metadata=_enrichment_metadata(result))
+
+
+def _flight_reconcile_metadata(result: FlightReconcileResult) -> dict[str, MetadataValue]:
+    return {
+        "live_airborne": MetadataValue.int(result.live_airborne),
+        "tenant": MetadataValue.int(result.tenant),
+        "keep": MetadataValue.int(result.keep),
+        "orphans": MetadataValue.int(result.orphans),
+        "deleted": MetadataValue.int(result.deleted),
+        "remaining": MetadataValue.int(result.remaining),
+        "skipped_empty_live": MetadataValue.bool(result.skipped_empty_live),
+    }
+
+
+@asset(
+    group_name="foundry_sync",
+    description=(
+        "Evicts Flight Ontology objects outside the live working set (Phase A "
+        "— the Flight-side mirror of foundry_aircraft_reconcile). Keeps the "
+        "latest flight per currently-airborne aircraft plus any flight within "
+        "the TTL backstop; deletes the rest via delete-flight, capped per run "
+        "so the one-time backlog drains over several ticks."
+    ),
+    metadata={"target": "Foundry Ontology: Flight", "cadence": "hourly"},
+)
+def foundry_flight_reconcile(context: AssetExecutionContext) -> MaterializeResult:
+    # Overlap guard: the per-run delete cap means the first reconcile drains
+    # the backlog across several hourly runs. A run must never stack on a
+    # still-draining sibling — if another run of this job is in progress, skip
+    # this tick (coalesced no-op, surfaced via the same ``skip_reason``
+    # contract as a FoundrySyncSkipped). Same pattern as flight enrichment.
+    in_progress = context.instance.get_run_records(
+        RunsFilter(
+            job_name="foundry_flight_reconcile_job",
+            statuses=[
+                DagsterRunStatus.QUEUED,
+                DagsterRunStatus.STARTING,
+                DagsterRunStatus.STARTED,
+                DagsterRunStatus.CANCELING,
+            ],
+        )
+    )
+    if any(r.dagster_run.run_id != context.run_id for r in in_progress):
+        return _skipped(
+            context,
+            "another foundry_flight_reconcile run is already in progress "
+            "(coalesced — the previous run is still draining)",
+        )
+    try:
+        result = asyncio.run(run_flight_reconcile())
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    if result.skipped_empty_live:
+        context.log.warning(
+            "flight reconcile skipped: no airborne aircraft in the live feed "
+            "(fleet momentarily unknown — not evicting)"
+        )
+    else:
+        context.log.info(
+            "flight reconcile: live_airborne=%d tenant=%d keep=%d "
+            "orphans=%d deleted=%d remaining=%d",
+            result.live_airborne,
+            result.tenant,
+            result.keep,
+            result.orphans,
+            result.deleted,
+            result.remaining,
+        )
+    return MaterializeResult(metadata=_flight_reconcile_metadata(result))
 
 
 @asset(

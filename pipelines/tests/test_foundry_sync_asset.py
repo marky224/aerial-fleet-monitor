@@ -17,6 +17,7 @@ import pytest
 from afm_foundry_sync.sync_jobs import (
     CaseSyncResult,
     FlightEnrichmentResult,
+    FlightReconcileResult,
     FoundrySyncSkipped,
     ReconcileResult,
     SyncResult,
@@ -282,6 +283,116 @@ def test_flight_enrichment_overlap_guard_ignores_own_run(
 
     md = foundry_sync.foundry_flight_enrichment(ctx).metadata or {}
     assert md["enriched"].value == 1  # proceeded — own run is not "another"
+
+
+# ---------------------------------------------------------------------------
+# foundry_flight_reconcile (Phase A — Flight-side eviction)
+# ---------------------------------------------------------------------------
+
+
+def test_flight_reconcile_skip_is_a_materialization_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise() -> FlightReconcileResult:
+        raise FoundrySyncSkipped("flight_reconcile: foundry config absent")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _raise)
+
+    result = foundry_sync.foundry_flight_reconcile(build_asset_context())
+
+    assert isinstance(result, MaterializeResult)
+    assert (result.metadata or {})["skip_reason"].value == "flight_reconcile: foundry config absent"
+
+
+def test_flight_reconcile_success_surfaces_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok() -> FlightReconcileResult:
+        return FlightReconcileResult(
+            live_airborne=4890,
+            tenant=85000,
+            keep=3700,
+            orphans=81300,
+            deleted=5000,
+            remaining=76300,
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _ok)
+
+    md = foundry_sync.foundry_flight_reconcile(build_asset_context()).metadata or {}
+    assert md["live_airborne"].value == 4890
+    assert md["tenant"].value == 85000
+    assert md["keep"].value == 3700
+    assert md["orphans"].value == 81300
+    assert md["deleted"].value == 5000
+    assert md["remaining"].value == 76300
+    assert md["skipped_empty_live"].value is False
+
+
+def test_flight_reconcile_empty_live_skip_surfaces_in_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _empty() -> FlightReconcileResult:
+        return FlightReconcileResult(
+            live_airborne=0, tenant=0, keep=0, orphans=0, deleted=0, skipped_empty_live=True
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _empty)
+
+    md = foundry_sync.foundry_flight_reconcile(build_asset_context()).metadata or {}
+    assert md["skipped_empty_live"].value is True
+    assert md["deleted"].value == 0
+
+
+def test_flight_reconcile_real_defect_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _bug() -> FlightReconcileResult:
+        raise RuntimeError("malformed delete-flight payload")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _bug)
+
+    with pytest.raises(RuntimeError, match="malformed delete-flight payload"):
+        foundry_sync.foundry_flight_reconcile(build_asset_context())
+
+
+def test_flight_reconcile_overlap_guard_skips_when_sibling_run_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-run drain cap means the first reconcile spans several hourly
+    runs; a tick must not stack on a still-draining sibling."""
+
+    async def _must_not_run() -> FlightReconcileResult:
+        raise AssertionError("reconcile ran despite an in-progress sibling")
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _must_not_run)
+    ctx = build_asset_context()
+    sibling = SimpleNamespace(dagster_run=SimpleNamespace(run_id="a-different-run"))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [sibling])
+
+    result = foundry_sync.foundry_flight_reconcile(ctx)
+
+    assert isinstance(result, MaterializeResult)
+    assert "already in progress" in (result.metadata or {})["skip_reason"].value
+
+
+def test_flight_reconcile_overlap_guard_ignores_own_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must exclude the current run itself (STARTED while executing)."""
+
+    async def _ok() -> FlightReconcileResult:
+        return FlightReconcileResult(
+            live_airborne=10, tenant=20, keep=12, orphans=8, deleted=8, remaining=0
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _ok)
+    ctx = build_asset_context()
+    own = SimpleNamespace(dagster_run=SimpleNamespace(run_id=ctx.run_id))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [own])
+
+    md = foundry_sync.foundry_flight_reconcile(ctx).metadata or {}
+    assert md["deleted"].value == 8  # proceeded — own run is not "another"
 
 
 # ---------------------------------------------------------------------------
