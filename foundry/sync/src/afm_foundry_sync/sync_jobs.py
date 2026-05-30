@@ -285,17 +285,18 @@ def _dedupe_latest(positions: Iterable[Position]) -> list[Position]:
     return list(latest.values())
 
 
-def _in_live_scope(p: Position) -> bool:
-    """Whether a position belongs to the live set we keep in the Ontology.
+# Live-set scope. ``None`` = keep ALL tracked aircraft (the full live 15-min
+# feed) — the DEFAULT. A set restricts the live set to those customer regions,
+# e.g. ``frozenset({"west", "east", "all"})`` for East/West only. This ONE knob
+# bounds the Aircraft upsert + the takeoff/landing detector in
+# ``incremental_sync_positions`` AND the ``reconcile_aircraft`` keep-set, so the
+# tenant — and the Flights minted off detector edges — follow it together.
+_LIVE_SCOPE_REGIONS: frozenset[str] | None = None
 
-    Live-set scope = the East/West customer regions (``customer_region`` in
-    ``{west, east, all}``); out-of-region traffic (``customer_region is None``)
-    is excluded. This single knob bounds BOTH the Aircraft upsert and the
-    takeoff/landing detector in ``incremental_sync_positions`` AND the
-    ``reconcile_aircraft`` keep-set, so the tenant — and the Flights minted off
-    detector edges — stay East/West. **Widen to global by returning ``True``.**
-    """
-    return p.customer_region is not None
+
+def _in_live_scope(p: Position) -> bool:
+    """Whether a position is inside the live set (see ``_LIVE_SCOPE_REGIONS``)."""
+    return _LIVE_SCOPE_REGIONS is None or p.customer_region in _LIVE_SCOPE_REGIONS
 
 
 def synthesize_flight_id(icao24: str, takeoff_ts: datetime) -> str:
@@ -456,10 +457,10 @@ async def incremental_sync_positions(
     """
     response = await client.fetch_positions_live()
     deduped = _dedupe_latest(response.items)
-    # Scope to the East/West live set (see _in_live_scope). Filtering here bounds
-    # BOTH the Aircraft upsert and the detector's takeoff/landing edges to
-    # in-scope aircraft, so the tenant — and the Flights minted off these edges —
-    # stay East/West. Widen to global by relaxing _in_live_scope.
+    # Bound to the live set (see _in_live_scope / _LIVE_SCOPE_REGIONS; default =
+    # all aircraft). Filtering here bounds BOTH the Aircraft upsert and the
+    # detector's takeoff/landing edges, so the tenant — and the Flights minted
+    # off these edges — follow the same scope.
     scoped = [p for p in deduped if _in_live_scope(p)]
     logger.info(
         "foundry_positions_sync",
@@ -569,11 +570,12 @@ async def reconcile_aircraft(
     have departed (icao24 absent from ``/v1/positions/live`` after the
     API's recency window + the Postgres prune) accumulate in the Ontology
     indefinitely. This diffs ``tenant - keep`` and deletes the orphans via
-    the ``delete-aircraft`` Action, where ``keep`` is the **in-scope** subset
-    of the live feed (``_in_live_scope`` — East/West). Run frequently (every
-    ~2 min) so the tenant stays continuously equal to the live set; deletes are
-    capped per run (``_AIRCRAFT_RECONCILE_DELETE_CAP``) so the one-time pre-scope
-    drain spreads over a few ticks, with ``remaining`` logged (never silently
+    the ``delete-aircraft`` Action, where ``keep`` is the in-scope subset of the
+    live feed (``_in_live_scope`` / ``_LIVE_SCOPE_REGIONS``; default = all
+    aircraft). Run frequently (every ~2 min) so the tenant stays continuously
+    equal to the live set; deletes are capped per run
+    (``_AIRCRAFT_RECONCILE_DELETE_CAP``) so a one-time large drain (e.g. a scope
+    change) spreads over a few ticks, with ``remaining`` logged (never silently
     dropped).
 
     **Empty-live safety guard:** if the *full* live feed is empty, bail *before*

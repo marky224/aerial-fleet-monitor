@@ -99,12 +99,22 @@ def test_synthesize_flight_id_is_icao_plus_unix_ts() -> None:
     assert synthesize_flight_id("abc123", _T0) == f"abc123-{int(_T0.timestamp())}"
 
 
+def test_in_live_scope_default_is_global() -> None:
+    # Default (_LIVE_SCOPE_REGIONS is None): keep ALL aircraft, incl. out-of-region.
+    for region in ("west", "east", "all", None):
+        pos = _pos("abc123", on_ground=False, seen=_T0, customer_region=region)
+        assert _in_live_scope(pos) is True
+
+
 @pytest.mark.parametrize(
     ("region", "kept"),
     [("west", True), ("east", True), ("all", True), (None, False)],
 )
-def test_in_live_scope_keeps_only_customer_regions(region: object, kept: bool) -> None:
-    # Live-set scope = East/West customer regions; out-of-region (None) is excluded.
+def test_in_live_scope_can_restrict_to_regions(
+    region: object, kept: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When restricted to East/West, out-of-region (None) is excluded.
+    monkeypatch.setattr(_sj, "_LIVE_SCOPE_REGIONS", frozenset({"west", "east", "all"}))
     pos = _pos("abc123", on_ground=False, seen=_T0, customer_region=region)
     assert _in_live_scope(pos) is kept
 
@@ -291,11 +301,13 @@ async def test_incremental_sync_dedupes_and_returns_server_time_cursor(
 @respx.mock
 async def test_incremental_sync_scopes_aircraft_and_detector_to_customer_regions(
     settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Out-of-scope aircraft (customer_region=None) are neither upserted to the
-    Ontology nor observed by the detector — the tenant + the Flights minted off
-    detector edges stay East/West. Both are seeded on-ground, so each WOULD emit
-    a takeoff if observed; only the in-scope one does."""
+    """When the live set is restricted to East/West, out-of-scope aircraft
+    (customer_region=None) are neither upserted to the Ontology nor observed by
+    the detector. Both are seeded on-ground, so each WOULD emit a takeoff if
+    observed; only the in-scope one does."""
+    monkeypatch.setattr(_sj, "_LIVE_SCOPE_REGIONS", frozenset({"west", "east", "all"}))
     detector = FlightLifecycleDetector({"abc123": True, "out999": True})
     positions = [
         _pos("abc123", on_ground=False, seen=_T1, customer_region="east"),  # in scope
@@ -634,10 +646,12 @@ async def test_reconcile_propagates_skip_on_unreachable_api(
 @respx.mock
 async def test_reconcile_keep_set_is_in_scope_only(
     settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Keep-set = in-scope (East/West) aircraft in the live feed. An out-of-scope
-    aircraft present in the feed is NOT kept — it is evicted like any orphan, so
-    the tenant stays East/West."""
+    """With the live set restricted to East/West, the keep-set = in-scope aircraft
+    in the live feed. An out-of-scope aircraft present in the feed is NOT kept —
+    it is evicted like any orphan, so the tenant stays East/West."""
+    monkeypatch.setattr(_sj, "_LIVE_SCOPE_REGIONS", frozenset({"west", "east", "all"}))
     respx.get(_POS_URL).mock(
         return_value=httpx.Response(
             200,
@@ -671,10 +685,13 @@ async def test_reconcile_keep_set_is_in_scope_only(
 @respx.mock
 async def test_reconcile_evicts_when_feed_has_no_in_scope_traffic(
     settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The empty-live guard is on the FULL feed, not the in-scope subset. A
-    healthy feed carrying no East/West traffic still reconciles — correctly
-    evicting stale in-scope tenant objects (NOT skipped)."""
+    """The empty-live guard is on the FULL feed, not the in-scope subset. With the
+    live set restricted to East/West, a healthy feed carrying no East/West traffic
+    still reconciles — correctly evicting stale in-scope tenant objects (NOT
+    skipped)."""
+    monkeypatch.setattr(_sj, "_LIVE_SCOPE_REGIONS", frozenset({"west", "east", "all"}))
     respx.get(_POS_URL).mock(
         return_value=httpx.Response(
             200,
