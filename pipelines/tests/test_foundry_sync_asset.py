@@ -331,7 +331,8 @@ def test_flight_enrichment_overlap_guard_ignores_own_run(
 
 
 # ---------------------------------------------------------------------------
-# foundry_flight_reconcile (Phase A — Flight-side eviction)
+# foundry_flight_reconcile (Flight-side eviction; deletes stubs only —
+# completed flights are left for foundry_flight_archive)
 # ---------------------------------------------------------------------------
 
 
@@ -353,13 +354,15 @@ def test_flight_reconcile_success_surfaces_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _ok() -> FlightReconcileResult:
+        # orphans == completed_skipped + deleted + remaining (300+5000+76000).
         return FlightReconcileResult(
             live_airborne=4890,
             tenant=85000,
             keep=3700,
             orphans=81300,
+            completed_skipped=300,
             deleted=5000,
-            remaining=76300,
+            remaining=76000,
         )
 
     monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _ok)
@@ -369,8 +372,9 @@ def test_flight_reconcile_success_surfaces_counts(
     assert md["tenant"].value == 85000
     assert md["keep"].value == 3700
     assert md["orphans"].value == 81300
+    assert md["completed_skipped"].value == 300
     assert md["deleted"].value == 5000
-    assert md["remaining"].value == 76300
+    assert md["remaining"].value == 76000
     assert md["skipped_empty_live"].value is False
 
 

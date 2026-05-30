@@ -148,10 +148,21 @@ class FlightReconcileResult:
 
     ``live_airborne`` is the count of currently-airborne icao24 in the feed;
     ``tenant`` is every Flight PK in the Ontology; ``keep`` is the union
-    keep-set size; ``orphans`` is ``tenant - keep``; ``deleted`` is how many of
-    those this run actually removed (== ``min(orphans, cap)`` on full success).
-    ``remaining`` is ``orphans - deleted`` — non-zero while the one-time
-    backlog drains under the per-run cap (logged, never silently dropped).
+    keep-set size; ``orphans`` is ``tenant - keep`` (everything outside the
+    live working set).
+
+    **Phase-B split (deletes STUBS ONLY):** the orphan set is two kinds —
+    *completed* flights (``landed_at`` set) and *stubs* (no ``landed_at``:
+    never-completed, lost-at-cruise, or legacy backlog). This job deletes
+    stubs only; completed flights are evicted exclusively by the archive
+    asset (archive-to-cold-store then delete), so no completed flight is ever
+    deleted unarchived. ``completed_skipped`` is the count of completed
+    orphans deliberately left in the tenant for the archive asset.
+    ``deleted`` is how many stub orphans this run actually removed;
+    ``remaining`` is the stub orphans still queued after the per-run cap
+    (logged, never silently dropped). On full delete success the invariant is
+    ``orphans == completed_skipped + deleted + remaining``.
+
     ``skipped_empty_live`` is True when the live feed was empty and the
     reconcile bailed *before* enumerating the tenant or deleting anything — an
     empty feed means "fleet unknown right now" (e.g. an upstream OpenSky 429),
@@ -165,6 +176,7 @@ class FlightReconcileResult:
     keep: int
     orphans: int
     deleted: int
+    completed_skipped: int = 0
     remaining: int = 0
     skipped_empty_live: bool = False
 
@@ -237,6 +249,20 @@ async def guarded_sync(job: str) -> AsyncIterator[None]:
     except httpx.HTTPError as exc:
         logger.warning("foundry_sync_skipped", job=job, reason="unreachable", error=str(exc))
         raise FoundrySyncSkipped(f"{job}: foundry/api unreachable: {exc}") from exc
+
+
+def load_foundry_settings() -> FoundrySettings:
+    """Construct ``FoundrySettings`` from the environment / ``.env``.
+
+    A typed factory so callers OUTSIDE this package (the pipelines
+    ``foundry_flight_archive`` asset, which owns the cross-store ordering and
+    so opens the writer itself rather than via a ``run_*`` entrypoint) get a
+    ``FoundrySettings`` without constructing the pydantic-settings class
+    directly — only this package's mypy config carries the pydantic plugin
+    that knows its fields come from env. Call it INSIDE ``guarded_sync`` so an
+    absent ``.env`` (``ValidationError``) surfaces as ``FoundrySyncSkipped``.
+    """
+    return FoundrySettings()
 
 
 def _dedupe_latest(positions: Iterable[Position]) -> list[Position]:
@@ -588,6 +614,16 @@ async def reconcile_flights(
     always in the airborne half and protected regardless of the TTL value —
     the TTL is purely a tenant-size knob, never a clip-a-live-flight risk.
 
+    **Deletes STUBS ONLY (Phase B):** of everything outside the keep-set,
+    *completed* flights (``landed_at`` set) are left in the tenant for the
+    archive asset, which is the sole path that removes them (archive-to-cold-
+    store, verify, then delete) — so a completed flight is never deleted
+    unarchived. This job deletes only *stubs*: never-completed / lost-at-
+    cruise / legacy-backlog legs that carry no ``landed_at`` and have no
+    reference value to archive (their raw positions remain in the lake). The
+    completion flag rides on the same tenant scan for free
+    (``list_flight_pks_with_completion``), so the exclusion adds no round-trip.
+
     **Empty-live safety guard** (mirrors ``reconcile_aircraft``): if the live
     feed is empty, bail *before* enumerating the tenant. An empty feed means
     the fleet is momentarily unknown (e.g. an OpenSky 429), so the airborne
@@ -608,7 +644,7 @@ async def reconcile_flights(
             live_airborne=0, tenant=0, keep=0, orphans=0, deleted=0, skipped_empty_live=True
         )
 
-    tenant = await writer.list_flight_pks()
+    tenant, completed = await writer.list_flight_pks_with_completion()
 
     # Latest flight_id per currently-airborne icao24 (the live-working-set half
     # of the keep-set). Malformed PKs are skipped with a warning, never crash.
@@ -635,15 +671,23 @@ async def reconcile_flights(
                 latest_airborne[icao24] = (takeoff_ts, pk)
     keep.update(pk for _, pk in latest_airborne.values())
 
-    orphans = sorted(tenant - keep)
-    to_delete = orphans[:_FLIGHT_RECONCILE_DELETE_CAP]
-    remaining = len(orphans) - len(to_delete)
+    # Phase-B split: of everything outside the live working set, COMPLETED
+    # flights (landed_at set) are left for the archive asset (archive-then-
+    # delete) and are NEVER deleted here, so no completed flight is removed
+    # unarchived. This job deletes STUBS ONLY — never-completed / lost-at-
+    # cruise / legacy-backlog legs with no landed_at and no reference value.
+    evictable = tenant - keep
+    completed_skipped = len(evictable & completed)
+    stub_orphans = sorted(evictable - completed)
+    to_delete = stub_orphans[:_FLIGHT_RECONCILE_DELETE_CAP]
+    remaining = len(stub_orphans) - len(to_delete)
     logger.info(
         "foundry_flight_reconcile",
         live_airborne=len(airborne),
         tenant=len(tenant),
         keep=len(keep),
-        orphans=len(orphans),
+        orphans=len(evictable),
+        completed_skipped=completed_skipped,
         deleting=len(to_delete),
         remaining=remaining,
     )
@@ -652,7 +696,8 @@ async def reconcile_flights(
         live_airborne=len(airborne),
         tenant=len(tenant),
         keep=len(keep),
-        orphans=len(orphans),
+        orphans=len(evictable),
+        completed_skipped=completed_skipped,
         deleted=batch.succeeded,
         remaining=remaining,
     )
@@ -974,6 +1019,7 @@ __all__ = [
     "guarded_sync",
     "incremental_sync_cases",
     "incremental_sync_positions",
+    "load_foundry_settings",
     "parse_flight_id",
     "reconcile_aircraft",
     "reconcile_flights",

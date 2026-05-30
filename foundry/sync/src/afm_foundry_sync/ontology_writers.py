@@ -41,6 +41,7 @@ retried. ``sync_jobs.py`` translates Foundry-side failures into
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
@@ -453,19 +454,83 @@ class FoundryWriter:
         property; ``__primaryKey`` is the documented fallback. The
         Flight-enrichment job iterates this to backfill the create-only
         takeoff Flights from ``/v1/flights``. Read-only — no Action applied.
+
+        A thin projection over :meth:`list_flight_pks_with_completion` (one
+        scan, the completion half discarded), so the pagination lives in one
+        place. The extra per-object ``landedAt`` lookup is negligible for
+        PK-only callers.
         """
-        pks: set[str] = set()
+        all_pks, _ = await self.list_flight_pks_with_completion()
+        return all_pks
+
+    async def list_flight_pks_with_completion(self) -> tuple[set[str], set[str]]:
+        """Return ``(all flight PKs, completed flight PKs)`` from one tenant scan.
+
+        Same pagination + PK extraction as the PK-only ``list_flight_pks``,
+        but ALSO captures which flights are *completed* — for free, since
+        ``_get_objects_page`` already returns every property of each object
+        and the PK-only path simply discarded them (no extra round-trips). A
+        flight is completed iff its ``landedAt`` property (the camelCase of
+        ``landed_at``, stamped by ``stamp_flight_landed_batch``) is present and
+        non-null.
+
+        The Phase-B reconcile uses this to **exclude completed flights from
+        its stub-delete set**: completed flights are evicted only by the
+        archive asset (archive-to-cold-store then delete), so the reconcile
+        must never delete one out from under it. Stubs (never-completed /
+        lost-at-cruise / legacy-backlog legs) carry no ``landedAt`` and are
+        the reconcile's to delete. Read-only — no Action applied.
+        """
+        all_pks: set[str] = set()
+        completed: set[str] = set()
         page_token: str | None = None
         while True:
             body = await self._get_objects_page("Flight", page_token)
             for obj in body.get("data", []):
                 pk = obj.get("flightId") or obj.get("__primaryKey")
-                if pk:
-                    pks.add(str(pk))
+                if not pk:
+                    continue
+                pk = str(pk)
+                all_pks.add(pk)
+                if obj.get("landedAt") is not None:
+                    completed.add(pk)
             page_token = body.get("nextPageToken")
             if not page_token:
                 break
-        return pks
+        return all_pks, completed
+
+    async def iter_completed_flights(self) -> AsyncIterator[list[dict[str, Any]]]:
+        """Yield, page by page, the raw Foundry objects of every COMPLETED flight.
+
+        Paginates ``GET .../objects/Flight`` exactly like the scan helpers and
+        yields, per page, the full object dicts (camelCase properties) of the
+        flights whose ``landedAt`` is present and non-null AND that carry a PK.
+        Each page is yielded then dropped before the next is fetched, so the
+        heavy 2 h-trail JSON (``trail2h``) of one page is freed before the next
+        loads — the memory-bounded streaming the Phase-03 enrichment OOM taught
+        (an accumulate-all over thousands of trails killed the 512 MB asset).
+        Empty pages (no completed flights) are skipped, not yielded.
+
+        Read-only — no Action applied. The SETTLED-grace filter
+        (``landed_at`` older than the archive grace window), the camelCase→
+        archive-row transform, and the archive-then-delete ordering all live in
+        the pipelines ``foundry_flight_archive`` asset, which owns the lakehouse
+        and the cross-store sequencing — this writer only knows Foundry.
+        """
+        page_token: str | None = None
+        while True:
+            body = await self._get_objects_page("Flight", page_token)
+            completed = [
+                obj
+                for obj in body.get("data", [])
+                if obj.get("landedAt") is not None
+                and (obj.get("flightId") or obj.get("__primaryKey"))
+            ]
+            if completed:
+                yield completed
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
 
     async def delete_flight_batch(self, flight_ids: list[str]) -> BatchResult:
         """Delete a batch of Flights by flight_id. No-op on an empty list.

@@ -326,6 +326,7 @@ def _flight_reconcile_metadata(result: FlightReconcileResult) -> dict[str, Metad
         "tenant": MetadataValue.int(result.tenant),
         "keep": MetadataValue.int(result.keep),
         "orphans": MetadataValue.int(result.orphans),
+        "completed_skipped": MetadataValue.int(result.completed_skipped),
         "deleted": MetadataValue.int(result.deleted),
         "remaining": MetadataValue.int(result.remaining),
         "skipped_empty_live": MetadataValue.bool(result.skipped_empty_live),
@@ -335,11 +336,13 @@ def _flight_reconcile_metadata(result: FlightReconcileResult) -> dict[str, Metad
 @asset(
     group_name="foundry_sync",
     description=(
-        "Evicts Flight Ontology objects outside the live working set (Phase A "
-        "— the Flight-side mirror of foundry_aircraft_reconcile). Keeps the "
-        "latest flight per currently-airborne aircraft plus any flight within "
-        "the TTL backstop; deletes the rest via delete-flight, capped per run "
-        "so the one-time backlog drains over several ticks."
+        "Evicts Flight Ontology objects outside the live working set (the "
+        "Flight-side mirror of foundry_aircraft_reconcile). Keeps the latest "
+        "flight per currently-airborne aircraft plus any flight within the TTL "
+        "backstop. Deletes STUBS ONLY via delete-flight (capped per run so the "
+        "one-time backlog drains over several ticks); completed flights "
+        "(landed_at set) are left for foundry_flight_archive to archive-then-"
+        "delete, so no completed flight is removed unarchived."
     ),
     metadata={"target": "Foundry Ontology: Flight", "cadence": "hourly"},
 )
@@ -378,11 +381,12 @@ def foundry_flight_reconcile(context: AssetExecutionContext) -> MaterializeResul
     else:
         context.log.info(
             "flight reconcile: live_airborne=%d tenant=%d keep=%d "
-            "orphans=%d deleted=%d remaining=%d",
+            "orphans=%d completed_skipped=%d deleted=%d remaining=%d",
             result.live_airborne,
             result.tenant,
             result.keep,
             result.orphans,
+            result.completed_skipped,
             result.deleted,
             result.remaining,
         )

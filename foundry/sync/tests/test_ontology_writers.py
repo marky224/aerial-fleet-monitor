@@ -661,6 +661,81 @@ async def test_list_flight_pks_falls_back_to_primary_key(settings: FoundrySettin
     assert pks == {"aaa111-1700", "bbb222-1800"}
 
 
+@respx.mock
+async def test_list_flight_pks_with_completion_flags_landed(settings: FoundrySettings) -> None:
+    """The completion-aware scan returns ALL pks plus the subset with a non-null
+    landedAt (the Phase-B reconcile's completed set), from one paginated scan
+    with no extra round-trips. An explicit null landedAt is NOT completed."""
+    route = respx.get(_FLIGHT_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"flightId": "f-airborne-1700"},
+                        {"flightId": "f-landed-1800", "landedAt": "2026-05-16T12:00:00Z"},
+                    ],
+                    "nextPageToken": "p2",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={"data": [{"flightId": "f-null-landed-1900", "landedAt": None}]},
+            ),
+        ]
+    )
+    async with FoundryWriter(settings) as w:
+        all_pks, completed = await w.list_flight_pks_with_completion()
+
+    assert all_pks == {"f-airborne-1700", "f-landed-1800", "f-null-landed-1900"}
+    assert completed == {"f-landed-1800"}
+    assert route.call_count == 2  # paginates exactly like the PK-only scan
+
+
+@respx.mock
+async def test_iter_completed_flights_streams_only_landed_across_pages(
+    settings: FoundrySettings,
+) -> None:
+    """The archive read streams the full objects of completed flights (landedAt
+    present + non-null) page by page; stubs and explicit-null landedAt are
+    skipped, and empty pages are not yielded."""
+    route = respx.get(_FLIGHT_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"flightId": "stub-1700"},  # no landedAt -> skipped
+                        {
+                            "flightId": "done-1800",
+                            "landedAt": "2026-05-16T12:00:00Z",
+                            "trail2h": "[]",
+                        },
+                    ],
+                    "nextPageToken": "p2",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"flightId": "done-1900", "landedAt": "2026-05-16T13:00:00Z"},
+                        {"flightId": "null-2000", "landedAt": None},  # explicit null -> skipped
+                    ]
+                },
+            ),
+        ]
+    )
+    async with FoundryWriter(settings) as w:
+        pages = [page async for page in w.iter_completed_flights()]
+
+    flat = [obj["flightId"] for page in pages for obj in page]
+    assert flat == ["done-1800", "done-1900"]
+    # full objects ride through (the archive needs the trail), not just the PK.
+    assert pages[0][0]["trail2h"] == "[]"
+    assert route.call_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Cases (Phase 05 task #5)
 # ---------------------------------------------------------------------------
