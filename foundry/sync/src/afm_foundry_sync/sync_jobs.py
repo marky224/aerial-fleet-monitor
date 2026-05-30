@@ -58,7 +58,12 @@ from pydantic import ValidationError
 
 from afm_foundry_sync.api_readers import AfmApiClient
 from afm_foundry_sync.models import Flight, FlightDetail, Position
-from afm_foundry_sync.ontology_writers import BatchResult, FlightLandedStamp, FoundryWriter
+from afm_foundry_sync.ontology_writers import (
+    BatchResult,
+    FlightLandedStamp,
+    FlightLiveStamp,
+    FoundryWriter,
+)
 from afm_foundry_sync.settings import FoundrySettings
 from afm_foundry_sync.transforms import (
     case_for_sync_to_case,
@@ -183,6 +188,12 @@ class FlightReconcileResult:
     completed_skipped: int = 0
     remaining: int = 0
     skipped_empty_live: bool = False
+    # Liveness sweep (Tier 2-lite). Delta writes to Flight.isLive this run:
+    # `marked_true` = newly-live legs flipped on, `marked_false` = stale-live
+    # legs flipped off. Both 0 when FOUNDRY_FLIGHT_ISLIVE_ENABLED is unset
+    # (the sweep is skipped entirely) or there was no delta this run.
+    live_marked_true: int = 0
+    live_marked_false: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,6 +696,17 @@ async def reconcile_flights(
     are deleted per run; any excess is reported as ``remaining`` (logged, not
     silently dropped) and drained by subsequent hourly runs. Orphans are
     sorted before capping so the drain is deterministic across runs.
+
+    **Liveness sweep (Tier 2-lite)**: when ``writer.islive_enabled`` is set,
+    this run also reconciles ``Flight.isLive`` to the live set — the same
+    latest-flight-per-airborne-icao24 (``latest_airborne``) it already
+    computes — writing only the delta vs the tenant's current ``isLive=true``
+    set (``live_marked_true`` / ``live_marked_false``). This is the authoritative
+    backbone for the map's "show only in-progress flights" filter: tick-level
+    edges set ``isLive`` at takeoff/landing, but landings are detected only
+    ~1.1% of the time, so this hourly sweep is what flips the stale-airborne
+    legs (undetected landing / supersession / dropout / restart) off. Skipped
+    entirely (no extra writes) when the flag is unset.
     """
     now = now or datetime.now(UTC)
     response = await client.fetch_positions_live()
@@ -695,7 +717,7 @@ async def reconcile_flights(
             live_airborne=0, tenant=0, keep=0, orphans=0, deleted=0, skipped_empty_live=True
         )
 
-    tenant, completed = await writer.list_flight_pks_with_completion()
+    tenant, completed, current_live = await writer.list_flight_pks_with_completion()
 
     # Latest flight_id per currently-airborne icao24 (the live-working-set half
     # of the keep-set). Malformed PKs are skipped with a warning, never crash.
@@ -743,6 +765,45 @@ async def reconcile_flights(
         remaining=remaining,
     )
     batch = await writer.delete_flight_batch(to_delete)
+
+    # ---- Liveness sweep (Tier 2-lite): reconcile Flight.isLive to the live set.
+    # The live set = latest flight per currently-airborne icao24 (``latest_airborne``,
+    # already computed for the keep-set). Landings are detected only ~1.1% of the
+    # time, so this hourly delta-write — not the tick-level edges — is what keeps
+    # isLive honest: it flips stale ``true``→``false`` (undetected landing /
+    # supersession / feed dropout / process-restart orphan) and ``null/false``→
+    # ``true`` for newly-live legs the takeoff-create may have missed. Gated on the
+    # provisioning flag; writes only the delta vs the tenant's current isLive=true
+    # set, and skips legs deleted above (their isLive is moot).
+    live_marked_true = 0
+    live_marked_false = 0
+    if writer.islive_enabled:
+        true_stamps = [
+            FlightLiveStamp(flight_id=pk, icao24=icao24, takeoff_ts=ts, is_live=True)
+            for icao24, (ts, pk) in latest_airborne.items()
+            if pk not in current_live
+        ]
+        target_pks = {pk for _, pk in latest_airborne.values()}
+        false_stamps: list[FlightLiveStamp] = []
+        for pk in sorted((current_live - target_pks) - set(to_delete)):
+            try:
+                icao24, ts = parse_flight_id(pk)
+            except ValueError:
+                logger.warning("foundry_flight_liveness_bad_flight_id", flight_id=pk)
+                continue
+            false_stamps.append(
+                FlightLiveStamp(flight_id=pk, icao24=icao24, takeoff_ts=ts, is_live=False)
+            )
+        live_marked_true = (await writer.set_flight_live_batch(true_stamps)).succeeded
+        live_marked_false = (await writer.set_flight_live_batch(false_stamps)).succeeded
+        logger.info(
+            "foundry_flight_liveness_sweep",
+            target_live=len(target_pks),
+            current_live=len(current_live),
+            marked_true=live_marked_true,
+            marked_false=live_marked_false,
+        )
+
     return FlightReconcileResult(
         live_airborne=len(airborne),
         tenant=len(tenant),
@@ -751,6 +812,8 @@ async def reconcile_flights(
         completed_skipped=completed_skipped,
         deleted=batch.succeeded,
         remaining=remaining,
+        live_marked_true=live_marked_true,
+        live_marked_false=live_marked_false,
     )
 
 

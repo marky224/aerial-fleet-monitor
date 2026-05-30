@@ -357,6 +357,9 @@ def _flight_reconcile_metadata(result: FlightReconcileResult) -> dict[str, Metad
         "deleted": MetadataValue.int(result.deleted),
         "remaining": MetadataValue.int(result.remaining),
         "skipped_empty_live": MetadataValue.bool(result.skipped_empty_live),
+        # Liveness sweep delta (Flight.isLive). Both 0 when the flag is unset.
+        "live_marked_true": MetadataValue.int(result.live_marked_true),
+        "live_marked_false": MetadataValue.int(result.live_marked_false),
     }
 
 

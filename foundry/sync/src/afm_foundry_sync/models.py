@@ -351,6 +351,13 @@ class Flight(BaseModel):
     status: FlightStatus | None
     current_stage: FlightStage | None
 
+    # Liveness: True = current leg of a currently-airborne aircraft; False once
+    # landed/superseded/dropped; None = unclassified (legacy or enrichment, which
+    # must NOT clobber the sweep-maintained value). Defaulted so only the paths
+    # that own liveness (takeoff create + landing + reconcile sweep) set it; every
+    # other Flight constructor leaves it None and flight_params omits the param.
+    is_live: bool | None = None
+
     # Position (last known; geopoint built at write time, not modeled)
     lat: float | None = Field(ge=-90, le=90)
     lon: float | None = Field(ge=-180, le=180)

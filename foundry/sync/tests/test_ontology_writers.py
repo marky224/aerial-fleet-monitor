@@ -21,6 +21,7 @@ from afm_foundry_sync.models import (
 )
 from afm_foundry_sync.ontology_writers import (
     FlightLandedStamp,
+    FlightLiveStamp,
     FoundryWriter,
     _camel,
     aircraft_params,
@@ -620,6 +621,126 @@ async def test_stamp_flight_landed_batch_empty_makes_no_http_call(
 
 
 # ---------------------------------------------------------------------------
+# Flight.isLive liveness flag (Tier 2-lite)
+# ---------------------------------------------------------------------------
+
+
+def test_flight_params_omits_islive_by_default() -> None:
+    """The flag is off by default (emit_is_live=False), so `isLive` is never
+    sent — even on a Flight that carries a value. This is the pre-provisioning
+    safety: an unknown param would 400 the whole applyBatch."""
+    assert "isLive" not in flight_params(_flight(is_live=True))
+
+
+def test_flight_params_emits_islive_when_enabled() -> None:
+    """With emit_is_live=True (the writer threads its islive_enabled flag), a
+    non-None is_live is sent as camelCase `isLive`."""
+    assert flight_params(_flight(is_live=True), emit_is_live=True)["isLive"] is True
+    assert flight_params(_flight(is_live=False), emit_is_live=True)["isLive"] is False
+
+
+def test_flight_params_omits_islive_none_even_when_enabled() -> None:
+    """None is_live is omitted even when emitting is enabled — so an enrichment
+    re-upsert (which carries is_live=None) never clobbers the sweep-maintained
+    value (the modify path leaves omitted params unchanged)."""
+    assert "isLive" not in flight_params(_flight(is_live=None), emit_is_live=True)
+
+
+@respx.mock
+async def test_upsert_flight_batch_threads_islive_flag(settings_islive: FoundrySettings) -> None:
+    """upsert_flight_batch passes the writer's islive_enabled flag into
+    flight_params, so a live takeoff create carries isLive=true when the flag
+    is on."""
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings_islive) as w:
+        await w.upsert_flight_batch([_flight(lat=None, lon=None, is_live=True)])
+    params = json.loads(route.calls.last.request.content)["requests"][0]["parameters"]
+    assert params["isLive"] is True
+
+
+@respx.mock
+async def test_upsert_flight_batch_omits_islive_when_flag_off(settings: FoundrySettings) -> None:
+    """Default settings keep the flag off → no isLive on the wire even if the
+    Flight carries one (deploy-before-provision safety)."""
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        await w.upsert_flight_batch([_flight(lat=None, lon=None, is_live=True)])
+    params = json.loads(route.calls.last.request.content)["requests"][0]["parameters"]
+    assert "isLive" not in params
+
+
+@respx.mock
+async def test_stamp_flight_landed_batch_sets_islive_false_when_enabled(
+    settings_islive: FoundrySettings,
+) -> None:
+    """With the flag on, the landing stamp also flips isLive=false (a landing
+    ends the live leg) — added to the same minimal partial upsert, still
+    omitting every enrichment field."""
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    stamp = FlightLandedStamp(
+        flight_id="abc123-1748480400",
+        icao24="abc123",
+        takeoff_ts=datetime(2026, 5, 29, 1, 0, 0, tzinfo=UTC),
+        landed_at=datetime(2026, 5, 29, 3, 30, 0, tzinfo=UTC),
+    )
+    async with FoundryWriter(settings_islive) as w:
+        await w.stamp_flight_landed_batch([stamp])
+    params = json.loads(route.calls.last.request.content)["requests"][0]["parameters"]
+    assert params["isLive"] is False
+    for clobberable in ("statusTimeline", "trail2h", "openCaseCount"):
+        assert clobberable not in params
+
+
+@respx.mock
+async def test_set_flight_live_batch_sends_minimal_partial_upsert(
+    settings: FoundrySettings,
+) -> None:
+    """The sweep's writer goes through upsert-flight carrying ONLY identity +
+    isLive — never the enrichment fields (clobber-avoidance), camelCase keys,
+    PK twice. Carries the target value verbatim (true or false)."""
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    stamps = [
+        FlightLiveStamp(
+            flight_id="abc123-1748480400",
+            icao24="abc123",
+            takeoff_ts=datetime(2026, 5, 29, 1, 0, 0, tzinfo=UTC),
+            is_live=True,
+        ),
+        FlightLiveStamp(
+            flight_id="def456-1748470000",
+            icao24="def456",
+            takeoff_ts=datetime(2026, 5, 28, 22, 6, 40, tzinfo=UTC),
+            is_live=False,
+        ),
+    ]
+    async with FoundryWriter(settings) as w:
+        result = await w.set_flight_live_batch(stamps)
+
+    assert (result.attempted, result.succeeded) == (2, 2)
+    reqs = json.loads(route.calls.last.request.content)["requests"]
+    assert reqs[0]["parameters"] == {
+        "flightId": "abc123-1748480400",
+        "flight": "abc123-1748480400",
+        "icao24": "abc123",
+        "takeoffTs": "2026-05-29T01:00:00Z",
+        "isLive": True,
+    }
+    assert reqs[1]["parameters"]["isLive"] is False
+    for clobberable in ("statusTimeline", "trail2h", "trailPath", "landedAt", "status"):
+        assert clobberable not in reqs[0]["parameters"]
+
+
+@respx.mock
+async def test_set_flight_live_batch_empty_makes_no_http_call(settings: FoundrySettings) -> None:
+    route = respx.post(_FLIGHT_URL).mock(return_value=httpx.Response(200, json={}))
+    async with FoundryWriter(settings) as w:
+        result = await w.set_flight_live_batch([])
+
+    assert (result.attempted, result.succeeded) == (0, 0)
+    assert not route.called
+
+
+# ---------------------------------------------------------------------------
 # Flight enrichment primitive: list_flight_pks (mirrors list_aircraft_pks)
 # ---------------------------------------------------------------------------
 
@@ -662,18 +783,26 @@ async def test_list_flight_pks_falls_back_to_primary_key(settings: FoundrySettin
 
 
 @respx.mock
-async def test_list_flight_pks_with_completion_flags_landed(settings: FoundrySettings) -> None:
-    """The completion-aware scan returns ALL pks plus the subset with a non-null
-    landedAt (the Phase-B reconcile's completed set), from one paginated scan
-    with no extra round-trips. An explicit null landedAt is NOT completed."""
+async def test_list_flight_pks_with_completion_flags_landed_and_live(
+    settings: FoundrySettings,
+) -> None:
+    """The scan returns ALL pks plus, from the SAME paginated pass (no extra
+    round-trips): the completed subset (non-null ``landedAt``, the Phase-B
+    reconcile's protected set) and the currently-live subset (``isLive`` is
+    exactly ``true``). An explicit null landedAt is NOT completed; ``isLive``
+    false/null/absent is NOT live."""
     route = respx.get(_FLIGHT_OBJECTS_URL).mock(
         side_effect=[
             httpx.Response(
                 200,
                 json={
                     "data": [
-                        {"flightId": "f-airborne-1700"},
-                        {"flightId": "f-landed-1800", "landedAt": "2026-05-16T12:00:00Z"},
+                        {"flightId": "f-airborne-1700", "isLive": True},
+                        {
+                            "flightId": "f-landed-1800",
+                            "landedAt": "2026-05-16T12:00:00Z",
+                            "isLive": False,
+                        },
                     ],
                     "nextPageToken": "p2",
                 },
@@ -685,10 +814,11 @@ async def test_list_flight_pks_with_completion_flags_landed(settings: FoundrySet
         ]
     )
     async with FoundryWriter(settings) as w:
-        all_pks, completed = await w.list_flight_pks_with_completion()
+        all_pks, completed, live = await w.list_flight_pks_with_completion()
 
     assert all_pks == {"f-airborne-1700", "f-landed-1800", "f-null-landed-1900"}
     assert completed == {"f-landed-1800"}
+    assert live == {"f-airborne-1700"}  # isLive=false and absent are NOT live
     assert route.call_count == 2  # paginates exactly like the PK-only scan
 
 

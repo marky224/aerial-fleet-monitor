@@ -28,3 +28,14 @@ def settings() -> FoundrySettings:
         FOUNDRY_ACTION_DELETE_CASE="delete-case",
         AFM_API_BASE="http://api.test",
     )
+
+
+@pytest.fixture
+def settings_islive(settings: FoundrySettings) -> FoundrySettings:
+    """``settings`` with the Flight.isLive liveness flag enabled.
+
+    Models the post-provisioning state (FOUNDRY_FLIGHT_ISLIVE_ENABLED=true)
+    so the liveness write paths + reconcile sweep are exercised; the default
+    ``settings`` keeps the flag off (the safe pre-provisioning default).
+    """
+    return settings.model_copy(update={"FOUNDRY_FLIGHT_ISLIVE_ENABLED": True})

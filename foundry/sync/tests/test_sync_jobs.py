@@ -997,6 +997,109 @@ async def test_flight_reconcile_propagates_skip_on_unreachable_api(
 
 
 # ---------------------------------------------------------------------------
+# Flight reconcile — liveness sweep (Tier 2-lite, Flight.isLive)
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_flight_reconcile_liveness_sweep_writes_only_the_delta(
+    settings_islive: FoundrySettings,
+) -> None:
+    """With the flag on, the reconcile sweep converges Flight.isLive to the
+    live set (latest flight per airborne icao24), writing ONLY the delta:
+
+      - A_latest: airborne-latest, isLive absent      -> marked TRUE (newly live)
+      - B_latest: airborne-latest, isLive already true -> delta-skip (no write)
+      - C_recent: kept via TTL, NOT airborne-latest, isLive true (stale) -> FALSE
+      - A_old:    stub orphan deleted this run, isLive true -> EXCLUDED (moot)
+    """
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [
+                    _pos("a11111", on_ground=False, seen=now),  # airborne
+                    _pos("b22222", on_ground=False, seen=now),  # airborne
+                    _pos("c33333", on_ground=True, seen=now),  # on ground
+                ],
+                now,
+            ),
+        )
+    )
+    a_latest = synthesize_flight_id("a11111", now - timedelta(hours=1))
+    b_latest = synthesize_flight_id("b22222", now - timedelta(hours=1))
+    c_recent = synthesize_flight_id("c33333", now - timedelta(hours=2))  # within TTL
+    a_old = synthesize_flight_id("a11111", now - timedelta(hours=48))  # stub orphan -> delete
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"flightId": a_latest},  # isLive absent
+                    {"flightId": b_latest, "isLive": True},
+                    {"flightId": c_recent, "isLive": True},
+                    {"flightId": a_old, "isLive": True},
+                ]
+            },
+        )
+    )
+    respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+    live_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings_islive) as client, FoundryWriter(settings_islive) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.live_marked_true, result.live_marked_false) == (1, 1)
+    # Two partial upserts: the TRUE delta then the FALSE delta (each non-empty).
+    assert live_route.call_count == 2
+    true_params = json.loads(live_route.calls[0].request.content)["requests"]
+    false_params = json.loads(live_route.calls[1].request.content)["requests"]
+    assert [r["parameters"]["flightId"] for r in true_params] == [a_latest]
+    assert true_params[0]["parameters"]["isLive"] is True
+    assert [r["parameters"]["flightId"] for r in false_params] == [c_recent]
+    assert false_params[0]["parameters"]["isLive"] is False
+    # The deleted stub is never written (its isLive is moot); the already-live
+    # airborne-latest is not re-stamped (delta-only).
+    written = {r["parameters"]["flightId"] for call in (true_params, false_params) for r in call}
+    assert a_old not in written
+    assert b_latest not in written
+
+
+@respx.mock
+async def test_flight_reconcile_skips_liveness_sweep_when_flag_off(
+    settings: FoundrySettings,
+) -> None:
+    """Default settings keep the flag off → the sweep is skipped entirely: no
+    isLive writes (upsert-flight is never called), counters stay 0. The delete
+    path still runs (the sweep is additive)."""
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload([_pos("a11111", on_ground=False, seen=now)], now),
+        )
+    )
+    a_latest = synthesize_flight_id("a11111", now - timedelta(hours=1))
+    a_old = synthesize_flight_id("a11111", now - timedelta(hours=48))
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"flightId": a_latest, "isLive": True}, {"flightId": a_old}]},
+        )
+    )
+    respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+    live_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.live_marked_true, result.live_marked_false) == (0, 0)
+    assert not live_route.called  # no isLive writes at all (deploy-before-provision safety)
+    assert result.deleted == 1  # delete path still runs
+
+
+# ---------------------------------------------------------------------------
 # Flight enrichment (deferred FlightDetail/trail backfill)
 # ---------------------------------------------------------------------------
 

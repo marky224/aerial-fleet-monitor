@@ -401,6 +401,8 @@ def test_flight_reconcile_success_surfaces_counts(
             completed_skipped=300,
             deleted=5000,
             remaining=76000,
+            live_marked_true=42,
+            live_marked_false=17,
         )
 
     monkeypatch.setattr(foundry_sync, "run_flight_reconcile", _ok)
@@ -414,6 +416,8 @@ def test_flight_reconcile_success_surfaces_counts(
     assert md["deleted"].value == 5000
     assert md["remaining"].value == 76000
     assert md["skipped_empty_live"].value is False
+    assert md["live_marked_true"].value == 42
+    assert md["live_marked_false"].value == 17
 
 
 def test_flight_reconcile_empty_live_skip_surfaces_in_metadata(

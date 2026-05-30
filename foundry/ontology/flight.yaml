@@ -129,6 +129,31 @@ properties:
     enum: [departed, climb, cruise, descent, approach, landed]
     description: Latest FlightStage from the status_timeline tail.
 
+  # ---- Liveness (the "show only in-progress flights on the map" flag) ----
+  is_live:
+    type: boolean
+    nullable: true
+    description: |
+      True iff this leg is the CURRENT leg of a currently-airborne aircraft;
+      false once it lands / is superseded by a newer takeoff / its aircraft
+      drops out of the feed; null on legacy/never-classified legs. The Fleet
+      Overview Flight trailPath layer filters `isLive = true` so the map shows
+      only in-progress flights (the Flight object itself stays a 24h history
+      set — see _private/docs/foundry/WORKSHOP_APPS.md).
+
+      Maintained by afm_foundry_sync, NOT frozen like `staleness`:
+        - set true at the takeoff create (incremental_sync_positions);
+        - set false at a detected landing (stamp_flight_landed_batch);
+        - authoritatively reconciled every :45 by reconcile_flights, which
+          sets it true for exactly the latest-flight-per-airborne-icao24 set
+          and flips stale true->false (landings are detected only ~1.1% of
+          the time, so this hourly sweep is the correctness backbone).
+
+      Tenant apiName (camelCase): `isLive`. Requires provisioning a matching
+      `isLive` boolean parameter on the `upsert-flight` Action; until that
+      param exists the writer omits it (gated by FOUNDRY_FLIGHT_ISLIVE_ENABLED,
+      default false) so flight writes never 400 on an unknown parameter.
+
   # ---- Position (current / last known; geopoint built at write time) ----
   lat:
     type: double
