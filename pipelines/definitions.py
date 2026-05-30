@@ -284,12 +284,13 @@ prune_stale_positions_schedule = ScheduleDefinition(
 foundry_aircraft_reconcile_schedule = ScheduleDefinition(
     name="foundry_aircraft_reconcile_schedule",
     job=foundry_aircraft_reconcile_job,
-    cron_schedule="0 * * * *",
+    cron_schedule="*/2 * * * *",
     execution_timezone="UTC",
     default_status=DefaultScheduleStatus.RUNNING,
     description=(
-        "Hourly (Fix C): evict Foundry Aircraft objects no longer in the "
-        "live feed — mirrors prune_stale_positions on the Ontology side."
+        "Every 2 min (Fix C): evict Foundry Aircraft objects outside the "
+        "in-scope (East/West) live feed so the tenant stays continuously "
+        "equal to the live set (overlap-guarded; deletes capped per run)."
     ),
 )
 

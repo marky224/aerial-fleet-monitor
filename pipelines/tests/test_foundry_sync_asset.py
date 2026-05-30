@@ -198,7 +198,7 @@ def test_reconcile_success_surfaces_diff_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _ok() -> ReconcileResult:
-        return ReconcileResult(live=100, tenant=140, orphans=40, deleted=40)
+        return ReconcileResult(live=100, tenant=140, orphans=40, deleted=38, remaining=2)
 
     monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _ok)
 
@@ -206,7 +206,8 @@ def test_reconcile_success_surfaces_diff_counts(
     assert md["live"].value == 100
     assert md["tenant"].value == 140
     assert md["orphans"].value == 40
-    assert md["deleted"].value == 40
+    assert md["deleted"].value == 38
+    assert md["remaining"].value == 2
     assert md["skipped_empty_live"].value is False
 
 
@@ -221,6 +222,43 @@ def test_reconcile_empty_live_skip_surfaces_in_metadata(
     md = foundry_sync.foundry_aircraft_reconcile(build_asset_context()).metadata or {}
     assert md["skipped_empty_live"].value is True
     assert md["deleted"].value == 0
+
+
+def test_aircraft_reconcile_overlap_guard_skips_when_sibling_run_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At a 2-min cadence a tick must not stack on a still-draining sibling
+    (the per-run delete cap means the one-time drain spans several runs)."""
+
+    async def _must_not_run() -> ReconcileResult:
+        raise AssertionError("reconcile ran despite an in-progress sibling")
+
+    monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _must_not_run)
+    ctx = build_asset_context()
+    sibling = SimpleNamespace(dagster_run=SimpleNamespace(run_id="a-different-run"))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [sibling])
+
+    result = foundry_sync.foundry_aircraft_reconcile(ctx)
+
+    assert isinstance(result, MaterializeResult)
+    assert "already in progress" in (result.metadata or {})["skip_reason"].value
+
+
+def test_aircraft_reconcile_overlap_guard_ignores_own_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must exclude the current run itself (STARTED while executing)."""
+
+    async def _ok() -> ReconcileResult:
+        return ReconcileResult(live=100, tenant=140, orphans=40, deleted=40, remaining=0)
+
+    monkeypatch.setattr(foundry_sync, "run_aircraft_reconcile", _ok)
+    ctx = build_asset_context()
+    own = SimpleNamespace(dagster_run=SimpleNamespace(run_id=ctx.run_id))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [own])
+
+    md = foundry_sync.foundry_aircraft_reconcile(ctx).metadata or {}
+    assert md["deleted"].value == 40  # proceeded — own run is not "another"
 
 
 def test_real_defect_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
