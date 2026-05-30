@@ -218,6 +218,7 @@ def _reconcile_metadata(result: ReconcileResult) -> dict[str, MetadataValue]:
         "tenant": MetadataValue.int(result.tenant),
         "orphans": MetadataValue.int(result.orphans),
         "deleted": MetadataValue.int(result.deleted),
+        "remaining": MetadataValue.int(result.remaining),
         "skipped_empty_live": MetadataValue.bool(result.skipped_empty_live),
     }
 
@@ -225,12 +226,37 @@ def _reconcile_metadata(result: ReconcileResult) -> dict[str, MetadataValue]:
 @asset(
     group_name="foundry_sync",
     description=(
-        "Evicts Aircraft Ontology objects no longer in /v1/positions/live "
-        "(Fix C — the upsert-only positions sync never deletes)."
+        "Evicts Aircraft Ontology objects outside the live East/West set "
+        "(Fix C — the upsert-only positions sync never deletes). Runs every "
+        "~2 min so the tenant stays continuously equal to the in-scope live "
+        "feed; deletes are capped per run so the one-time pre-scope drain "
+        "spreads over a few ticks."
     ),
-    metadata={"target": "Foundry Ontology: Aircraft", "cadence": "hourly"},
+    metadata={"target": "Foundry Ontology: Aircraft", "cadence": "every 2 min"},
 )
 def foundry_aircraft_reconcile(context: AssetExecutionContext) -> MaterializeResult:
+    # Overlap guard: at a 2-min cadence a slow run must never stack on its
+    # predecessor (the per-run delete cap means the one-time drain spans a few
+    # runs). If another run of this job is in progress, skip this tick
+    # (coalesced no-op, surfaced via the same ``skip_reason`` contract as a
+    # FoundrySyncSkipped). Same pattern as flight enrichment / flight reconcile.
+    in_progress = context.instance.get_run_records(
+        RunsFilter(
+            job_name="foundry_aircraft_reconcile_job",
+            statuses=[
+                DagsterRunStatus.QUEUED,
+                DagsterRunStatus.STARTING,
+                DagsterRunStatus.STARTED,
+                DagsterRunStatus.CANCELING,
+            ],
+        )
+    )
+    if any(r.dagster_run.run_id != context.run_id for r in in_progress):
+        return _skipped(
+            context,
+            "another foundry_aircraft_reconcile run is already in progress "
+            "(coalesced — the previous run is still draining)",
+        )
     try:
         result = asyncio.run(run_aircraft_reconcile())
     except FoundrySyncSkipped as exc:
@@ -239,11 +265,12 @@ def foundry_aircraft_reconcile(context: AssetExecutionContext) -> MaterializeRes
         context.log.warning("reconcile skipped: live feed empty (fleet unknown — not evicting)")
     else:
         context.log.info(
-            "reconcile: live=%d tenant=%d orphans=%d deleted=%d",
+            "reconcile: live=%d tenant=%d orphans=%d deleted=%d remaining=%d",
             result.live,
             result.tenant,
             result.orphans,
             result.deleted,
+            result.remaining,
         )
     return MaterializeResult(metadata=_reconcile_metadata(result))
 

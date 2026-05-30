@@ -26,6 +26,7 @@ from afm_foundry_sync.sync_jobs import (
     FlightLifecycleDetector,
     FoundrySyncSkipped,
     _dedupe_latest,
+    _in_live_scope,
     enriched_sync_flights,
     full_sync_sites,
     guarded_sync,
@@ -96,6 +97,16 @@ def test_dedupe_latest_keeps_newest_per_icao24() -> None:
 
 def test_synthesize_flight_id_is_icao_plus_unix_ts() -> None:
     assert synthesize_flight_id("abc123", _T0) == f"abc123-{int(_T0.timestamp())}"
+
+
+@pytest.mark.parametrize(
+    ("region", "kept"),
+    [("west", True), ("east", True), ("all", True), (None, False)],
+)
+def test_in_live_scope_keeps_only_customer_regions(region: object, kept: bool) -> None:
+    # Live-set scope = East/West customer regions; out-of-region (None) is excluded.
+    pos = _pos("abc123", on_ground=False, seen=_T0, customer_region=region)
+    assert _in_live_scope(pos) is kept
 
 
 # --------------------------------------------------------------------------- #
@@ -275,6 +286,37 @@ async def test_incremental_sync_dedupes_and_returns_server_time_cursor(
     assert result.succeeded == 2
     assert result.cursor == _T1  # cursor = response.server_time
     assert b"abc123" in batch_route.calls.last.request.content
+
+
+@respx.mock
+async def test_incremental_sync_scopes_aircraft_and_detector_to_customer_regions(
+    settings: FoundrySettings,
+) -> None:
+    """Out-of-scope aircraft (customer_region=None) are neither upserted to the
+    Ontology nor observed by the detector — the tenant + the Flights minted off
+    detector edges stay East/West. Both are seeded on-ground, so each WOULD emit
+    a takeoff if observed; only the in-scope one does."""
+    detector = FlightLifecycleDetector({"abc123": True, "out999": True})
+    positions = [
+        _pos("abc123", on_ground=False, seen=_T1, customer_region="east"),  # in scope
+        _pos("out999", on_ground=False, seen=_T1, customer_region=None),  # out of scope
+    ]
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(200, json=_positions_payload(positions, _T1))
+    )
+    batch_route = respx.post(_AIRCRAFT_BATCH).mock(return_value=httpx.Response(200, json={}))
+    flight_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await incremental_sync_positions(client, writer, since=_T0, detector=detector)
+
+    assert result.attempted == 1  # only the in-scope aircraft upserted
+    assert b"abc123" in batch_route.calls.last.request.content
+    assert b"out999" not in batch_route.calls.last.request.content
+    # Detector only observed the in-scope aircraft → exactly one takeoff (abc123).
+    assert result.takeoffs_detected == 1
+    assert flight_route.called
+    assert b"out999" not in flight_route.calls.last.request.content
 
 
 @respx.mock
@@ -587,6 +629,106 @@ async def test_reconcile_propagates_skip_on_unreachable_api(
             FoundryWriter(settings) as writer,
         ):
             await reconcile_aircraft(client, writer)
+
+
+@respx.mock
+async def test_reconcile_keep_set_is_in_scope_only(
+    settings: FoundrySettings,
+) -> None:
+    """Keep-set = in-scope (East/West) aircraft in the live feed. An out-of-scope
+    aircraft present in the feed is NOT kept — it is evicted like any orphan, so
+    the tenant stays East/West."""
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [
+                    _pos("abc123", on_ground=False, seen=_T1, customer_region="east"),  # keep
+                    _pos("out999", on_ground=False, seen=_T1, customer_region=None),  # not in scope
+                ],
+                _T1,
+            ),
+        )
+    )
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"icao24": x} for x in ("abc123", "out999", "ddd444")]},
+        )
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    # live (in-scope) = {abc123}; out999 (no region) + ddd444 (departed) evicted.
+    assert (result.live, result.tenant, result.orphans, result.deleted) == (1, 3, 2, 2)
+    assert result.skipped_empty_live is False
+    body = json.loads(del_route.calls.last.request.content)
+    assert {r["parameters"]["Aircraft"] for r in body["requests"]} == {"out999", "ddd444"}
+
+
+@respx.mock
+async def test_reconcile_evicts_when_feed_has_no_in_scope_traffic(
+    settings: FoundrySettings,
+) -> None:
+    """The empty-live guard is on the FULL feed, not the in-scope subset. A
+    healthy feed carrying no East/West traffic still reconciles — correctly
+    evicting stale in-scope tenant objects (NOT skipped)."""
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [_pos("out999", on_ground=False, seen=_T1, customer_region=None)],  # out of scope
+                _T1,
+            ),
+        )
+    )
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"icao24": "abc123"}]})  # stale in-scope
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert result.skipped_empty_live is False  # full feed non-empty → not a skip
+    assert result.live == 0  # but no in-scope aircraft
+    assert (result.orphans, result.deleted) == (1, 1)  # the stale in-scope object evicted
+    assert del_route.called
+
+
+@respx.mock
+async def test_reconcile_caps_deletes_per_run_and_reports_remaining(
+    settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-run drain cap: with a cap of 2 and 3 orphans, delete 2 this run
+    and report remaining=1 (logged, never silently dropped). Orphans are sorted
+    so the drain is deterministic across runs."""
+    monkeypatch.setattr(_sj, "_AIRCRAFT_RECONCILE_DELETE_CAP", 2)
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload([_pos("abc123", on_ground=False, seen=_T1)], _T1),
+        )
+    )
+    # Three departed orphans (absent from live {abc123}); names fix the sort order.
+    respx.get(_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"icao24": x} for x in ("abc123", "ccc111", "ddd222", "eee333")]},
+        )
+    )
+    del_route = respx.post(_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_aircraft(client, writer)
+
+    assert (result.orphans, result.deleted, result.remaining) == (3, 2, 1)
+    body = json.loads(del_route.calls.last.request.content)
+    sent = [r["parameters"]["Aircraft"] for r in body["requests"]]
+    assert sent == sorted(["ccc111", "ddd222", "eee333"])[:2]  # first 2 of the sorted orphans
 
 
 # ---------------------------------------------------------------------------

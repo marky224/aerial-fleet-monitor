@@ -119,9 +119,12 @@ class ReconcileResult:
     feed persist in the Ontology forever. This job diffs the tenant's
     Aircraft set against the live feed and deletes the difference.
 
-    ``live`` / ``tenant`` are the two set sizes; ``orphans`` is
-    ``tenant - live``; ``deleted`` is how many of those the delete batch
-    confirmed (== ``orphans`` on full success). ``skipped_empty_live`` is
+    ``live`` is the in-scope (East/West) live-feed size; ``tenant`` is every
+    Aircraft PK in the Ontology; ``orphans`` is ``tenant - live``; ``deleted``
+    is how many of those the delete batch confirmed; ``remaining`` is the
+    orphans still queued after the per-run cap (logged, never silently dropped —
+    on full delete success ``orphans == deleted + remaining``).
+    ``skipped_empty_live`` is
     True when the live feed was empty and the reconcile bailed *without*
     enumerating the tenant or deleting anything — an empty feed means
     "fleet unknown right now" (e.g. an upstream OpenSky 429), never "fleet
@@ -132,6 +135,7 @@ class ReconcileResult:
     tenant: int
     orphans: int
     deleted: int
+    remaining: int = 0
     skipped_empty_live: bool = False
 
 
@@ -279,6 +283,19 @@ def _dedupe_latest(positions: Iterable[Position]) -> list[Position]:
         if prev is None or p.last_seen_at > prev.last_seen_at:
             latest[p.icao24] = p
     return list(latest.values())
+
+
+def _in_live_scope(p: Position) -> bool:
+    """Whether a position belongs to the live set we keep in the Ontology.
+
+    Live-set scope = the East/West customer regions (``customer_region`` in
+    ``{west, east, all}``); out-of-region traffic (``customer_region is None``)
+    is excluded. This single knob bounds BOTH the Aircraft upsert and the
+    takeoff/landing detector in ``incremental_sync_positions`` AND the
+    ``reconcile_aircraft`` keep-set, so the tenant — and the Flights minted off
+    detector edges — stay East/West. **Widen to global by returning ``True``.**
+    """
+    return p.customer_region is not None
 
 
 def synthesize_flight_id(icao24: str, takeoff_ts: datetime) -> str:
@@ -439,22 +456,28 @@ async def incremental_sync_positions(
     """
     response = await client.fetch_positions_live()
     deduped = _dedupe_latest(response.items)
+    # Scope to the East/West live set (see _in_live_scope). Filtering here bounds
+    # BOTH the Aircraft upsert and the detector's takeoff/landing edges to
+    # in-scope aircraft, so the tenant — and the Flights minted off these edges —
+    # stay East/West. Widen to global by relaxing _in_live_scope.
+    scoped = [p for p in deduped if _in_live_scope(p)]
     logger.info(
         "foundry_positions_sync",
         since=since.isoformat() if since else None,
         received=len(response.items),
         deduped=len(deduped),
+        scoped=len(scoped),
         server_time=response.server_time.isoformat(),
     )
 
-    edges = detector.observe(deduped) if detector is not None else DetectedEdges([], [])
+    edges = detector.observe(scoped) if detector is not None else DetectedEdges([], [])
     if edges.takeoffs:
         logger.info("foundry_takeoffs_detected", count=len(edges.takeoffs))
     if edges.landings:
         logger.info("foundry_landings_detected", count=len(edges.landings))
 
     batch: BatchResult = await writer.upsert_aircraft_batch(
-        [position_to_aircraft(p) for p in deduped]
+        [position_to_aircraft(p) for p in scoped]
     )
     # Create-only Flight write off detected takeoffs. Empty list → no-op
     # (upsert_flight_batch short-circuits), so this is safe with no detector.
@@ -484,10 +507,10 @@ async def incremental_sync_positions(
         landings_detected=len(edges.landings),
         flights_landed=landed_batch.succeeded,
         detector_state=(
-            detector.state_for(p.icao24 for p in deduped) if detector is not None else None
+            detector.state_for(p.icao24 for p in scoped) if detector is not None else None
         ),
         open_flight_state=(
-            detector.open_flight_state_for(p.icao24 for p in deduped)
+            detector.open_flight_state_for(p.icao24 for p in scoped)
             if detector is not None
             else None
         ),
@@ -526,46 +549,72 @@ async def full_sync_sites(
     )
 
 
+# Per-run delete cap, mirroring _FLIGHT_RECONCILE_DELETE_CAP. The first scoped
+# reconcile faces a one-time transition backlog (the whole pre-scope tenant,
+# ~9k, minus the ~700 in-scope live set); at _MAX_BATCH=100 that is ~90
+# sequential applyBatch calls in one run against a slow Foundry API on a
+# co-resident host. Cap deletes per run and let the backlog drain over a few
+# 2-min ticks (the overlap guard prevents run stacking). Steady-state runs
+# delete far below this, so the cap is invisible after the initial drain.
+_AIRCRAFT_RECONCILE_DELETE_CAP = 5000
+
+
 async def reconcile_aircraft(
     client: AfmApiClient,
     writer: FoundryWriter,
 ) -> ReconcileResult:
-    """Evict tenant Aircraft objects no longer in the live feed (Fix C).
+    """Evict tenant Aircraft objects outside the live East/West set (Fix C).
 
     The positions sync is upsert-only and never deletes, so aircraft that
     have departed (icao24 absent from ``/v1/positions/live`` after the
     API's recency window + the Postgres prune) accumulate in the Ontology
-    indefinitely. This diffs ``tenant - live`` and deletes the orphans via
-    the ``delete-aircraft`` Action.
+    indefinitely. This diffs ``tenant - keep`` and deletes the orphans via
+    the ``delete-aircraft`` Action, where ``keep`` is the **in-scope** subset
+    of the live feed (``_in_live_scope`` — East/West). Run frequently (every
+    ~2 min) so the tenant stays continuously equal to the live set; deletes are
+    capped per run (``_AIRCRAFT_RECONCILE_DELETE_CAP``) so the one-time pre-scope
+    drain spreads over a few ticks, with ``remaining`` logged (never silently
+    dropped).
 
-    **Empty-live safety guard:** if the live feed is empty, bail *before*
-    enumerating the tenant — ``tenant - {}`` is the entire tenant, and an
-    empty feed means the fleet is momentarily unknown (e.g. an upstream
-    OpenSky 429), not that every aircraft has gone. Reconciling on
-    no-knowledge would delete every Aircraft object. The interim manual
-    purge tool runs with a human watching; an automated hourly job must
-    not. Returns a no-op result flagged ``skipped_empty_live``.
+    **Empty-live safety guard:** if the *full* live feed is empty, bail *before*
+    enumerating the tenant — ``tenant - {}`` is the entire tenant, and an empty
+    feed means the fleet is momentarily unknown (e.g. an upstream OpenSky 429),
+    not that every aircraft has gone. The guard checks the **full** feed, not the
+    in-scope subset, so a healthy feed that happens to carry no in-scope traffic
+    right now still reconciles (correctly evicting stale in-scope objects).
+    Returns a no-op result flagged ``skipped_empty_live``.
     """
     response = await client.fetch_positions_live()
-    live = {p.icao24 for p in response.items}
-    if not live:
+    if not response.items:
         logger.warning("foundry_reconcile_skipped_empty_live")
         return ReconcileResult(live=0, tenant=0, orphans=0, deleted=0, skipped_empty_live=True)
 
+    # Keep-set = in-scope aircraft currently in the live feed (East/West). The
+    # scoped positions sync writes only in-scope aircraft, so in steady state the
+    # tenant is already in-scope and orphans are just the aircraft that left the
+    # feed since the last tick; the same diff drains any pre-scope out-of-region
+    # objects during the one-time transition. Sorted before capping so the drain
+    # is deterministic across runs.
+    live = {p.icao24 for p in response.items if _in_live_scope(p)}
     tenant = await writer.list_aircraft_pks()
     orphans = sorted(tenant - live)
+    to_delete = orphans[:_AIRCRAFT_RECONCILE_DELETE_CAP]
+    remaining = len(orphans) - len(to_delete)
     logger.info(
         "foundry_reconcile_aircraft",
         live=len(live),
         tenant=len(tenant),
         orphans=len(orphans),
+        deleting=len(to_delete),
+        remaining=remaining,
     )
-    batch = await writer.delete_aircraft_batch(orphans)
+    batch = await writer.delete_aircraft_batch(to_delete)
     return ReconcileResult(
         live=len(live),
         tenant=len(tenant),
         orphans=len(orphans),
         deleted=batch.succeeded,
+        remaining=remaining,
     )
 
 
