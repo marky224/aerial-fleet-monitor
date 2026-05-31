@@ -15,6 +15,7 @@ import pandas as pd
 from dagster import MaterializeResult, build_asset_context
 
 from pipelines.assets import detection
+from pipelines.rules import Anomaly
 from pipelines.services.baseline_provider import HeuristicBaselineProvider
 from pipelines.tests.rule_helpers import NOW, empty_cases, make_positions, mins
 
@@ -208,3 +209,70 @@ def test_asset_wrapper_returns_materializeresult(monkeypatch) -> None:
     md = out.metadata or {}
     assert md["cases_created"].value == 2
     assert md["rule.lost_signal"].value == 2
+
+
+# -- _insert_case SF-push gate --------------------------------------------
+
+
+class _RecordingCursor:
+    def __init__(self, calls: list) -> None:
+        self.calls = calls
+
+    def __enter__(self) -> _RecordingCursor:
+        return self
+
+    def __exit__(self, *_a: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: tuple) -> None:
+        self.calls.append((sql, params))
+
+
+class _RecordingConn:
+    def __init__(self, calls: list) -> None:
+        self.calls = calls
+
+    def __enter__(self) -> _RecordingConn:
+        return self
+
+    def __exit__(self, *_a: object) -> bool:
+        return False
+
+    def cursor(self) -> _RecordingCursor:
+        return _RecordingCursor(self.calls)
+
+    def commit(self) -> None:
+        pass
+
+
+class _RecordingPostgres:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def get_conn(self) -> _RecordingConn:
+        return _RecordingConn(self.calls)
+
+
+def test_insert_case_gates_sf_push_to_high_severity() -> None:
+    """Only high-severity cases are queued ('pending') for the SF Task;
+    medium/low/None are 'skipped' (local-only). The sf_sync_status is the
+    last bound param of the insert_case statement."""
+    for severity, expected in [
+        ("high", "pending"),
+        ("medium", "skipped"),
+        ("low", "skipped"),
+        (None, "skipped"),
+    ]:
+        pg = _RecordingPostgres()
+        anomaly = Anomaly(
+            rule="lost_signal",
+            icao24="abc123",
+            site_icao="KSFO",
+            customer_region="west",
+            detection_facts={"gap_minutes": 16.0},
+            severity_hint=severity,
+        )
+        detection._insert_case(pg, anomaly, "CASE-TEST-1", ["lost-signal-cruise"])  # type: ignore[arg-type]
+        insert_sql, params = pg.calls[0]
+        assert "INSERT INTO app.cases" in insert_sql
+        assert params[-1] == expected, f"severity={severity!r} -> {params[-1]!r}, want {expected!r}"
