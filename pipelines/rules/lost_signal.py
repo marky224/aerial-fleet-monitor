@@ -7,7 +7,7 @@ still be transmitting. Beyond 30 minutes we assume it landed or
 genuinely left coverage, not a fresh signal loss (the dedup window
 then keeps it from re-firing for 6h).
 
-Two precision guards keep this off normal OpenSky coverage churn (the
+Three precision guards keep this off normal OpenSky coverage churn (the
 free `/states/all` feed routinely drops a cruising aircraft for a few
 polls or as it crosses the polled region's edge):
 
@@ -30,6 +30,14 @@ polls or as it crosses the polled region's edge):
   to land is excluded (it's transitioning, expected to leave the band).
   A missing vertical rate is treated as level (we don't drop a candidate
   for absent data).
+* still transmitting — silence is measured against the aircraft's newest
+  snapshot in the *whole* feed (the detector-supplied ``feed_last_ts``), not
+  just its newest *in-scope* row. An aircraft that flies out of a watched
+  region keeps transmitting out-of-scope and is not lost; without this an
+  in-region -> out-of-region transition (often a descent to a field outside
+  the region) reads as a 14-30 min gap. This was the dominant false positive:
+  a 2026-05-30 precision audit found ~all sampled lost_signal fires were
+  aircraft still transmitting ~2 min later, having simply left the region.
 
 Severity is gradated per `_classify_severity` (B+C hybrid; user-approved
 2026-05-26): altitude bands as the base tier, sparse-coverage cells
@@ -163,7 +171,20 @@ class LostSignalRule(Rule):
             alt = last["altitude_ft"]
             if pd.isna(alt) or alt < CRUISE_FLOOR_FT:
                 continue
-            gap = now - last["ts_polled"]
+            # Measure silence against the aircraft's newest snapshot in the
+            # WHOLE feed (``feed_last_ts``, supplied by the detector), not just
+            # its newest *in-scope* row. An aircraft that flew out of a watched
+            # region keeps transmitting out-of-scope and is NOT lost; without
+            # this guard that in-region -> out-of-region transition reads as a
+            # 14-30 min signal loss (the dominant historical false positive).
+            # Falls back to the in-scope last fix when the column is absent
+            # (unit frames that carry no out-of-scope rows).
+            feed_last = last["ts_polled"]
+            if "feed_last_ts" in grp.columns:
+                col = grp["feed_last_ts"].iloc[0]
+                if not pd.isna(col):
+                    feed_last = col
+            gap = now - feed_last
             if not (LOST_MIN_GAP <= gap <= LOST_MAX_GAP):
                 continue
             # Level flight only: a climbing/descending aircraft is

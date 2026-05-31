@@ -276,6 +276,14 @@ def run_case_detection(
     positions = lakehouse.read_recent_positions(LOOKBACK_MINUTES)
     if positions.empty:
         return DetectionResult(0, 0, 0, {})
+    # An aircraft's true "last transmission" is its newest snapshot across the
+    # WHOLE feed, including out-of-scope positions (no customer_region). Capture
+    # it BEFORE the in-scope filter so lost_signal can tell a real signal loss
+    # from an aircraft that merely flew out of a watched region — the latter
+    # keeps transmitting out-of-scope but, measured against in-scope rows alone,
+    # reads as a 14-30 min gap (the dominant lost_signal false positive). See
+    # LostSignalRule + the feed_last_ts column attached below.
+    feed_last_seen = positions.groupby("icao24")["ts_polled"].max()
     # Out-of-scope traffic (no customer_region) is filtered before rules.
     in_scope = positions[positions["customer_region"].notna()].copy()
     if in_scope.empty:
@@ -284,6 +292,9 @@ def run_case_detection(
     flight_plans = _load_flight_plans(postgres)
     watched_coords = _load_watched_coords(postgres)
     enriched = enrich_positions(in_scope, flight_plans, watched_coords)
+    # Detector-supplied column (per base.py's "enrich so rules stay pure"
+    # contract): each aircraft's max ts_polled across the full, unfiltered feed.
+    enriched["feed_last_ts"] = enriched["icao24"].map(feed_last_seen)
 
     weather = _load_weather(postgres)
     existing_cases = _load_open_cases(postgres)
