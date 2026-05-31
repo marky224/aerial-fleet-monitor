@@ -342,6 +342,17 @@ def test_takeoff_to_flight_seeds_truthful_departed_event() -> None:
     assert f.status_timeline[0].occurred_at == _TAKEOFF_TS
 
 
+def test_takeoff_to_flight_is_live_true() -> None:
+    """A detected takeoff IS a live, in-progress leg (Tier 2-lite)."""
+    assert takeoff_to_flight(_FLIGHT_ID, "a12345", _TAKEOFF_TS).is_live is True
+
+
+def test_flight_detail_to_flight_leaves_is_live_none() -> None:
+    """Enrichment must NOT touch liveness — left None so flight_params omits
+    isLive and the modify-or-create preserves the sweep-maintained value."""
+    assert flight_detail_to_flight(_FLIGHT_ID, _TAKEOFF_TS, _make_flight_detail()).is_live is None
+
+
 # ---------------------------------------------------------------------------
 # flight_detail_to_flight (enrich path)
 # ---------------------------------------------------------------------------

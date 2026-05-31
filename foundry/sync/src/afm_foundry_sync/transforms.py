@@ -167,6 +167,10 @@ def takeoff_to_flight(flight_id: str, icao24: str, takeoff_ts: datetime) -> Flig
         eta_minutes=None,
         status="departed",
         current_stage="departed",
+        # A detected takeoff IS a live, in-progress leg. The reconcile sweep
+        # later flips this false once the aircraft lands / takes off again /
+        # drops out of the feed (see reconcile_flights).
+        is_live=True,
         lat=None,
         lon=None,
         open_case_count=0,
@@ -249,6 +253,10 @@ def flight_detail_to_flight(
         eta_minutes=detail.eta_minutes,
         status=status,
         current_stage=current_stage,
+        # Enrichment must NOT touch liveness: left None so flight_params omits
+        # `isLive` and the modify-or-create preserves the value the reconcile
+        # sweep / lifecycle edges maintain.
+        is_live=None,
         lat=detail.position.lat,
         lon=detail.position.lon,
         open_case_count=len(detail.open_case_ids),

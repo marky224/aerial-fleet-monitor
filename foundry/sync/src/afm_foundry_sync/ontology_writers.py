@@ -104,6 +104,24 @@ class FlightLandedStamp:
     landed_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class FlightLiveStamp:
+    """A liveness flip to stamp onto an existing Flight (reconcile sweep).
+
+    Carries only the identity (``flight_id`` + its parsed ``icao24`` /
+    ``takeoff_ts``) and the target ``is_live`` value.
+    ``set_flight_live_batch`` turns this into a *partial* upsert that sets
+    ONLY ``is_live`` (plus the required identity params), leaving every
+    enrichment / lifecycle field untouched by the modify-or-create — the
+    same omitted-params-preserved contract ``FlightLandedStamp`` relies on.
+    """
+
+    flight_id: str
+    icao24: str
+    takeoff_ts: datetime
+    is_live: bool
+
+
 def _camel(name: str) -> str:
     """snake_case → camelCase. Identity for single-token names (icao24, position).
 
@@ -224,7 +242,7 @@ def site_params(s: Site) -> dict[str, Any]:
     return {_camel(k): v for k, v in params.items()}
 
 
-def flight_params(f: Flight) -> dict[str, Any]:
+def flight_params(f: Flight, *, emit_is_live: bool = False) -> dict[str, Any]:
     """Serialize a Flight to the upsert-flight parameter map.
 
     Same contract as Aircraft/Site: PK written twice (``flight_id`` param +
@@ -232,6 +250,13 @@ def flight_params(f: Flight) -> dict[str, Any]:
     Flight's lat/lon are nullable, so ``position`` is emitted only when
     both are present (the takeoff-create payload has neither). The three
     list fields are JSON-encoded strings, exactly like Site's array fields.
+
+    ``emit_is_live`` gates the ``isLive`` param (default off): the caller
+    passes the writer's ``islive_enabled`` flag so the param is sent only
+    once the tenant's ``upsert-flight.isLive`` parameter is provisioned.
+    Even when emitted it is omitted on None (``_put_optional``), so an
+    enrichment re-upsert — which carries ``is_live=None`` — never clobbers
+    the sweep-maintained value.
     """
     params: dict[str, Any] = {
         "flight_id": f.flight_id,
@@ -260,6 +285,10 @@ def flight_params(f: Flight) -> dict[str, Any]:
     _put_optional(params, "eta_minutes", f.eta_minutes)
     _put_optional(params, "status", f.status)
     _put_optional(params, "current_stage", f.current_stage)
+    # Liveness flag — only when the tenant param is provisioned (emit_is_live)
+    # AND the Flight actually carries a value (None → omitted → preserved).
+    if emit_is_live:
+        _put_optional(params, "is_live", f.is_live)
     # Geopoint only when both coordinates are known (null until enrichment).
     if f.lat is not None and f.lon is not None:
         params["lat"] = f.lat
@@ -339,6 +368,10 @@ class FoundryWriter:
         self._action_delete_flight = settings.FOUNDRY_ACTION_DELETE_FLIGHT
         self._action_case = settings.FOUNDRY_ACTION_UPSERT_CASE
         self._action_delete_case = settings.FOUNDRY_ACTION_DELETE_CASE
+        # Liveness flag gate (Flight.isLive). Public so reconcile_flights can
+        # decide whether to run the liveness sweep. False until the tenant's
+        # `upsert-flight.isLive` parameter is provisioned — see FoundrySettings.
+        self.islive_enabled = settings.FOUNDRY_FLIGHT_ISLIVE_ENABLED
         self._client = httpx.AsyncClient(
             base_url=str(settings.FOUNDRY_TENANT_URL).rstrip("/"),
             timeout=_REQUEST_TIMEOUT,
@@ -394,7 +427,10 @@ class FoundryWriter:
         """Upsert a batch of Flights. No-op (no HTTP call) on an empty list."""
         if not flights:
             return BatchResult(attempted=0, succeeded=0)
-        return await self._apply_batch(self._action_flight, [flight_params(f) for f in flights])
+        return await self._apply_batch(
+            self._action_flight,
+            [flight_params(f, emit_is_live=self.islive_enabled) for f in flights],
+        )
 
     @transient_retry
     async def _get_objects_page(self, object_type: str, page_token: str | None) -> dict[str, Any]:
@@ -456,33 +492,36 @@ class FoundryWriter:
         takeoff Flights from ``/v1/flights``. Read-only — no Action applied.
 
         A thin projection over :meth:`list_flight_pks_with_completion` (one
-        scan, the completion half discarded), so the pagination lives in one
-        place. The extra per-object ``landedAt`` lookup is negligible for
+        scan, the completion + liveness halves discarded), so the pagination
+        lives in one place. The extra per-object lookups are negligible for
         PK-only callers.
         """
-        all_pks, _ = await self.list_flight_pks_with_completion()
+        all_pks, _, _ = await self.list_flight_pks_with_completion()
         return all_pks
 
-    async def list_flight_pks_with_completion(self) -> tuple[set[str], set[str]]:
-        """Return ``(all flight PKs, completed flight PKs)`` from one tenant scan.
+    async def list_flight_pks_with_completion(self) -> tuple[set[str], set[str], set[str]]:
+        """Return ``(all PKs, completed PKs, currently-live PKs)`` from one scan.
 
         Same pagination + PK extraction as the PK-only ``list_flight_pks``,
-        but ALSO captures which flights are *completed* — for free, since
-        ``_get_objects_page`` already returns every property of each object
-        and the PK-only path simply discarded them (no extra round-trips). A
-        flight is completed iff its ``landedAt`` property (the camelCase of
-        ``landed_at``, stamped by ``stamp_flight_landed_batch``) is present and
-        non-null.
+        but ALSO captures, for free (``_get_objects_page`` already returns
+        every property of each object — no extra round-trips):
 
-        The Phase-B reconcile uses this to **exclude completed flights from
-        its stub-delete set**: completed flights are evicted only by the
-        archive asset (archive-to-cold-store then delete), so the reconcile
-        must never delete one out from under it. Stubs (never-completed /
-        lost-at-cruise / legacy-backlog legs) carry no ``landedAt`` and are
-        the reconcile's to delete. Read-only — no Action applied.
+          - **completed** — flights whose ``landedAt`` (camelCase of
+            ``landed_at``, stamped by ``stamp_flight_landed_batch``) is
+            present and non-null; the Phase-B reconcile excludes these from
+            its stub-delete set (completed flights are evicted only by the
+            archive asset, never deleted out from under it).
+          - **live** — flights whose ``isLive`` property is currently
+            ``true``; the liveness sweep diffs this against the
+            latest-per-airborne target so it writes only the *delta*
+            (newly-live → true, stale-live → false) instead of re-stamping
+            the whole live set every run.
+
+        Read-only — no Action applied.
         """
         all_pks: set[str] = set()
         completed: set[str] = set()
+        live: set[str] = set()
         page_token: str | None = None
         while True:
             body = await self._get_objects_page("Flight", page_token)
@@ -494,10 +533,12 @@ class FoundryWriter:
                 all_pks.add(pk)
                 if obj.get("landedAt") is not None:
                     completed.add(pk)
+                if obj.get("isLive") is True:
+                    live.add(pk)
             page_token = body.get("nextPageToken")
             if not page_token:
                 break
-        return all_pks, completed
+        return all_pks, completed, live
 
     async def iter_completed_flights(self) -> AsyncIterator[list[dict[str, Any]]]:
         """Yield, page by page, the raw Foundry objects of every COMPLETED flight.
@@ -560,12 +601,49 @@ class FoundryWriter:
         enrichment-less stamp would clobber to empty. Instead it sends a
         **minimal partial upsert** through the same modify-or-create
         ``upsert-flight`` Action: the PK (twice — ``flight_id`` param +
-        ``flight`` locator), ``icao24``, ``takeoff_ts``, and the three
-        lifecycle fields. Every omitted param (route, registration, timeline,
+        ``flight`` locator), ``icao24``, ``takeoff_ts``, the three lifecycle
+        fields (``landed_at`` / ``status`` / ``current_stage``), and — once
+        the liveness flag is provisioned (``islive_enabled``) — ``isLive=false``
+        (a landing ends the live leg). Every omitted param (route, registration,
+        timeline,
         trail, cases) is left unchanged by the modify path — verified against
         the live tenant 2026-05-29 (partial upsert preserved origin / callsign
         / status_timeline / trail_2h while applying the landing). No-op on an
         empty list.
+        """
+        if not stamps:
+            return BatchResult(attempted=0, succeeded=0)
+        param_dicts: list[dict[str, Any]] = []
+        for s in stamps:
+            fields: dict[str, Any] = {
+                "flight_id": s.flight_id,
+                "flight": s.flight_id,
+                "icao24": s.icao24,
+                "takeoff_ts": _iso_utc(s.takeoff_ts),
+                "landed_at": _iso_utc(s.landed_at),
+                "status": "landed",
+                "current_stage": "landed",
+            }
+            # A landing ends the live leg. Emitted only once the tenant
+            # `upsert-flight.isLive` param is provisioned (islive_enabled);
+            # otherwise omitted so the stamp never 400s on an unknown param.
+            if self.islive_enabled:
+                fields["is_live"] = False
+            param_dicts.append({_camel(k): v for k, v in fields.items()})
+        return await self._apply_batch(self._action_flight, param_dicts)
+
+    async def set_flight_live_batch(self, stamps: list[FlightLiveStamp]) -> BatchResult:
+        """Partial-upsert ONLY the ``isLive`` flag on existing Flights.
+
+        The liveness-sweep counterpart of ``stamp_flight_landed_batch``: a
+        minimal modify-or-create that sets ``is_live`` (plus the required
+        identity params — PK twice, ``icao24``, ``takeoff_ts``) and omits
+        everything else, so route / status / timeline / trail / landing are
+        all left untouched by the modify path. No-op on an empty list.
+
+        Caller-gated: ``reconcile_flights`` only builds stamps when
+        ``writer.islive_enabled`` is set, so this is never reached before the
+        tenant's ``upsert-flight.isLive`` parameter is provisioned.
         """
         if not stamps:
             return BatchResult(attempted=0, succeeded=0)
@@ -577,9 +655,7 @@ class FoundryWriter:
                     "flight": s.flight_id,
                     "icao24": s.icao24,
                     "takeoff_ts": _iso_utc(s.takeoff_ts),
-                    "landed_at": _iso_utc(s.landed_at),
-                    "status": "landed",
-                    "current_stage": "landed",
+                    "is_live": s.is_live,
                 }.items()
             }
             for s in stamps

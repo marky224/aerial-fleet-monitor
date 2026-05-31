@@ -123,6 +123,20 @@ class FoundrySettings(BaseSettings):
             "moving updated_at window naturally."
         ),
     )
+    FOUNDRY_FLIGHT_ISLIVE_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Feature flag for the Flight.isLive liveness flag (the 'show only "
+            "in-progress flights on the map' filter). Default false so code can "
+            "deploy BEFORE the tenant is provisioned: emitting an `isLive` param "
+            "on upsert-flight before the matching Action parameter exists would "
+            "400 the whole flight applyBatch (all-or-nothing). When false, the "
+            "writer omits `isLive` everywhere and reconcile_flights skips the "
+            "liveness sweep — zero behavior change. Flip to true only AFTER "
+            "provisioning the `Flight.isLive` property + the `upsert-flight."
+            "isLive` parameter in the tenant. See foundry/ontology/flight.yaml."
+        ),
+    )
     AFM_API_BASE: str = Field(
         default="http://localhost:8000",
         description="Base URL of the local AFM /v1 API the sync reads from.",
