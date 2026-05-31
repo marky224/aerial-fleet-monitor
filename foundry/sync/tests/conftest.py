@@ -26,6 +26,12 @@ def settings() -> FoundrySettings:
         FOUNDRY_ACTION_DELETE_FLIGHT="delete-flight",
         FOUNDRY_ACTION_UPSERT_CASE="upsert-case",
         FOUNDRY_ACTION_DELETE_CASE="delete-case",
+        # Pin the liveness flag OFF explicitly (init kwargs override the
+        # env_file): otherwise FoundrySettings reads _private/foundry/.env and a
+        # locally-flipped FOUNDRY_FLIGHT_ISLIVE_ENABLED=true would leak in and
+        # silently turn the sweep on in every flag-off test. settings_islive
+        # flips it back on where the liveness paths are exercised.
+        FOUNDRY_FLIGHT_ISLIVE_ENABLED=False,
         AFM_API_BASE="http://api.test",
     )
 

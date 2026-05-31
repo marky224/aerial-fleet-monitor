@@ -698,10 +698,10 @@ async def reconcile_flights(
     sorted before capping so the drain is deterministic across runs.
 
     **Liveness sweep (Tier 2-lite)**: when ``writer.islive_enabled`` is set,
-    this run also reconciles ``Flight.isLive`` to the live set — the same
-    latest-flight-per-airborne-icao24 (``latest_airborne``) it already
-    computes — writing only the delta vs the tenant's current ``isLive=true``
-    set (``live_marked_true`` / ``live_marked_false``). This is the authoritative
+    this run also reconciles ``Flight.isLive`` to the live set — the latest
+    NON-COMPLETED flight per airborne icao24 (``latest_airborne`` minus
+    ``completed``) — writing only the delta vs the tenant's current
+    ``isLive=true`` set (``live_marked_true`` / ``live_marked_false``). This is the authoritative
     backbone for the map's "show only in-progress flights" filter: tick-level
     edges set ``isLive`` at takeoff/landing, but landings are detected only
     ~1.1% of the time, so this hourly sweep is what flips the stale-airborne
@@ -767,23 +767,39 @@ async def reconcile_flights(
     batch = await writer.delete_flight_batch(to_delete)
 
     # ---- Liveness sweep (Tier 2-lite): reconcile Flight.isLive to the live set.
-    # The live set = latest flight per currently-airborne icao24 (``latest_airborne``,
-    # already computed for the keep-set). Landings are detected only ~1.1% of the
-    # time, so this hourly delta-write — not the tick-level edges — is what keeps
-    # isLive honest: it flips stale ``true``→``false`` (undetected landing /
-    # supersession / feed dropout / process-restart orphan) and ``null/false``→
-    # ``true`` for newly-live legs the takeoff-create may have missed. Gated on the
-    # provisioning flag; writes only the delta vs the tenant's current isLive=true
-    # set, and skips legs deleted above (their isLive is moot).
+    # The live set = latest NON-COMPLETED flight per currently-airborne icao24
+    # (``latest_airborne`` minus ``completed``, both already computed for the
+    # keep-set). Landings are detected only ~1.1% of the time, so this hourly
+    # delta-write — not the tick-level edges — is what keeps isLive honest: it
+    # flips stale ``true``→``false`` (undetected landing / supersession / feed
+    # dropout / process-restart orphan) and ``null/false``→``true`` for newly-live
+    # legs the takeoff-create may have missed. Gated on the provisioning flag;
+    # writes only the delta vs the tenant's current isLive=true set, and skips
+    # legs deleted above (their isLive is moot).
+    #
+    # COMPLETED-leg exclusion: a leg with ``landed_at`` set is never "live", even
+    # when it is the *latest* leg of a now-airborne aircraft — that happens when
+    # the aircraft landed (leg stamped landed + isLive=false), then took off again
+    # on an edge AFM didn't observe, so no newer leg was minted. Without this
+    # exclusion the sweep would re-mark that completed leg true every run (fighting
+    # the landing stamp) and the map would show its stale trail. Excluding
+    # ``completed`` here both stops that and flips any such currently-live leg
+    # false (it falls into the false set below, and completed legs are never in
+    # ``to_delete`` — they are left for the archive asset).
     live_marked_true = 0
     live_marked_false = 0
     if writer.islive_enabled:
+        target_live = {
+            pk: (icao24, ts)
+            for icao24, (ts, pk) in latest_airborne.items()
+            if pk not in completed
+        }
         true_stamps = [
             FlightLiveStamp(flight_id=pk, icao24=icao24, takeoff_ts=ts, is_live=True)
-            for icao24, (ts, pk) in latest_airborne.items()
+            for pk, (icao24, ts) in target_live.items()
             if pk not in current_live
         ]
-        target_pks = {pk for _, pk in latest_airborne.values()}
+        target_pks = set(target_live)
         false_stamps: list[FlightLiveStamp] = []
         for pk in sorted((current_live - target_pks) - set(to_delete)):
             try:

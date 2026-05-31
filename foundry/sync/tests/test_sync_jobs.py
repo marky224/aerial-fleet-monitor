@@ -1099,6 +1099,65 @@ async def test_flight_reconcile_skips_liveness_sweep_when_flag_off(
     assert result.deleted == 1  # delete path still runs
 
 
+@respx.mock
+async def test_flight_reconcile_liveness_sweep_excludes_completed_legs(
+    settings_islive: FoundrySettings,
+) -> None:
+    """A COMPLETED leg (landedAt set) is never live, even when it's the LATEST
+    leg of a now-airborne aircraft (landed, then re-departed on an edge AFM
+    didn't observe, so no newer leg was minted):
+
+      - X_completed: latest leg of airborne X, landedAt set, isLive=true
+            -> flipped FALSE (a landed leg is not live; don't re-assert true)
+      - Y_completed: latest leg of airborne Y, landedAt set, isLive null
+            -> left null (NOT marked true)
+      - Z_live:      latest leg of airborne Z, landedAt null, isLive null
+            -> marked TRUE (a genuine in-progress leg)
+    """
+    now = _T0
+    respx.get(_POS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_positions_payload(
+                [
+                    _pos("a11111", on_ground=False, seen=now),
+                    _pos("b22222", on_ground=False, seen=now),
+                    _pos("c33333", on_ground=False, seen=now),
+                ],
+                now,
+            ),
+        )
+    )
+    x_completed = synthesize_flight_id("a11111", now - timedelta(hours=1))
+    y_completed = synthesize_flight_id("b22222", now - timedelta(minutes=30))
+    z_live = synthesize_flight_id("c33333", now - timedelta(minutes=45))
+    respx.get(_FLIGHT_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"flightId": x_completed, "landedAt": "2026-05-15T11:30:00Z", "isLive": True},
+                    {"flightId": y_completed, "landedAt": "2026-05-15T11:45:00Z"},
+                    {"flightId": z_live},
+                ]
+            },
+        )
+    )
+    respx.post(_FLIGHT_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+    live_route = respx.post(_FLIGHT_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings_islive) as client, FoundryWriter(settings_islive) as writer:
+        result = await reconcile_flights(client, writer, now=now)
+
+    assert (result.live_marked_true, result.live_marked_false) == (1, 1)
+    true_params = json.loads(live_route.calls[0].request.content)["requests"]
+    false_params = json.loads(live_route.calls[1].request.content)["requests"]
+    assert [r["parameters"]["flightId"] for r in true_params] == [z_live]  # only the non-completed leg
+    assert [r["parameters"]["flightId"] for r in false_params] == [x_completed]  # landed leg flipped off
+    written = {r["parameters"]["flightId"] for call in (true_params, false_params) for r in call}
+    assert y_completed not in written  # completed + null is left null, never marked true
+
+
 # ---------------------------------------------------------------------------
 # Flight enrichment (deferred FlightDetail/trail backfill)
 # ---------------------------------------------------------------------------
