@@ -10,8 +10,8 @@ Ontology forever — this evicts the Aircraft objects whose icao24 is no
 longer in the live feed (with an empty-live safety guard; see
 ``afm_foundry_sync.sync_jobs.reconcile_aircraft``). It mirrors the
 ``prune_stale_positions`` (Fix B) pattern on the Foundry side.
-``foundry_flight_enrichment`` (hourly, offset to :30 so it does not
-collide with the top-of-hour reconcile): the takeoff path writes Flight
+``foundry_flight_enrichment`` (every 5 min, so the 2h ``trailPath`` head
+tracks the 2-min Aircraft markers): the takeoff path writes Flight
 objects with only their synthesized identity, so this backfills
 route/operator/registration/status + 2h trail from ``/v1/flights`` for
 the latest flight per icao24 (see
@@ -306,11 +306,11 @@ def _cases_metadata(result: CaseSyncResult) -> dict[str, MetadataValue]:
         "create-only takeoff Flight objects from /v1/flights (latest flight "
         "per icao24)."
     ),
-    metadata={"target": "Foundry Ontology: Flight", "cadence": "hourly"},
+    metadata={"target": "Foundry Ontology: Flight", "cadence": "every 5 min"},
 )
 def foundry_flight_enrichment(context: AssetExecutionContext) -> MaterializeResult:
-    # Overlap guard: the hourly schedule must never stack a second run on a
-    # slow one (on a bad-upstream hour enrichment can still run long). If
+    # Overlap guard: the 5-min schedule must never stack a second run on a
+    # slow one (on a bad-upstream tick enrichment can still run long). If
     # another run of this job is already in progress, skip this tick — a
     # coalesced no-op, surfaced via the same ``skip_reason`` contract as a
     # FoundrySyncSkipped so verification treats it identically.

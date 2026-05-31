@@ -351,15 +351,21 @@ foundry_flight_archive_purge_schedule = ScheduleDefinition(
 foundry_flight_enrichment_schedule = ScheduleDefinition(
     name="foundry_flight_enrichment_schedule",
     job=foundry_flight_enrichment_job,
-    # :30 past the hour — offset from the top-of-hour reconcile + prune so
-    # the per-icao24 /v1/flights fanout never runs alongside the eviction
-    # pass (and the tenant Flight set it reads is post-reconcile-stable).
-    cron_schedule="30 * * * *",
+    # Every 5 min so the Flight ``trailPath`` tracks the 2-min Aircraft
+    # markers — the trail head is only as fresh as the last enrichment, so the
+    # prior hourly cadence left it up to ~1h behind the live dot. Reads the
+    # local lake / AFM API only (no OpenSky cost); the overlap guard stops a
+    # slow run from stacking. Coinciding with the */2 aircraft reconcile or the
+    # :45 flight reconcile is safe — different object types, and enrichment
+    # writes disjoint fields (trailPath / route) from the reconcile's
+    # isLive / landedAt, so the modify-per-field upserts don't clobber.
+    cron_schedule="*/5 * * * *",
     execution_timezone="UTC",
     default_status=DefaultScheduleStatus.RUNNING,
     description=(
-        "Hourly at :30: backfill route/operator/registration/status + 2h "
-        "trail onto the create-only takeoff Flight objects from /v1/flights."
+        "Every 5 min: backfill route/operator/registration/status + 2h trail "
+        "onto the create-only takeoff Flight objects from /v1/flights, keeping "
+        "trailPath aligned with the live 2-min Aircraft markers."
     ),
 )
 
