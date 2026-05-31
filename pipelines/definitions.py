@@ -50,6 +50,7 @@ from pipelines.assets import (
     prune_stale_positions,
     sf_case_push,
     sf_case_sync,
+    sf_push_not_failing,
     static_reference,
 )
 from pipelines.resources import (
@@ -486,6 +487,7 @@ defs = Definitions(
     asset_checks=[
         archive_and_tenant_disjoint,
         archive_retention_enforced,
+        sf_push_not_failing,
     ],
     resources={
         "postgres": postgres,

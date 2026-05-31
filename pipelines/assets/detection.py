@@ -4,12 +4,15 @@ Per the decoupled SF-write design (user 2026-05-21), this asset only
 *detects* and writes *local* cases. It reads the last hour of positions
 (lakehouse), enriches them with flight-plan + nearest-watched-site
 columns, loads weather + open cases + airport coords from Postgres, runs
-every rule, dedups, and inserts the survivors into ``app.cases``
-(``sf_sync_status='pending'``) + ``app.case_timeline``.
+every rule, dedups, and inserts the survivors into ``app.cases`` +
+``app.case_timeline``.
 
 The Salesforce write is done separately by the case-sync push path
 (slice 7) reading ``pending`` rows — the detector never touches SF, so an
-SF outage can't block detection.
+SF outage can't block detection. Only ``SF_PUSH_SEVERITIES`` cases are
+tagged ``sf_sync_status='pending'`` (queued for a proactive SF Task);
+everything below is ``'skipped'`` — kept local (Postgres + Foundry) for
+the dashboard but never pushed. See the constant for the rationale.
 
 ``summary`` and ``severity_justification`` stay NULL: per the
 no-Anthropic decision the Phase-07 Agentforce agent fills the summary
@@ -46,6 +49,20 @@ _EARTH_RADIUS_NM = 3440.065
 # be met). Simulation (2026-05-28): 60→30 drops total volume 1,860→1,067/3h
 # without losing operational signal — see PR description for the table.
 LOOKBACK_MINUTES = 30
+
+# Severities that warrant a proactive Salesforce Task. Cases at any other
+# severity are inserted ``sf_sync_status='skipped'`` so the push never ships
+# them; they stay in Postgres + Foundry for the observability dashboard.
+#
+# NOTE — TEMPORARY (user 2026-05-31): ``medium`` is included "for now" at
+# the user's explicit request, with the storage cost understood. Medium is
+# ~6,120 cases/day; the (DE-tier, 5 MB) Salesforce org holds only ~2,600, so
+# pushing medium REFILLS the org in ~10h, after which every Case create
+# fails STORAGE_LIMIT_EXCEEDED until storage is freed — exactly what
+# silently killed the push for 3 days (2026-05-28→31). The sustainable
+# steady state is {"high"} (~348/day, ~7.5d to fill) plus retention, or
+# medium on an org with real storage. Revisit before that 5 MB fills again.
+SF_PUSH_SEVERITIES = frozenset({"high", "medium"})
 
 
 @dataclass(frozen=True)
@@ -216,12 +233,16 @@ def _insert_case(
     flight_id = anomaly.icao24 or f"WX-{anomaly.site_icao or 'UNKN'}"
     site_icao = anomaly.site_icao or ""
     severity = anomaly.severity_hint or "low"
+    # Gate the SF push at the source: only cases whose severity is in
+    # SF_PUSH_SEVERITIES are queued ('pending') for a proactive SF Task;
+    # everything else is 'skipped' (local-only).
+    sf_sync_status = "pending" if severity in SF_PUSH_SEVERITIES else "skipped"
     insert_case = """
         INSERT INTO app.cases (
             case_id, flight_id, site_icao, customer_region, case_type,
             status, severity, detection_facts, runbook_refs, sf_sync_status
         )
-        VALUES (%s, %s, %s, %s, %s, 'open', %s, %s, %s, 'pending')
+        VALUES (%s, %s, %s, %s, %s, 'open', %s, %s, %s, %s)
     """
     insert_timeline = """
         INSERT INTO app.case_timeline (case_id, event_type, detail, source)
@@ -240,6 +261,7 @@ def _insert_case(
                     severity,
                     Json(anomaly.detection_facts),
                     runbook_refs,
+                    sf_sync_status,
                 ),
             )
             cur.execute(insert_timeline, (case_id, Json({"rule": anomaly.rule})))
@@ -302,7 +324,8 @@ def _result_metadata(result: DetectionResult) -> dict[str, MetadataValue]:
     deps=[opensky_positions, noaa_weather, static_reference],
     description=(
         "Runs the anomaly rule engine over the last hour of positions and "
-        "inserts detected cases into app.cases (sf_sync_status='pending'). "
+        "inserts detected cases into app.cases (severity in "
+        "SF_PUSH_SEVERITIES → sf_sync_status='pending', else 'skipped'). "
         "The SF write is done separately by the case-sync push path."
     ),
     metadata={"target": "app.cases", "cadence": "5min"},
