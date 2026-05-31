@@ -35,8 +35,8 @@ def test_positive_cruise_aircraft_goes_quiet() -> None:
 
 
 def test_negative_short_gap_is_poll_noise() -> None:
-    # 5-minute gap is well below the 14-min LOST_MIN_GAP floor (post-PR-#25
-    # 120s polling cadence — 5 min is ~2.5 missed polls, ordinary jitter).
+    # 5-minute gap is well below the 14-min LOST_MIN_GAP floor (at the 300s
+    # poll cadence 5 min is ~1 missed poll, ordinary jitter).
     positions = make_positions(
         [
             {"icao24": "blip01", "altitude_ft": 38_000, "ts_polled": NOW - mins(5)},
@@ -223,7 +223,7 @@ def test_severity_hot_cell_demotes_one_tier() -> None:
 
 
 def test_severity_long_gap_promotes_one_tier() -> None:
-    """alt >= 35k (base 'low'), gap >= 15min → promoted to 'medium'."""
+    """alt >= 35k (base 'low'), gap >= 20min → promoted to 'medium'."""
     positions = make_positions(
         [
             {
@@ -231,7 +231,7 @@ def test_severity_long_gap_promotes_one_tier() -> None:
                 "altitude_ft": 38_000,
                 "lat": _COLD_CELL_LAT,
                 "lon": _COLD_CELL_LON,
-                "ts_polled": NOW - mins(16),
+                "ts_polled": NOW - mins(21),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]
@@ -241,7 +241,7 @@ def test_severity_long_gap_promotes_one_tier() -> None:
 
 
 def test_severity_demote_and_promote_cancel() -> None:
-    """alt < 30k (base 'high') in a hot cell with gap >=15min: demote then
+    """alt < 30k (base 'high') in a hot cell with gap >=20min: demote then
     promote cancel out, net 'high'. Covers the combined-shift edge case."""
     positions = make_positions(
         [
@@ -250,7 +250,7 @@ def test_severity_demote_and_promote_cancel() -> None:
                 "altitude_ft": 28_000,
                 "lat": _HOT_CELL_LAT,
                 "lon": _HOT_CELL_LON,
-                "ts_polled": NOW - mins(16),
+                "ts_polled": NOW - mins(21),
             },
             {"icao24": "live01", "ts_polled": NOW},
         ]

@@ -11,17 +11,20 @@ Two precision guards keep this off normal OpenSky coverage churn (the
 free `/states/all` feed routinely drops a cruising aircraft for a few
 polls or as it crosses the polled region's edge):
 
-* a 14-minute floor — at the post-PR-#25 polling cadence of 120s,
-  14 min = 7 missed polls; below that is feed jitter or transient
-  coverage, not an operationally meaningful silence. The floor was
-  8 min when polling was 30s (8 min = ~16 missed polls). The cadence
-  change required recalibration; 14 min was picked as the most
-  aggressive setting that still preserves a useful detection signal
-  (~42 fires/day at this floor vs ~24/day at 15 min, which essentially
-  kills the rule). Coupled to cadence; revisit if OPENSKY_POLL_INTERVAL
-  changes again. Note the [14, 15) range is narrow: most surviving
-  fires immediately cross LONG_GAP_THRESHOLD (15 min) and get promoted
-  one tier — by design, gaps that long are concerning.
+* a 14-minute floor — the floor is an *absolute* coverage-hole duration,
+  not a missed-poll count: a cruising aircraft genuinely dark for 14 min
+  is anomalous whether we polled it 7x (the old 120s cadence) or ~3x (the
+  300s cadence since 2026-05-31). Below that is feed jitter or transient
+  coverage. History: 8 min at 30s polling, 14 min at 120s. At 300s the gap
+  observation is quantized to ~5-min steps, so the floor lands at an
+  effective 15 min — but live data (2026-05-31, clean post-recovery window)
+  showed the gap distribution is concentrated in [15, 20) (~77%) with only
+  ~5.7% of fires in the [14, 15) slice that the quantization drops, so 94.3%
+  of fires survive the cadence change. Coupled to cadence; revisit if
+  OPENSKY_POLL_INTERVAL_SECONDS changes again. LONG_GAP_THRESHOLD was raised
+  15→20 at the same time: at 300s the floor itself is ~15, so a 15-min
+  promote threshold would force-promote every fire and defeat the gradation;
+  20 min keeps a clean base/[promote] split (~77% base, ~18% promoted).
 * level flight (|vertical_rate| <= 500 fpm) — "lost *at cruise*" means
   steady cruise, so an aircraft still climbing out or already descending
   to land is excluded (it's transitioning, expected to leave the band).
@@ -68,12 +71,16 @@ LEVEL_VRATE_FPM = 500
 #   same 1deg x 1deg cell from many distinct callsigns reflect receiver
 #   geography (Gulf of Maine corner, Sierra Nevada, Appalachians, etc.), not
 #   incidents. Regenerate the cell list via `pipelines/rules/_build_sparse_cells.py`.
-# - >=15-min gaps promote one tier — at that duration the silence is past
-#   normal feed jitter regardless of altitude.
+# - >=20-min gaps promote one tier — at that duration the silence is past
+#   normal feed jitter regardless of altitude. Raised 15->20 on 2026-05-31
+#   with the 300s poll move: at 300s the effective floor is already ~15 min
+#   (5-min gap quantization), so a 15-min promote threshold promoted 100% of
+#   fires; 20 min restores a base/[promote] split (~77% base / ~18% promote,
+#   per the live 2026-05-31 gap distribution).
 SEVERITY_TIERS: tuple[str, ...] = ("low", "medium", "high")
 ALT_HIGH_CEILING_FT = 30_000  # alt < 30k  -> base "high"
 ALT_MED_CEILING_FT = 35_000  # 30k-35k     -> base "medium"; >=35k -> base "low"
-LONG_GAP_THRESHOLD = timedelta(minutes=15)
+LONG_GAP_THRESHOLD = timedelta(minutes=20)
 
 
 def _load_sparse_cells() -> frozenset[tuple[int, int]]:

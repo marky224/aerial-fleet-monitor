@@ -10,6 +10,20 @@ a normal departure: a departing aircraft's lowest near-field snapshot is
 its *first* one (it only climbs after), so it has no descent leg and is
 correctly ignored. Without this check the rule fired on essentially
 every departure from a watched field (~87% of its raw matches).
+
+CADENCE SENSITIVITY (important): this rule needs ``MIN_SNAPSHOTS`` (3)
+position fixes while the aircraft is within ``GO_AROUND_RADIUS_NM`` (10 nm)
+of the field to reconstruct the descend->low-point->climb valley. A
+go-around keeps the aircraft near the field for only ~6-10 min, so the poll
+cadence has to sample it at least ~3x in that window. At the 120s cadence
+that held through 2026-05-31 that was ~4-5 fixes (fine); at the 300s cadence
+adopted 2026-05-31 (for OpenSky headroom — see definitions.py) it is ~1-2
+fixes, so the valley can no longer be traced and this rule is effectively
+DORMANT. This is structural (you cannot define a valley from <3 points), not
+a tunable threshold — lowering MIN_SNAPSHOTS would just re-admit the
+departure false positives the valley check exists to kill. The rule is left
+registered so it resumes automatically if the poll cadence is ever tightened
+again; revisit OPENSKY_POLL_INTERVAL_SECONDS if go-around coverage is needed.
 """
 
 from __future__ import annotations
@@ -33,6 +47,10 @@ GO_AROUND_RADIUS_NM = 10.0
 GO_AROUND_FLOOR_FT = 3_000
 DESCENT_THRESHOLD_FT = 1_000
 CLIMB_THRESHOLD_FT = 1_000
+# Geometric minimum to trace a descend->low-point->climb valley (before /
+# at / after the low point). NOT lowerable — see the cadence-sensitivity
+# note in the module docstring: at the 300s poll cadence the aircraft is
+# sampled ~1-2x near the field, so this floor leaves the rule dormant.
 MIN_SNAPSHOTS = 3
 
 
