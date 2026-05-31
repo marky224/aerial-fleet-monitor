@@ -19,7 +19,7 @@ from pipelines.assets.foundry_sync import (
 from pipelines.assets.ingestion import noaa_weather, opensky_positions
 from pipelines.assets.maintenance import prune_stale_positions
 from pipelines.assets.reference import static_reference
-from pipelines.assets.sync import sf_case_push, sf_case_sync
+from pipelines.assets.sync import sf_case_push, sf_case_sync, sf_push_not_failing
 
 __all__ = [
     "archive_and_tenant_disjoint",
@@ -39,5 +39,6 @@ __all__ = [
     "prune_stale_positions",
     "sf_case_push",
     "sf_case_sync",
+    "sf_push_not_failing",
     "static_reference",
 ]
