@@ -255,12 +255,12 @@ class _RecordingPostgres:
 
 def test_insert_case_gates_sf_push_to_high_severity() -> None:
     """SF_PUSH_SEVERITIES cases are queued ('pending') for the SF Task;
-    everything else is 'skipped' (local-only). Currently {high, medium};
+    everything else is 'skipped' (local-only). Currently {high}; medium/
     low/None fall through to 'skipped'. The sf_sync_status is the last
     bound param of the insert_case statement."""
     for severity, expected in [
         ("high", "pending"),
-        ("medium", "pending"),
+        ("medium", "skipped"),
         ("low", "skipped"),
         (None, "skipped"),
     ]:

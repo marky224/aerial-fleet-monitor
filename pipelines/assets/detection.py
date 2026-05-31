@@ -54,15 +54,14 @@ LOOKBACK_MINUTES = 30
 # severity are inserted ``sf_sync_status='skipped'`` so the push never ships
 # them; they stay in Postgres + Foundry for the observability dashboard.
 #
-# NOTE — TEMPORARY (user 2026-05-31): ``medium`` is included "for now" at
-# the user's explicit request, with the storage cost understood. Medium is
-# ~6,120 cases/day; the (DE-tier, 5 MB) Salesforce org holds only ~2,600, so
-# pushing medium REFILLS the org in ~10h, after which every Case create
-# fails STORAGE_LIMIT_EXCEEDED until storage is freed — exactly what
-# silently killed the push for 3 days (2026-05-28→31). The sustainable
-# steady state is {"high"} (~348/day, ~7.5d to fill) plus retention, or
-# medium on an org with real storage. Revisit before that 5 MB fills again.
-SF_PUSH_SEVERITIES = frozenset({"high", "medium"})
+# Only high-severity cases are pushed to the (DE-tier, 5 MB) Salesforce org,
+# which holds ~2,600 Cases. ``medium`` was briefly included (2026-05-31) but
+# at ~6,120 medium/day it REFILLED the org in ~10h → STORAGE_LIMIT_EXCEEDED
+# (which silently killed the push for 3 days, 2026-05-28→31). The bulk of
+# that medium volume was lost_signal region-exit false positives, now
+# eliminated by the feed-presence guard; high-only (~348/day, ~7.5d to fill)
+# is the sustainable steady state. Medium stays local (Postgres + Foundry).
+SF_PUSH_SEVERITIES = frozenset({"high"})
 
 
 @dataclass(frozen=True)
