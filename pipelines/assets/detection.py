@@ -50,17 +50,19 @@ _EARTH_RADIUS_NM = 3440.065
 # without losing operational signal — see PR description for the table.
 LOOKBACK_MINUTES = 30
 
-# Severities that warrant a proactive Salesforce Task. AFM's operational
-# core is high-severity anomaly Cases — support staff get a Task in their
-# SF queue — NOT a Task for every routine fire (lost_signal alone is ~98%
-# medium). Cases below this threshold are inserted ``sf_sync_status=
-# 'skipped'`` so the push never ships them; they remain in Postgres +
-# Foundry for the observability dashboard. This both aligns the SF push
-# with the operational goal and stops the (DE-tier, 5 MB) Salesforce org
-# filling with medium/low cases — which silently exhausted org storage and
-# killed the push for 3 days (2026-05-28→31, STORAGE_LIMIT_EXCEEDED).
-# Widen the set if a lower tier should also raise Tasks.
-SF_PUSH_SEVERITIES = frozenset({"high"})
+# Severities that warrant a proactive Salesforce Task. Cases at any other
+# severity are inserted ``sf_sync_status='skipped'`` so the push never ships
+# them; they stay in Postgres + Foundry for the observability dashboard.
+#
+# NOTE — TEMPORARY (user 2026-05-31): ``medium`` is included "for now" at
+# the user's explicit request, with the storage cost understood. Medium is
+# ~6,120 cases/day; the (DE-tier, 5 MB) Salesforce org holds only ~2,600, so
+# pushing medium REFILLS the org in ~10h, after which every Case create
+# fails STORAGE_LIMIT_EXCEEDED until storage is freed — exactly what
+# silently killed the push for 3 days (2026-05-28→31). The sustainable
+# steady state is {"high"} (~348/day, ~7.5d to fill) plus retention, or
+# medium on an org with real storage. Revisit before that 5 MB fills again.
+SF_PUSH_SEVERITIES = frozenset({"high", "medium"})
 
 
 @dataclass(frozen=True)
@@ -231,9 +233,9 @@ def _insert_case(
     flight_id = anomaly.icao24 or f"WX-{anomaly.site_icao or 'UNKN'}"
     site_icao = anomaly.site_icao or ""
     severity = anomaly.severity_hint or "low"
-    # Gate the SF push at the source: only high-severity cases are queued
-    # ('pending') for a proactive SF Task; everything else is 'skipped'
-    # (local-only). See SF_PUSH_SEVERITIES.
+    # Gate the SF push at the source: only cases whose severity is in
+    # SF_PUSH_SEVERITIES are queued ('pending') for a proactive SF Task;
+    # everything else is 'skipped' (local-only).
     sf_sync_status = "pending" if severity in SF_PUSH_SEVERITIES else "skipped"
     insert_case = """
         INSERT INTO app.cases (
@@ -322,9 +324,9 @@ def _result_metadata(result: DetectionResult) -> dict[str, MetadataValue]:
     deps=[opensky_positions, noaa_weather, static_reference],
     description=(
         "Runs the anomaly rule engine over the last hour of positions and "
-        "inserts detected cases into app.cases (high-severity → "
-        "sf_sync_status='pending', else 'skipped'). The SF write is done "
-        "separately by the case-sync push path."
+        "inserts detected cases into app.cases (severity in "
+        "SF_PUSH_SEVERITIES → sf_sync_status='pending', else 'skipped'). "
+        "The SF write is done separately by the case-sync push path."
     ),
     metadata={"target": "app.cases", "cadence": "5min"},
 )
