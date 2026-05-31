@@ -159,17 +159,39 @@ case_detector_job = define_asset_job(
 
 # OpenSky `/states/all` empirically costs 4 cr/call at the CONUS bbox
 # (verified 2026-05-26: 999/999 consecutive paid polls drained
-# `X-Rate-Limit-Remaining` by exactly 4). At 30s cadence x 4 cr =
-# 11,520 cr/day vs the 4,000-cr/day authenticated budget — exhausted
-# daily at ~08:51 UTC. 120s cadence x 4 cr = 2,880 cr/day, leaving
-# 1,120 cr headroom for `/flights/aircraft` traffic. Spec PIPELINES.md
-# §5's "30s mandated" is superseded by this constraint.
+# `X-Rate-Limit-Remaining` by exactly 4). The poll interval is the sole
+# OpenSky-credit lever (the Foundry syncs below read the local cache, not
+# OpenSky). Burn ladder vs the 4,000-cr/day authenticated budget:
+#   30s  x 4 cr = 11,520 cr/day — exhausted ~08:51 UTC (the old regime).
+#   120s x 4 cr =  2,880 cr/day — 1,120 cr headroom.
+#   300s x 4 cr =  1,152 cr/day — 2,848 cr headroom  ← current.
+# Raised 120s→300s on 2026-05-31 for OpenSky headroom (user-directed; the
+# 28%-headroom-is-enough guidance from the 2026-05-28 handoff was
+# explicitly overridden). Spec PIPELINES.md §5's "30s mandated" is
+# superseded by this constraint.
+#
+# COUPLED TO ANOMALY DETECTION — this is not a free knob. The poll is the
+# position track the case detector runs on, so the interval is load-bearing
+# for the rules:
+#   * lost_signal — gap-based; the 14-min floor is an absolute coverage-hole
+#     duration (cadence-independent), but at 300s the 5-min quantization
+#     forces an effective 15-min floor. Live data (2026-05-31) showed only
+#     ~5.7% of fires fall in [14,15) and are lost — 94.3% survive. See
+#     LONG_GAP_THRESHOLD in pipelines/rules/lost_signal.py (raised 15→20 to
+#     keep the severity gradation from force-promoting every fire at 300s).
+#   * go_around — needs >=3 near-field snapshots to trace its valley; at
+#     300s an aircraft is sampled ~1-2x within 10 nm, so the rule is
+#     effectively DORMANT (structural, not tunable). Accepted trade-off.
+# Revisit both rules if this interval changes again.
+OPENSKY_POLL_INTERVAL_SECONDS = 300
+
+
 @sensor(
     job=opensky_positions_job,
     name="opensky_positions_sensor",
-    minimum_interval_seconds=120,
+    minimum_interval_seconds=OPENSKY_POLL_INTERVAL_SECONDS,
     default_status=DefaultSensorStatus.RUNNING,
-    description="Fires opensky_positions every 120s (rate-budget constrained — see comment above).",
+    description="Fires opensky_positions every 300s (rate-budget constrained — see comment above).",
 )
 def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
@@ -183,9 +205,9 @@ def opensky_positions_sensor(_context: SensorEvaluationContext) -> RunRequest:
 @sensor(
     job=foundry_positions_sync_job,
     name="foundry_positions_sync_sensor",
-    minimum_interval_seconds=120,
+    minimum_interval_seconds=OPENSKY_POLL_INTERVAL_SECONDS,
     default_status=DefaultSensorStatus.RUNNING,
-    description="Upserts Aircraft to the Foundry Ontology every 120s (matches opensky_positions cadence).",
+    description="Upserts Aircraft to the Foundry Ontology every 300s (matches opensky_positions cadence).",
 )
 def foundry_positions_sync_sensor(_context: SensorEvaluationContext) -> RunRequest:
     return RunRequest(run_key=None)
@@ -284,13 +306,17 @@ prune_stale_positions_schedule = ScheduleDefinition(
 foundry_aircraft_reconcile_schedule = ScheduleDefinition(
     name="foundry_aircraft_reconcile_schedule",
     job=foundry_aircraft_reconcile_job,
-    cron_schedule="*/2 * * * *",
+    # */5 to follow the 300s opensky_positions poll — no point evicting
+    # faster than the live feed refreshes (the reconcile reads the local
+    # current_positions cache, so this is host/Foundry-write relief, not an
+    # OpenSky-credit change).
+    cron_schedule="*/5 * * * *",
     execution_timezone="UTC",
     default_status=DefaultScheduleStatus.RUNNING,
     description=(
-        "Every 2 min (Fix C): evict Foundry Aircraft objects outside the "
-        "in-scope (East/West) live feed so the tenant stays continuously "
-        "equal to the live set (overlap-guarded; deletes capped per run)."
+        "Every 5 min (Fix C): evict Foundry Aircraft objects outside the "
+        "in-scope live feed so the tenant stays continuously equal to the "
+        "live set (overlap-guarded; deletes capped per run)."
     ),
 )
 
@@ -351,21 +377,21 @@ foundry_flight_archive_purge_schedule = ScheduleDefinition(
 foundry_flight_enrichment_schedule = ScheduleDefinition(
     name="foundry_flight_enrichment_schedule",
     job=foundry_flight_enrichment_job,
-    # Every 5 min so the Flight ``trailPath`` tracks the 2-min Aircraft
-    # markers — the trail head is only as fresh as the last enrichment, so the
-    # prior hourly cadence left it up to ~1h behind the live dot. Reads the
-    # local lake / AFM API only (no OpenSky cost); the overlap guard stops a
-    # slow run from stacking. Coinciding with the */2 aircraft reconcile or the
-    # :45 flight reconcile is safe — different object types, and enrichment
-    # writes disjoint fields (trailPath / route) from the reconcile's
-    # isLive / landedAt, so the modify-per-field upserts don't clobber.
+    # Every 5 min so the Flight ``trailPath`` tracks the Aircraft markers —
+    # since the 2026-05-31 poll move to 300s the markers also refresh every
+    # 5 min, so trail head and live dot now advance 1:1. Reads the local lake
+    # / AFM API only (no OpenSky cost); the overlap guard stops a slow run
+    # from stacking. Coinciding with the */5 aircraft reconcile or the :45
+    # flight reconcile is safe — different object types, and enrichment writes
+    # disjoint fields (trailPath / route) from the reconcile's isLive /
+    # landedAt, so the modify-per-field upserts don't clobber.
     cron_schedule="*/5 * * * *",
     execution_timezone="UTC",
     default_status=DefaultScheduleStatus.RUNNING,
     description=(
         "Every 5 min: backfill route/operator/registration/status + 2h trail "
         "onto the create-only takeoff Flight objects from /v1/flights, keeping "
-        "trailPath aligned with the live 2-min Aircraft markers."
+        "trailPath aligned with the live 5-min Aircraft markers."
     ),
 )
 
