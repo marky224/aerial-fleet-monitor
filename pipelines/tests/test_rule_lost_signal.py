@@ -107,6 +107,47 @@ def test_empty_frame_returns_nothing() -> None:
     assert RULE.detect(make_positions([]), {}, empty_cases(), BASELINE) == []
 
 
+def test_negative_left_region_still_transmitting() -> None:
+    """An aircraft whose last *in-region* fix is 18 min old but which is still
+    transmitting out-of-scope (``feed_last_ts`` fresh) is NOT lost — it flew
+    out of a watched region. The detector supplies ``feed_last_ts`` = max
+    ts_polled across the whole feed; the gap is measured against that, not the
+    in-scope last fix. Guards the dominant historical false positive
+    (an in-region -> out-of-region transition, often a descent to land).
+    """
+    positions = make_positions(
+        [
+            {"icao24": "left01", "altitude_ft": 30_000, "ts_polled": NOW - mins(18)},
+            {"icao24": "live01", "ts_polled": NOW},
+        ]
+    )
+    # left01 kept transmitting out-of-scope until 1 min ago.
+    positions["feed_last_ts"] = positions["icao24"].map({"left01": NOW - mins(1), "live01": NOW})
+    assert RULE.detect(positions, {}, empty_cases(), BASELINE) == []
+
+
+def test_positive_truly_silent_across_whole_feed_still_fires() -> None:
+    """When ``feed_last_ts`` equals the in-scope last fix (no out-of-scope
+    snapshots), a real cruise signal loss still fires — the guard only
+    suppresses aircraft still transmitting somewhere in the feed.
+    """
+    positions = make_positions(
+        [
+            {
+                "icao24": "lost01",
+                "altitude_ft": 32_000,
+                "ts_polled": NOW - mins(14.5),
+                "nearest_site_icao": "KDEN",
+            },
+            {"icao24": "live01", "ts_polled": NOW},
+        ]
+    )
+    positions["feed_last_ts"] = positions["icao24"].map({"lost01": NOW - mins(14.5), "live01": NOW})
+    out = RULE.detect(positions, {}, empty_cases(), BASELINE)
+    assert [a.icao24 for a in out] == ["lost01"]
+    assert out[0].detection_facts["gap_minutes"] == 14.5
+
+
 # === severity gradation (B+C hybrid; PR-26-day-2 follow-up) ================
 #
 # Base tier from altitude. Hot cells demote one tier; gaps >=15min promote
