@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from afm_foundry_sync.sync_jobs import (
+    CaseReconcileResult,
     CaseSyncResult,
     FlightEnrichmentResult,
     FlightLifecycleDetector,
@@ -578,3 +579,109 @@ def test_cases_sync_real_defect_is_not_swallowed(
 
     with pytest.raises(RuntimeError, match="malformed case upsert payload"):
         foundry_sync.foundry_cases_sync(build_asset_context())
+
+
+# ---------------------------------------------------------------------------
+# foundry_cases_reconcile (orphan cleanup — tenant-side eviction of purged Cases)
+# ---------------------------------------------------------------------------
+
+
+def test_cases_reconcile_skip_is_a_materialization_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise() -> CaseReconcileResult:
+        raise FoundrySyncSkipped("cases_reconcile: foundry config absent")
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _raise)
+
+    result = foundry_sync.foundry_cases_reconcile(build_asset_context())
+
+    assert isinstance(result, MaterializeResult)
+    assert (result.metadata or {})["skip_reason"].value == (
+        "cases_reconcile: foundry config absent"
+    )
+
+
+def test_cases_reconcile_success_surfaces_diff_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _ok() -> CaseReconcileResult:
+        return CaseReconcileResult(
+            pg_cases=5000, tenant=30000, orphans=25000, deleted=5000, remaining=20000
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _ok)
+
+    md = foundry_sync.foundry_cases_reconcile(build_asset_context()).metadata or {}
+    assert md["pg_cases"].value == 5000
+    assert md["tenant"].value == 30000
+    assert md["orphans"].value == 25000
+    assert md["deleted"].value == 5000
+    assert md["remaining"].value == 20000
+    assert md["skipped_empty_keep"].value is False
+
+
+def test_cases_reconcile_empty_keep_skip_surfaces_in_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _empty() -> CaseReconcileResult:
+        return CaseReconcileResult(
+            pg_cases=0, tenant=0, orphans=0, deleted=0, skipped_empty_keep=True
+        )
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _empty)
+
+    md = foundry_sync.foundry_cases_reconcile(build_asset_context()).metadata or {}
+    assert md["skipped_empty_keep"].value is True
+    assert md["deleted"].value == 0
+
+
+def test_cases_reconcile_overlap_guard_skips_when_sibling_run_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tick must not stack on a still-draining sibling (the per-run delete cap
+    means a one-time 25k orphan drain spans several runs)."""
+
+    async def _must_not_run() -> CaseReconcileResult:
+        raise AssertionError("cases reconcile ran despite an in-progress sibling")
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _must_not_run)
+    ctx = build_asset_context()
+    sibling = SimpleNamespace(dagster_run=SimpleNamespace(run_id="a-different-run"))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [sibling])
+
+    result = foundry_sync.foundry_cases_reconcile(ctx)
+
+    assert isinstance(result, MaterializeResult)
+    assert "already in progress" in (result.metadata or {})["skip_reason"].value
+
+
+def test_cases_reconcile_overlap_guard_ignores_own_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard must exclude the current run itself (STARTED while executing)."""
+
+    async def _ok() -> CaseReconcileResult:
+        return CaseReconcileResult(pg_cases=5000, tenant=5000, orphans=0, deleted=0, remaining=0)
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _ok)
+    ctx = build_asset_context()
+    own = SimpleNamespace(dagster_run=SimpleNamespace(run_id=ctx.run_id))
+    monkeypatch.setattr(ctx.instance, "get_run_records", lambda *a, **k: [own])
+
+    md = foundry_sync.foundry_cases_reconcile(ctx).metadata or {}
+    assert md["orphans"].value == 0  # proceeded — own run is not "another"
+
+
+def test_cases_reconcile_real_defect_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-skip exception (a real bug) must propagate, not become a skip."""
+
+    async def _bug() -> CaseReconcileResult:
+        raise RuntimeError("malformed delete-case payload")
+
+    monkeypatch.setattr(foundry_sync, "run_cases_reconcile", _bug)
+
+    with pytest.raises(RuntimeError, match="malformed delete-case payload"):
+        foundry_sync.foundry_cases_reconcile(build_asset_context())

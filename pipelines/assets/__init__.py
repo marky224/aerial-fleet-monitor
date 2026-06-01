@@ -10,6 +10,7 @@ from pipelines.assets.flight_archival import (
 from pipelines.assets.flight_plan_enrichment import flight_plan_enrichment
 from pipelines.assets.foundry_sync import (
     foundry_aircraft_reconcile,
+    foundry_cases_reconcile,
     foundry_cases_sync,
     foundry_flight_enrichment,
     foundry_flight_reconcile,
@@ -27,6 +28,7 @@ __all__ = [
     "case_detector",
     "flight_plan_enrichment",
     "foundry_aircraft_reconcile",
+    "foundry_cases_reconcile",
     "foundry_cases_sync",
     "foundry_flight_archive",
     "foundry_flight_archive_purge",
