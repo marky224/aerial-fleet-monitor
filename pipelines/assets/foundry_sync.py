@@ -59,6 +59,7 @@ import json
 from datetime import datetime
 
 from afm_foundry_sync.sync_jobs import (
+    CaseReconcileResult,
     CaseSyncResult,
     FlightEnrichmentResult,
     FlightLifecycleDetector,
@@ -67,6 +68,7 @@ from afm_foundry_sync.sync_jobs import (
     ReconcileResult,
     SyncResult,
     run_aircraft_reconcile,
+    run_cases_reconcile,
     run_cases_sync,
     run_flight_enrichment,
     run_flight_reconcile,
@@ -456,3 +458,66 @@ def foundry_cases_sync(context: AssetExecutionContext) -> MaterializeResult:
         result.cursor.isoformat() if result.cursor else None,
     )
     return MaterializeResult(metadata=_cases_metadata(result))
+
+
+def _case_reconcile_metadata(result: CaseReconcileResult) -> dict[str, MetadataValue]:
+    return {
+        "pg_cases": MetadataValue.int(result.pg_cases),
+        "tenant": MetadataValue.int(result.tenant),
+        "orphans": MetadataValue.int(result.orphans),
+        "deleted": MetadataValue.int(result.deleted),
+        "remaining": MetadataValue.int(result.remaining),
+        "skipped_empty_keep": MetadataValue.bool(result.skipped_empty_keep),
+    }
+
+
+@asset(
+    group_name="foundry_sync",
+    description=(
+        "Evicts Foundry Case objects whose case_id is no longer in app.cases "
+        "(the upsert-only cases sync never deletes, so orphans accumulate after "
+        "a Postgres purge — e.g. the lost_signal false-positive cleanup). Runs "
+        "every 5 min; deletes are capped per run so a one-time orphan drain "
+        "spreads over a few ticks (overlap-guarded)."
+    ),
+    metadata={"target": "Foundry Ontology: Case", "cadence": "every 5 min"},
+)
+def foundry_cases_reconcile(context: AssetExecutionContext) -> MaterializeResult:
+    # Overlap guard: the per-run delete cap means a one-time orphan drain spans
+    # a few runs; a new tick must never stack on a still-draining one. Same
+    # pattern as foundry_aircraft_reconcile / foundry_flight_reconcile.
+    in_progress = context.instance.get_run_records(
+        RunsFilter(
+            job_name="foundry_cases_reconcile_job",
+            statuses=[
+                DagsterRunStatus.QUEUED,
+                DagsterRunStatus.STARTING,
+                DagsterRunStatus.STARTED,
+                DagsterRunStatus.CANCELING,
+            ],
+        )
+    )
+    if any(r.dagster_run.run_id != context.run_id for r in in_progress):
+        return _skipped(
+            context,
+            "another foundry_cases_reconcile run is already in progress "
+            "(coalesced — the previous run is still draining)",
+        )
+    try:
+        result = asyncio.run(run_cases_reconcile())
+    except FoundrySyncSkipped as exc:
+        return _skipped(context, exc.reason)
+    if result.skipped_empty_keep:
+        context.log.warning(
+            "cases reconcile skipped: keep-set empty (cases unknown — not evicting)"
+        )
+    else:
+        context.log.info(
+            "cases reconcile: pg_cases=%d tenant=%d orphans=%d deleted=%d remaining=%d",
+            result.pg_cases,
+            result.tenant,
+            result.orphans,
+            result.deleted,
+            result.remaining,
+        )
+    return MaterializeResult(metadata=_case_reconcile_metadata(result))

@@ -38,6 +38,7 @@ from pipelines.assets import (
     case_detector,
     flight_plan_enrichment,
     foundry_aircraft_reconcile,
+    foundry_cases_reconcile,
     foundry_cases_sync,
     foundry_flight_archive,
     foundry_flight_archive_purge,
@@ -131,6 +132,12 @@ foundry_flight_archive_purge_job = define_asset_job(
 foundry_cases_sync_job = define_asset_job(
     name="foundry_cases_sync_job",
     selection=AssetSelection.assets(foundry_cases_sync),
+)
+
+
+foundry_cases_reconcile_job = define_asset_job(
+    name="foundry_cases_reconcile_job",
+    selection=AssetSelection.assets(foundry_cases_reconcile),
 )
 
 
@@ -322,6 +329,28 @@ foundry_aircraft_reconcile_schedule = ScheduleDefinition(
 )
 
 
+foundry_cases_reconcile_schedule = ScheduleDefinition(
+    name="foundry_cases_reconcile_schedule",
+    job=foundry_cases_reconcile_job,
+    # Hourly at :20 — Cases don't churn per-poll like aircraft (orphans only
+    # appear after a Postgres purge, a rare event), so a full tenant-PK
+    # enumeration every */5 would be wasted Foundry read load. Hourly keeps the
+    # tenant convergent with app.cases at trivial cost; the one-time backlog
+    # (e.g. a 25k purge) drains over a few runs under the per-run delete cap, or
+    # is drained on demand by launching the job manually. :20 is offset from the
+    # other hourly jobs (:00 prune, :45 flight reconcile, :50 flight archive).
+    cron_schedule="20 * * * *",
+    execution_timezone="UTC",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description=(
+        "Hourly at :20: evict Foundry Case objects whose case_id is no longer "
+        "in app.cases (the upsert-only cases sync never deletes) — the Case-side "
+        "mirror of foundry_aircraft_reconcile (overlap-guarded; deletes capped "
+        "per run)."
+    ),
+)
+
+
 foundry_flight_reconcile_schedule = ScheduleDefinition(
     name="foundry_flight_reconcile_schedule",
     job=foundry_flight_reconcile_job,
@@ -440,6 +469,7 @@ defs = Definitions(
         foundry_flight_archive,
         foundry_flight_archive_purge,
         foundry_cases_sync,
+        foundry_cases_reconcile,
         flight_plan_enrichment,
         sf_case_push,
         sf_case_sync,
@@ -458,6 +488,7 @@ defs = Definitions(
         foundry_flight_archive_job,
         foundry_flight_archive_purge_job,
         foundry_cases_sync_job,
+        foundry_cases_reconcile_job,
         flight_plan_enrichment_job,
         sf_case_push_job,
         sf_case_sync_job,
@@ -469,6 +500,7 @@ defs = Definitions(
         static_reference_schedule,
         foundry_sites_sync_schedule,
         foundry_aircraft_reconcile_schedule,
+        foundry_cases_reconcile_schedule,
         foundry_flight_enrichment_schedule,
         foundry_flight_reconcile_schedule,
         foundry_flight_archive_schedule,

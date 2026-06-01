@@ -34,6 +34,7 @@ from afm_foundry_sync.sync_jobs import (
     incremental_sync_positions,
     parse_flight_id,
     reconcile_aircraft,
+    reconcile_cases,
     reconcile_flights,
     synthesize_flight_id,
 )
@@ -1152,8 +1153,12 @@ async def test_flight_reconcile_liveness_sweep_excludes_completed_legs(
     assert (result.live_marked_true, result.live_marked_false) == (1, 1)
     true_params = json.loads(live_route.calls[0].request.content)["requests"]
     false_params = json.loads(live_route.calls[1].request.content)["requests"]
-    assert [r["parameters"]["flightId"] for r in true_params] == [z_live]  # only the non-completed leg
-    assert [r["parameters"]["flightId"] for r in false_params] == [x_completed]  # landed leg flipped off
+    assert [r["parameters"]["flightId"] for r in true_params] == [
+        z_live
+    ]  # only the non-completed leg
+    assert [r["parameters"]["flightId"] for r in false_params] == [
+        x_completed
+    ]  # landed leg flipped off
     written = {r["parameters"]["flightId"] for call in (true_params, false_params) for r in call}
     assert y_completed not in written  # completed + null is left null, never marked true
 
@@ -1680,3 +1685,229 @@ async def test_incremental_sync_cases_propagates_skip_on_unreachable_api(
             FoundryWriter(settings) as writer,
         ):
             await incremental_sync_cases(client, writer)
+
+
+# --------------------------------------------------------------------------- #
+# reconcile_cases (orphan cleanup — tenant-side eviction of purged Cases)
+# --------------------------------------------------------------------------- #
+
+_CASE_OBJECTS_URL = "https://tenant.example.com/api/v2/ontologies/afm/objects/Case"
+_CASE_DELETE_BATCH = (
+    "https://tenant.example.com/api/v2/ontologies/afm/actions/delete-case/applyBatch"
+)
+
+
+@respx.mock
+async def test_reconcile_cases_deletes_only_orphans_not_in_postgres(
+    settings: FoundrySettings,
+) -> None:
+    # keep = {CASE-1, CASE-2} from the all-for-sync snapshot; tenant = those +
+    # two Cases purged from Postgres → orphans = 2.
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    _case_dict("CASE-1", "2026-05-31T10:00:00Z"),
+                    _case_dict("CASE-2", "2026-05-31T10:05:00Z"),
+                ],
+                "next_cursor": "2026-05-31T10:05:00Z",
+                "truncated": False,
+            },
+        )
+    )
+    respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [{"caseId": x} for x in ("CASE-1", "CASE-2", "CASE-OLD-1", "CASE-OLD-2")]
+            },
+        )
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert (result.pg_cases, result.tenant, result.orphans, result.deleted) == (2, 4, 2, 2)
+    assert result.skipped_empty_keep is False
+    assert del_route.called
+    body = json.loads(del_route.calls.last.request.content)
+    sent = {r["parameters"]["Case"] for r in body["requests"]}
+    assert sent == {"CASE-OLD-1", "CASE-OLD-2"}  # only the purged, PascalCase key
+
+
+@respx.mock
+async def test_reconcile_cases_skips_on_empty_keep_without_listing_or_deleting(
+    settings: FoundrySettings,
+) -> None:
+    # Safety guard: an empty snapshot means "cases unknown" (API blip / a
+    # truncate mid-flight), not "all cases gone". Reconciling would delete the
+    # whole tenant — so it must bail BEFORE enumerating the tenant and never
+    # issue a delete.
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200, json={"items": [], "next_cursor": None, "truncated": False}
+        )
+    )
+    list_route = respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert result.skipped_empty_keep is True
+    assert (result.pg_cases, result.tenant, result.orphans, result.deleted) == (0, 0, 0, 0)
+    assert not list_route.called  # bailed before the expensive enumeration
+    assert not del_route.called  # and never deleted
+
+
+@respx.mock
+async def test_reconcile_cases_keeps_resolved_cases(settings: FoundrySettings) -> None:
+    """all-for-sync includes resolved cases, so a resolved Case is in the keep-set
+    and must NOT be evicted — only Cases truly absent from Postgres are."""
+    resolved = _case_dict("CASE-RESOLVED", "2026-05-31T09:00:00Z")
+    resolved["status"] = "resolved"
+    resolved["resolved_at"] = "2026-05-31T09:30:00Z"
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [_case_dict("CASE-OPEN", "2026-05-31T10:00:00Z"), resolved],
+                "next_cursor": "2026-05-31T10:00:00Z",
+                "truncated": False,
+            },
+        )
+    )
+    respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"caseId": x} for x in ("CASE-OPEN", "CASE-RESOLVED", "CASE-PURGED")]},
+        )
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert (result.pg_cases, result.orphans, result.deleted) == (2, 1, 1)
+    body = json.loads(del_route.calls.last.request.content)
+    assert {r["parameters"]["Case"] for r in body["requests"]} == {"CASE-PURGED"}
+
+
+@respx.mock
+async def test_reconcile_cases_no_orphans_makes_no_delete_call(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [_case_dict("CASE-1", "2026-05-31T10:00:00Z")],
+                "next_cursor": "2026-05-31T10:00:00Z",
+                "truncated": False,
+            },
+        )
+    )
+    respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"caseId": "CASE-1"}]})
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert (result.orphans, result.deleted) == (0, 0)
+    assert not del_route.called  # empty delete batch → no HTTP call
+
+
+@respx.mock
+async def test_reconcile_cases_paginates_the_tenant_listing(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [_case_dict("CASE-1", "2026-05-31T10:00:00Z")],
+                "next_cursor": "2026-05-31T10:00:00Z",
+                "truncated": False,
+            },
+        )
+    )
+    list_route = respx.get(_CASE_OBJECTS_URL).mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"caseId": "CASE-1"}, {"caseId": "CASE-OLD-1"}],
+                    "nextPageToken": "page2",
+                },
+            ),
+            httpx.Response(200, json={"data": [{"caseId": "CASE-OLD-2"}]}),  # no token → stop
+        ]
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert list_route.call_count == 2  # followed nextPageToken
+    assert result.tenant == 3  # CASE-1 + CASE-OLD-1 + CASE-OLD-2 across 2 pages
+    assert result.orphans == 2  # the two CASE-OLD-* absent from keep {CASE-1}
+    body = json.loads(del_route.calls.last.request.content)
+    assert {r["parameters"]["Case"] for r in body["requests"]} == {"CASE-OLD-1", "CASE-OLD-2"}
+
+
+@respx.mock
+async def test_reconcile_cases_caps_deletes_per_run_and_reports_remaining(
+    settings: FoundrySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-run drain cap: with a cap of 2 and 3 orphans, delete 2 this run and
+    report remaining=1 (logged, never silently dropped). Orphans are sorted so
+    the drain is deterministic across runs."""
+    monkeypatch.setattr(_sj, "_CASE_RECONCILE_DELETE_CAP", 2)
+    respx.get(_CASES_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [_case_dict("CASE-1", "2026-05-31T10:00:00Z")],
+                "next_cursor": "2026-05-31T10:00:00Z",
+                "truncated": False,
+            },
+        )
+    )
+    # Three purged orphans (absent from keep {CASE-1}); names fix the sort order.
+    respx.get(_CASE_OBJECTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"caseId": x} for x in ("CASE-1", "CASE-A", "CASE-B", "CASE-C")]},
+        )
+    )
+    del_route = respx.post(_CASE_DELETE_BATCH).mock(return_value=httpx.Response(200, json={}))
+
+    async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+        result = await reconcile_cases(client, writer)
+
+    assert (result.orphans, result.deleted, result.remaining) == (3, 2, 1)
+    body = json.loads(del_route.calls.last.request.content)
+    sent = [r["parameters"]["Case"] for r in body["requests"]]
+    assert sent == sorted(["CASE-A", "CASE-B", "CASE-C"])[:2]  # first 2 of the sorted orphans
+
+
+@respx.mock
+async def test_reconcile_cases_propagates_skip_on_unreachable_api(
+    settings: FoundrySettings,
+) -> None:
+    respx.get(_CASES_URL).mock(side_effect=httpx.ConnectError("refused"))
+
+    with pytest.raises(FoundrySyncSkipped, match="unreachable"):
+        async with (
+            guarded_sync("cases_reconcile"),
+            AfmApiClient(settings) as client,
+            FoundryWriter(settings) as writer,
+        ):
+            await reconcile_cases(client, writer)

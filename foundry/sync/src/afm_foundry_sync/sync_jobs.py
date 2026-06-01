@@ -197,6 +197,37 @@ class FlightReconcileResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CaseReconcileResult:
+    """Outcome of one tenant-Case reconcile (orphan cleanup).
+
+    ``incremental_sync_cases`` is upsert-only, so Cases purged from
+    ``app.cases`` (e.g. the lost_signal false-positive purge of 2026-05-31)
+    persist in the Ontology forever. This job diffs the tenant's Case set
+    against the Postgres keep-set and deletes the difference.
+
+    ``pg_cases`` is the keep-set size (every case_id in the full
+    ``/v1/cases/all-for-sync`` snapshot, resolved cases included); ``tenant``
+    is every Case PK in the Ontology; ``orphans`` is ``tenant - keep``;
+    ``deleted`` is how many of those the delete batch confirmed; ``remaining``
+    is the orphans still queued after the per-run cap (logged, never silently
+    dropped — on full delete success ``orphans == deleted + remaining``).
+    ``skipped_empty_keep`` is True when the keep-set was empty and the
+    reconcile bailed *without* enumerating the tenant or deleting anything — an
+    empty snapshot is far likelier a momentarily-unreachable API (or a truncate
+    mid-flight) than a legitimately empty case table, so evicting on
+    no-knowledge would wipe every Case. Mirrors the aircraft reconcile's
+    empty-live guard exactly.
+    """
+
+    pg_cases: int
+    tenant: int
+    orphans: int
+    deleted: int
+    remaining: int = 0
+    skipped_empty_keep: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CaseSyncResult:
     """Outcome of one cases sync run (Phase 05 task #5).
 
@@ -790,9 +821,7 @@ async def reconcile_flights(
     live_marked_false = 0
     if writer.islive_enabled:
         target_live = {
-            pk: (icao24, ts)
-            for icao24, (ts, pk) in latest_airborne.items()
-            if pk not in completed
+            pk: (icao24, ts) for icao24, (ts, pk) in latest_airborne.items() if pk not in completed
         }
         true_stamps = [
             FlightLiveStamp(flight_id=pk, icao24=icao24, takeoff_ts=ts, is_live=True)
@@ -1079,6 +1108,78 @@ async def run_flight_enrichment() -> FlightEnrichmentResult:
             return await enriched_sync_flights(client, writer)
 
 
+# Per-run delete cap, mirroring _AIRCRAFT_RECONCILE_DELETE_CAP. The first
+# reconcile faces the one-time lost_signal false-positive purge backlog (~25k
+# Cases deleted from Postgres 2026-05-31 but still in the Ontology); at
+# _MAX_BATCH sized applyBatch calls against a slow Foundry API on a co-resident
+# host, draining all at once would run long. Cap deletes per run and let the
+# backlog drain over a few 5-min ticks (the overlap guard prevents run
+# stacking). Steady-state runs delete far below this, so the cap is invisible
+# after the initial drain.
+_CASE_RECONCILE_DELETE_CAP = 5000
+
+
+async def reconcile_cases(
+    client: AfmApiClient,
+    writer: FoundryWriter,
+) -> CaseReconcileResult:
+    """Evict tenant Case objects whose case_id is no longer in Postgres.
+
+    ``incremental_sync_cases`` is upsert-only and never deletes, so Cases
+    purged from ``app.cases`` (e.g. the lost_signal false-positive purge of
+    2026-05-31 — ~25k rows removed from Postgres + Salesforce) persist in the
+    Ontology as orphans indefinitely. This diffs ``tenant - keep`` and deletes
+    the complement via the ``delete-case`` Action, where
+
+      keep = every case_id in the full ``/v1/cases/all-for-sync`` snapshot
+
+    The snapshot is server-to-server and **includes resolved cases** (the App-1
+    panel filters by ``status`` at display time), so a resolved Case is in the
+    keep-set and correctly retained — only Cases truly absent from Postgres are
+    evicted. The reader (``fetch_cases_for_sync``) drains every page; at the
+    single-digit-thousands steady-state volume that is a bounded in-memory set.
+
+    **Empty-keep safety guard** (mirrors ``reconcile_aircraft``'s empty-live
+    guard): if the keep-set is empty, bail *before* enumerating the tenant —
+    ``tenant - {}`` is the entire tenant, and an empty snapshot is far likelier
+    a momentarily-unreachable API (or a transactional truncate mid-flight) than
+    a legitimately empty case table, so evicting on no knowledge would wipe
+    every Case. Returns a no-op flagged ``skipped_empty_keep``.
+
+    **Per-run delete cap** (``_CASE_RECONCILE_DELETE_CAP``): the one-time ~25k
+    orphan drain spreads over a few ticks; ``remaining`` is logged (never
+    silently dropped) and the orphan list is sorted before capping so the drain
+    is deterministic across runs.
+    """
+    items, _ = await client.fetch_cases_for_sync(since=None)
+    keep = {item.case_id for item in items}
+    if not keep:
+        logger.warning("foundry_cases_reconcile_skipped_empty_keep")
+        return CaseReconcileResult(
+            pg_cases=0, tenant=0, orphans=0, deleted=0, skipped_empty_keep=True
+        )
+    tenant = await writer.list_case_pks()
+    orphans = sorted(tenant - keep)
+    to_delete = orphans[:_CASE_RECONCILE_DELETE_CAP]
+    remaining = len(orphans) - len(to_delete)
+    logger.info(
+        "foundry_reconcile_cases",
+        pg_cases=len(keep),
+        tenant=len(tenant),
+        orphans=len(orphans),
+        deleting=len(to_delete),
+        remaining=remaining,
+    )
+    batch = await writer.delete_case_batch(to_delete)
+    return CaseReconcileResult(
+        pg_cases=len(keep),
+        tenant=len(tenant),
+        orphans=len(orphans),
+        deleted=batch.succeeded,
+        remaining=remaining,
+    )
+
+
 async def incremental_sync_cases(
     client: AfmApiClient,
     writer: FoundryWriter,
@@ -1136,7 +1237,21 @@ async def run_cases_sync(*, since: datetime | None = None) -> CaseSyncResult:
             return await incremental_sync_cases(client, writer, since=since)
 
 
+async def run_cases_reconcile() -> CaseReconcileResult:
+    """Entrypoint the Dagster cases-reconcile asset calls. Skip-guarded.
+
+    Same standalone discipline as the other entrypoints: an absent
+    ``_private/foundry/.env`` or an unreachable endpoint (local API or
+    Foundry) surfaces as ``FoundrySyncSkipped``, not a crash.
+    """
+    async with guarded_sync("cases_reconcile"):
+        settings = FoundrySettings()
+        async with AfmApiClient(settings) as client, FoundryWriter(settings) as writer:
+            return await reconcile_cases(client, writer)
+
+
 __all__ = [
+    "CaseReconcileResult",
     "CaseSyncResult",
     "FlightEnrichmentResult",
     "FlightReconcileResult",
@@ -1152,8 +1267,10 @@ __all__ = [
     "load_foundry_settings",
     "parse_flight_id",
     "reconcile_aircraft",
+    "reconcile_cases",
     "reconcile_flights",
     "run_aircraft_reconcile",
+    "run_cases_reconcile",
     "run_cases_sync",
     "run_flight_enrichment",
     "run_flight_reconcile",
