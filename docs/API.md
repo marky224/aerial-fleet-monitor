@@ -575,9 +575,13 @@ class CasePullSummary(BaseModel):
 ### 6.6 `GET /v1/cases/all-for-sync`
 
 System-internal read for the Foundry sync (Phase 05). Returns a paginated
-snapshot of `app.cases` for the `foundry_cases_sync` pipelines asset to
-ingest. No scope filter — this endpoint is server-to-server. The
-customer-facing scope-gated reads (§6.1, §6.2) are a separate slice.
+snapshot of `app.cases` consumed by two Foundry-sync pipelines assets:
+`foundry_cases_sync` (incremental upsert into the Case ontology) and
+`foundry_cases_reconcile` (the full snapshot is its keep-set — Case
+objects absent from it are evicted from the ontology as orphans, so the
+upsert-only sync never leaks deleted Cases). No scope filter — this
+endpoint is server-to-server. The customer-facing scope-gated reads
+(§6.1, §6.2) are a separate slice.
 
 Rows are ordered by `(updated_at, case_id)` ASC so a `since`-cursor walk
 is deterministic. Resolved cases are included (App 1's panel applies its
