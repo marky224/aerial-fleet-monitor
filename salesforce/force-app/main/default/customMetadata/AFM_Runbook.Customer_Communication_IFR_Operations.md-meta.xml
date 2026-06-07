@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Customer Communication: IFR Operations</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Customer Communication: IFR Operations</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">weather_impact,diversion</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">low</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:nil="true"/>
+    </values>
+</CustomMetadata>

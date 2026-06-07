@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Weather-Driven Arrival Backups</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Weather-Driven Arrival Backups</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">weather_impact</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">medium</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to MEDIUM. Escalates to HIGH when conditions are LIFR or when more than 8 inbound flights are affected.
+Read the current METAR and any TAF forecast covering the next 2 hours. Note whether conditions are improving or deteriorating.
+Check for related cases: are inbound flights diverting or holding? If yes, link those cases via `related_runbooks` references.
+[Auto] Customer notification is drafted for the site's customer region (West Coast or East Coast). Notification includes current flight category and TAF-derived expected duration.</value>
+    </values>
+</CustomMetadata>

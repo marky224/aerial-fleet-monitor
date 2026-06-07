@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Diversion to Alternate</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Diversion to Alternate</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">diversion</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">medium</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to MEDIUM. Severity escalates to HIGH if the diversion was caused by weather at the original destination and at least 3 inbound flights are also affected.
+Identify the alternate airport from detection facts. Verify it's a reasonable choice (within fuel range, has appropriate runway length, is within the operating region).
+Check whether the original destination has active weather or operational issues (open weather-impact cases for the same site).
+Confirm whether the alternate is on the customer's watchlist; if not, the customer's "site visibility" of this flight ends at diversion.
+[Auto] Investigation Tasks are created for each of these checks, due within 30 minutes.</value>
+    </values>
+</CustomMetadata>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Delayed Departure Triage</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Delayed Departure Triage</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">delay</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">low</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to LOW for departures delayed &lt;60 min, MEDIUM for &gt;60 min.
+Cross-reference the origin airport's METAR — weather-driven delays warrant linking to any active weather case.
+Check whether the operator has multiple delayed departures from the same site (operator-wide issue vs. flight-specific).
+[Auto] Customer notification draft is created if the destination is on the customer's watchlist (since arrival times will be affected).</value>
+    </values>
+</CustomMetadata>

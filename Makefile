@@ -47,6 +47,7 @@ help:
 	@echo "  api-shell              ipython with FastAPI app context loaded     [Phase 02]"
 	@echo "  sf-deploy              Deploy Salesforce metadata                   [Phase 04]"
 	@echo "  sf-validate            Validate Salesforce metadata without deploy  [Phase 04]"
+	@echo "  sf-seed-runbooks       Seed AFM_Runbook__mdt records + runbook Files [Phase 07]"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test                   Full suite (unit + integration + contract + e2e) [Phase 10]"
@@ -162,6 +163,15 @@ sf-validate:
 sf-test:
 	cd $(SF_DIR) && sf apex run test --target-org $(SF_ORG) \
 		--code-coverage --result-format human --wait 30
+
+# Seed the runbook data (CMDT records + reference Files). Run AFTER sf-deploy
+# (which deploys the AFM_Runbook__mdt type+fields). Records go via the Apex
+# Metadata API, not `sf project deploy` — afm-dev hits a known Salesforce GACK
+# on CustomMetadata record deploys (see salesforce/.forceignore for the why).
+.PHONY: sf-seed-runbooks
+sf-seed-runbooks:
+	./scripts/seed_runbook_cmdt.sh $(SF_ORG)
+	./scripts/seed_runbook_files.sh $(SF_ORG)
 
 .PHONY: api-shell
 api-shell:

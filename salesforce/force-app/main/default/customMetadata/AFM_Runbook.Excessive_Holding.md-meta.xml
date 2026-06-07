@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Excessive Holding Pattern</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Excessive Holding Pattern</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">excessive_hold</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">medium</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to MEDIUM.
+Check destination airport's current METAR (`AFM_Site_Icao__c`) — IFR or LIFR conditions warrant escalation context.
+Check whether other inbound flights to the same site are also holding (count of currently-holding aircraft inbound to the destination — available via the `holding_count` field in detection facts).
+If holding extends past 30 minutes total, escalate to HIGH and re-evaluate whether the flight is likely to divert.
+[Auto] If holding clears (aircraft resumes direct path to destination), case auto-resolves on next refresh.</value>
+    </values>
+</CustomMetadata>

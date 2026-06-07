@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Lost Signal During Cruise</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Lost Signal During Cruise</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">lost_signal</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">medium</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to MEDIUM by default (HIGH if the gap exceeds 10 minutes or if the aircraft was within 30 nm of a customer site).
+Confirm last known position, altitude, and heading from the case detection facts.
+Check ADS-B receiver coverage map for the area — coverage gaps over remote terrain are common and not necessarily indicative of an actual issue.
+Cross-reference any secondary feed if available (FlightAware, FlightRadar24) to confirm whether the signal loss is universal or specific to the OpenSky feed.
+Wait at least 5 minutes after the last reported position before treating as a sustained outage.
+[Auto] If the case ages past 10 minutes without a position update, severity is escalated to HIGH and an engineering Task is created.</value>
+    </values>
+</CustomMetadata>

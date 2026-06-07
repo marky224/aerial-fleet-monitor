@@ -1,0 +1,17 @@
+# Custom Metadata RECORDS are deployed via `make sf-seed-runbooks`
+# (scripts/seed_runbook_cmdt.sh, Apex Metadata API) — NOT `sf project deploy`.
+#
+# afm-dev hits a known Salesforce platform bug (GACK -315522575): ANY
+# CustomMetadata record deploy through the Metadata API fails with
+# "UNKNOWN_EXCEPTION: An unexpected error occurred" — org-wide and
+# content-independent (a one-field record fails; SOAP and REST; API 60-66; a
+# brand-new clean CMDT type fails identically). The CMDT type+fields and all
+# non-CMDT metadata deploy fine. Excluding the records here keeps
+# `make sf-deploy` / `make sf-validate` (which deploy all of force-app) working;
+# seed the records with `make sf-seed-runbooks`.
+#
+# The customMetadata/*.md-meta.xml files remain the canonical source and would
+# deploy normally on an unaffected org — drop this entry if the GACK is resolved
+# (e.g. via a Salesforce support case). See _private/docs/build/07_agentforce.md
+# (Decisions log) and memory afm-dev-cmdt-mdapi-deploy-broken.
+**/customMetadata/**
