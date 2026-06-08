@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Case_Types__c</fullName>
+    <label>Case Types</label>
+    <type>Text</type>
+    <length>255</length>
+    <required>false</required>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <description>Comma-separated AFM rule ids (snake_case) this runbook applies to. Apex splits on comma and exact-matches a Case's AFM_Case_Type__c.</description>
+</CustomField>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Severity_Floor__c</fullName>
+    <label>Severity Floor</label>
+    <type>Text</type>
+    <length>20</length>
+    <required>false</required>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <description>Minimum severity (low|medium|high|critical) from the runbook frontmatter. Triage uses this as the floor when composing the severity justification.</description>
+</CustomField>

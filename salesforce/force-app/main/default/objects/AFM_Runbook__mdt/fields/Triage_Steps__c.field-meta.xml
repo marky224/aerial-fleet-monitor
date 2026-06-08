@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Triage_Steps__c</fullName>
+    <label>Triage Steps</label>
+    <type>LongTextArea</type>
+    <length>32768</length>
+    <visibleLines>10</visibleLines>
+    <required>false</required>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <description>One triage step per line, materialized from the runbook "Triage steps" section. Lines beginning with [Auto] are already performed automatically; Apex (Group B) creates an investigation Task only for the remaining manual steps. Empty for the two reference runbooks. CMDT getInstance()/getAll() return null for LongTextArea — query this field via SOQL.</description>
+</CustomField>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <label>Go-Around Investigation</label>
+    <protected>false</protected>
+    <values>
+        <field>Title__c</field>
+        <value xsi:type="xsd:string">Go-Around Investigation</value>
+    </values>
+    <values>
+        <field>Case_Types__c</field>
+        <value xsi:type="xsd:string">go_around</value>
+    </values>
+    <values>
+        <field>Severity_Floor__c</field>
+        <value xsi:type="xsd:string">low</value>
+    </values>
+    <values>
+        <field>Salesforce_Template_Id__c</field>
+        <value xsi:nil="true"/>
+    </values>
+    <values>
+        <field>Triage_Steps__c</field>
+        <value xsi:type="xsd:string">[Auto] Severity set to LOW. Single go-arounds are routine and rarely indicate a customer-impacting issue.
+Check if multiple aircraft at the same site have gone around in the past 60 minutes — if so, escalate to MEDIUM and link to any active weather case for the site.
+Track whether the affected aircraft completes a successful approach within 30 minutes (auto-tracked).
+If a second go-around occurs on the same flight, escalate to MEDIUM and add a new timeline event.</value>
+    </values>
+</CustomMetadata>
