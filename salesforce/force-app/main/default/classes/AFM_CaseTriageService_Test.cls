@@ -10,6 +10,13 @@
 @IsTest
 private class AFM_CaseTriageService_Test {
 
+    static {
+        // Group C adds AFM_CaseTrigger (auto-triage on insert). These tests drive
+        // triage explicitly, so bypass the trigger to keep them isolated. The static
+        // block runs before each test method (statics reset per method).
+        AFM_CaseTriggerHandler.bypass = true;
+    }
+
     private static final String ESC_PREFIX = 'CRITICAL ESCALATION:';
     private static final String NOTIF_PREFIX = 'Customer notification — ';
 
