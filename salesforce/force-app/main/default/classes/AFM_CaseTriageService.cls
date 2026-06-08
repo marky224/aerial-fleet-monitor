@@ -28,11 +28,20 @@ public with sharing class AFM_CaseTriageService {
     @TestVisible
     private static final Decimal CRIT_ALTITUDE_FT = 10000;
     private static final String AUTO_MARKER = '[Auto]';
+    private static final String KIND_INVESTIGATION = 'investigation';
+    private static final String KIND_ESCALATION = 'escalation';
+    private static final String KIND_NOTIFICATION = 'notification';
 
-    /** Entry point — triage every Case in caseIds. Safe to call in bulk. */
-    public static void triageCases(List<Id> caseIds) {
+    /**
+     * Entry point — triage every Case in caseIds. Safe to call in bulk.
+     * Returns a per-Case TriageSummary of what was created, keyed by Case Id, so
+     * callers such as the AFM_TriageCase invocable can report the outcome. The
+     * Surface-1 trigger path calls this and ignores the return.
+     */
+    public static Map<Id, TriageSummary> triageCases(List<Id> caseIds) {
+        Map<Id, TriageSummary> summaries = new Map<Id, TriageSummary>();
         if (caseIds == null || caseIds.isEmpty()) {
-            return;
+            return summaries;
         }
 
         Map<Id, Case> casesById = new Map<Id, Case>([
@@ -43,7 +52,10 @@ public with sharing class AFM_CaseTriageService {
             WHERE Id IN :caseIds
         ]);
         if (casesById.isEmpty()) {
-            return;
+            return summaries;
+        }
+        for (Id cid : casesById.keySet()) {
+            summaries.put(cid, new TriageSummary());
         }
 
         Map<String, List<AFM_Runbook__mdt>> runbooksByType = runbooksByCaseType();
@@ -52,6 +64,7 @@ public with sharing class AFM_CaseTriageService {
         Set<String> linkKeys = existingLinkKeys(casesById.keySet());
 
         List<Task> tasks = new List<Task>();
+        List<String> taskKinds = new List<String>();   // parallel to tasks
         List<ContentDocumentLink> links = new List<ContentDocumentLink>();
 
         for (Case c : casesById.values()) {
@@ -64,6 +77,7 @@ public with sharing class AFM_CaseTriageService {
             for (AFM_Runbook__mdt rb : runbooks) {
                 for (String step : manualSteps(rb.Triage_Steps__c)) {
                     tasks.add(investigationTask(c, step));
+                    taskKinds.add(KIND_INVESTIGATION);
                 }
             }
 
@@ -71,11 +85,13 @@ public with sharing class AFM_CaseTriageService {
             Task escalation = criticalEscalation(c, engQueueId);
             if (escalation != null) {
                 tasks.add(escalation);
+                taskKinds.add(KIND_ESCALATION);
             }
 
             // 3. Customer-notification Task for region-scoped cases.
             if (isRegionScoped(c.AFM_Customer_Region__c)) {
                 tasks.add(notificationTask(c));
+                taskKinds.add(KIND_NOTIFICATION);
             }
 
             // 4. Link runbook reference Files (dedup-guarded across org + batch).
@@ -99,12 +115,46 @@ public with sharing class AFM_CaseTriageService {
         }
 
         // Partial-success DML: one bad row never blocks the rest of the triage.
+        // Tally only rows that actually saved so the summary never overstates.
         if (!tasks.isEmpty()) {
-            Database.insert(tasks, false);
+            Database.SaveResult[] taskResults = Database.insert(tasks, false);
+            for (Integer i = 0; i < taskResults.size(); i++) {
+                if (!taskResults[i].isSuccess()) {
+                    continue;
+                }
+                TriageSummary s = summaries.get(tasks[i].WhatId);
+                if (s == null) {
+                    continue;
+                }
+                if (taskKinds[i] == KIND_INVESTIGATION) {
+                    s.investigationTasks++;
+                } else if (taskKinds[i] == KIND_ESCALATION) {
+                    s.escalated = true;
+                } else if (taskKinds[i] == KIND_NOTIFICATION) {
+                    s.notificationDrafted = true;
+                }
+            }
         }
         if (!links.isEmpty()) {
-            Database.insert(links, false);
+            Database.SaveResult[] linkResults = Database.insert(links, false);
+            for (Integer i = 0; i < linkResults.size(); i++) {
+                if (linkResults[i].isSuccess()) {
+                    TriageSummary s = summaries.get(links[i].LinkedEntityId);
+                    if (s != null) {
+                        s.runbookLinks++;
+                    }
+                }
+            }
         }
+        return summaries;
+    }
+
+    /** Per-Case tally of what triage created (returned by triageCases). */
+    public class TriageSummary {
+        public Integer investigationTasks = 0;
+        public Boolean escalated = false;
+        public Boolean notificationDrafted = false;
+        public Integer runbookLinks = 0;
     }
 
     // ---- helpers ----------------------------------------------------------

@@ -86,6 +86,17 @@ private class AFM_CaseTriageService_Test {
         return out;
     }
 
+    /** Drive the AFM_TriageCase invocable from raw Case Ids (wraps them as TriageRequests). */
+    private static List<AFM_TriageCase.TriageResult> tri(List<Id> ids) {
+        List<AFM_TriageCase.TriageRequest> reqs = new List<AFM_TriageCase.TriageRequest>();
+        for (Id id : ids) {
+            AFM_TriageCase.TriageRequest r = new AFM_TriageCase.TriageRequest();
+            r.caseId = id;
+            reqs.add(r);
+        }
+        return AFM_TriageCase.triage(reqs);
+    }
+
     // ---- early-exit paths --------------------------------------------------
 
     @IsTest
@@ -105,9 +116,12 @@ private class AFM_CaseTriageService_Test {
         delete c;
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ ghost });
+        List<AFM_TriageCase.TriageResult> res = tri(new List<Id>{ ghost });
         Test.stopTest();
 
+        System.assertEquals(1, res.size(), 'One result per input id (1:1 mapping)');
+        System.assertEquals(false, res[0].triaged,
+            'An id that resolves to no Case reports triaged = false');
         System.assertEquals(0, [SELECT COUNT() FROM Task WHERE WhatId = :ghost],
             'A case id that resolves to nothing creates no tasks');
     }
@@ -127,8 +141,19 @@ private class AFM_CaseTriageService_Test {
             'lost_signal', 'East', AFM_TestDataFactory.lostSignalFacts(45, 35000));
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        List<AFM_TriageCase.TriageResult> res = tri(new List<Id>{ c.Id });
         Test.stopTest();
+
+        // Rich result the agent verbalises.
+        System.assertEquals(1, res.size(), 'One result for the one input case');
+        System.assertEquals(true, res[0].triaged, 'Case was found and triaged');
+        System.assertEquals(expected.size(), res[0].investigationTaskCount,
+            'Result reports one investigation task per non-[Auto] runbook step');
+        System.assertEquals(true, res[0].escalatedToEngineering,
+            'Result reports the critical lost-signal escalation');
+        System.assertEquals(true, res[0].customerNotificationDrafted,
+            'Result reports the region-scoped customer notification');
+        System.assert(String.isNotBlank(res[0].summary), 'Result carries a human summary');
 
         List<Task> all = tasksFor(c.Id);
         List<Task> inv = investigations(all);
@@ -161,7 +186,7 @@ private class AFM_CaseTriageService_Test {
             'lost_signal', 'All', AFM_TestDataFactory.lostSignalFacts(5.5, 5000.5));
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
 
         List<Task> all = tasksFor(c.Id);
@@ -175,7 +200,7 @@ private class AFM_CaseTriageService_Test {
     static void lostSignalMalformedFacts_noEscalation() {
         Case c = AFM_TestDataFactory.insertFleetOpsCase('lost_signal', 'All', 'not-json-at-all');
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
         System.assertEquals(0, escalations(tasksFor(c.Id)).size(),
             'Unparseable detection facts never escalate');
@@ -185,7 +210,7 @@ private class AFM_CaseTriageService_Test {
     static void lostSignalBlankFacts_noEscalation_regionNotifies() {
         Case c = AFM_TestDataFactory.insertFleetOpsCase('lost_signal', 'West', null);
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
         List<Task> all = tasksFor(c.Id);
         System.assertEquals(0, escalations(all).size(), 'Blank facts -> no escalation');
@@ -199,7 +224,7 @@ private class AFM_CaseTriageService_Test {
             'lost_signal', 'All', '{"gap_minutes":"abc","last_altitude_ft":"40000"}');
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ missing.Id, nonNumeric.Id });
+        tri(new List<Id>{ missing.Id, nonNumeric.Id });
         Test.stopTest();
 
         System.assertEquals(0, escalations(tasksFor(missing.Id)).size(),
@@ -216,7 +241,7 @@ private class AFM_CaseTriageService_Test {
         });
         Case c = AFM_TestDataFactory.insertFleetOpsCase('lost_signal', 'All', facts);
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
         System.assertEquals(1, escalations(tasksFor(c.Id)).size(),
             'String-typed numeric facts still escalate');
@@ -231,7 +256,7 @@ private class AFM_CaseTriageService_Test {
 
         Case c = AFM_TestDataFactory.insertFleetOpsCase('weather_impact', 'West', null);
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
 
         List<Task> all = tasksFor(c.Id);
@@ -246,7 +271,7 @@ private class AFM_CaseTriageService_Test {
     static void nullCaseType_noRunbookTasks() {
         Case c = AFM_TestDataFactory.insertFleetOpsCase(null, 'East', null);
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
 
         List<Task> all = tasksFor(c.Id);
@@ -267,8 +292,14 @@ private class AFM_CaseTriageService_Test {
         Case d = AFM_TestDataFactory.insertFleetOpsCase('diversion', 'West', null);
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ a.Id, b.Id, d.Id });
+        List<AFM_TriageCase.TriageResult> res = tri(new List<Id>{ a.Id, b.Id, d.Id });
         Test.stopTest();
+
+        System.assertEquals(3, res.size(), 'One result per input case, in order');
+        System.assert(res[0].triaged && res[1].triaged && res[2].triaged,
+            'All three input cases were triaged');
+        System.assertEquals(true, res[0].escalatedToEngineering,
+            'First result (critical lost_signal) reports the escalation');
 
         System.assertEquals(1, escalations(tasksFor(a.Id)).size(), 'a (critical lost_signal) escalates');
         System.assertEquals(1, notifications(tasksFor(a.Id)).size(), 'a (East) notifies');
@@ -293,8 +324,8 @@ private class AFM_CaseTriageService_Test {
         Case c = AFM_TestDataFactory.insertFleetOpsCase('lost_signal', 'All', null);
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
-        AFM_TriageCase.triage(new List<Id>{ c.Id });   // second pass must not re-link
+        tri(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });   // second pass must not re-link
         Test.stopTest();
 
         System.assertEquals(2, [SELECT COUNT() FROM ContentDocumentLink WHERE LinkedEntityId = :c.Id],
@@ -315,7 +346,7 @@ private class AFM_CaseTriageService_Test {
             'lost_signal', 'All', AFM_TestDataFactory.lostSignalFacts(45, 35000));
 
         Test.startTest();
-        AFM_TriageCase.triage(new List<Id>{ c.Id });
+        tri(new List<Id>{ c.Id });
         Test.stopTest();
 
         List<Task> esc = escalations(tasksFor(c.Id));
