@@ -3,7 +3,7 @@
 > Real-time information console for public US aircraft activity.
 
 [![Build](https://github.com/marky224/aerial-fleet-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/marky224/aerial-fleet-monitor/actions)
-[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red)](./LICENSE.md)
+[![License: Proprietary](https://img.shields.io/badge/license-Proprietary-red)](./LICENSE)
 
 ---
 
@@ -146,7 +146,7 @@ Detailed design docs (architecture, data model, API contracts, Salesforce setup,
 
 ## License
 
-This project is **proprietary** — all rights reserved. The repository is publicly visible for portfolio review and technical evaluation. You can read the code, clone it locally for evaluation, and reference it in conversations. You cannot use it commercially, deploy it as a service, redistribute it, or build derivative works.
+This project is **proprietary** — all rights reserved. No license is granted to use, copy, modify, or distribute it without prior written permission of the copyright holder; see [LICENSE](LICENSE) for the full terms. The repository is publicly visible for portfolio review and technical evaluation only.
 
 ## Contact
 
