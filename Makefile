@@ -46,8 +46,10 @@ help:
 	@echo "  logs                   Tail logs from the docker-compose stack"
 	@echo "  api-shell              ipython with FastAPI app context loaded     [Phase 02]"
 	@echo "  sf-deploy              Deploy Salesforce metadata                   [Phase 04]"
-	@echo "  sf-validate            Validate Salesforce metadata without deploy  [Phase 04]"
+	@echo "  sf-validate            Validate metadata + Apex tests (no deploy)   [Phase 04]"
 	@echo "  sf-seed-runbooks       Seed AFM_Runbook__mdt records + runbook Files [Phase 07]"
+	@echo "  sf-publish-agent       Provision agent user + publish + activate     [Phase 07]"
+	@echo "  sf-agent-up            Full agent stack: deploy + seed + publish     [Phase 07]"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test                   Full suite (unit + integration + contract + e2e) [Phase 10]"
@@ -156,7 +158,7 @@ sf-deploy:
 
 .PHONY: sf-validate
 sf-validate:
-	cd $(SF_DIR) && sf project deploy start --dry-run --target-org $(SF_ORG) \
+	cd $(SF_DIR) && sf project deploy start --dry-run --test-level RunLocalTests --target-org $(SF_ORG) \
 		--source-dir force-app --wait 30
 
 .PHONY: sf-test
@@ -172,6 +174,20 @@ sf-test:
 sf-seed-runbooks:
 	./scripts/seed_runbook_cmdt.sh $(SF_ORG)
 	./scripts/seed_runbook_files.sh $(SF_ORG)
+
+# Provision the Agentforce agent run-as user (idempotent — query-first since
+# `sf org create agent-user` is not), then publish + activate the agent. Run AFTER
+# sf-deploy (the AiAuthoringBundle + AFM_Triage_Automation permset must be in the org).
+.PHONY: sf-publish-agent
+sf-publish-agent:
+	./scripts/publish_agent.sh $(SF_ORG)
+
+# One-shot reproduce of the whole Agentforce stack on a target org: deploy metadata,
+# seed the runbook CMDT records + Files, then provision the agent user + publish +
+# activate. Steps are ordered — run sequentially (don't `make -j` this).
+.PHONY: sf-agent-up
+sf-agent-up: sf-deploy sf-seed-runbooks sf-publish-agent
+	@echo "✔ Full Agentforce stack deployed + published to $(SF_ORG)."
 
 .PHONY: api-shell
 api-shell:

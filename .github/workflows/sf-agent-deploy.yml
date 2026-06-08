@@ -1,0 +1,178 @@
+name: sf-agent-deploy
+
+# Salesforce + Agentforce lifecycle for Phase 07 (target org: afm-dev).
+#
+#   pull_request → main : VALIDATE only — a check-only deploy of force-app + the full
+#                         Apex suite (RunLocalTests). Never mutates the org, so it is
+#                         safe on every PR commit. Make it a required status check.
+#   push → main / manual: FULL live lifecycle — real deploy → seed runbook CMDT+Files
+#                         → run Apex tests → provision the agent run-as user → publish
+#                         + activate the Agentforce agent → verify it is live.
+#
+# Why this split (researched, production-correct): `sf project deploy quick` is
+# Production-only and does NOT work on a Developer Edition org, so the merge job just
+# re-runs `deploy start`. The org-mutating steps (seed, agent publish/activate) belong
+# ONLY on merge — running them on every PR would churn the shared org (each publish
+# makes a new BotVersion). The PR still gets a full safety gate via the check-only
+# validate. See _private/docs/build/07_agentforce.md (Group E) for the full rationale.
+#
+# Auth: JWT bearer flow (no long-lived refresh token in a secret; Salesforce is
+# deprecating the sfdx-auth-url path in 2026). Required repo secrets + one-time setup
+# are documented in 07_agentforce.md. A fresh (non-afm-dev) org additionally needs
+# Einstein + Agentforce enabled and agent licenses available.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'salesforce/**'
+      - 'scripts/seed_runbook_cmdt.sh'
+      - 'scripts/seed_runbook_files.sh'
+      - 'scripts/publish_agent.sh'
+      - 'Makefile'
+      - '.github/workflows/sf-agent-deploy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'salesforce/**'
+      - 'scripts/seed_runbook_cmdt.sh'
+      - 'scripts/seed_runbook_files.sh'
+      - 'scripts/publish_agent.sh'
+      - 'Makefile'
+      - '.github/workflows/sf-agent-deploy.yml'
+  workflow_dispatch:
+
+# Never let two runs deploy to the single shared org at once; don't cancel a deploy
+# mid-flight (that could leave the agent half-published).
+concurrency:
+  group: sf-agent-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SF_AUTOUPDATE_DISABLE: "true"
+  SF_DISABLE_TELEMETRY: "true"
+  # Pinned: this CLI bundles plugin-agent 1.34.0, the version Group D/E were built and
+  # verified against. The agent commands GA'd Feb–May 2026 and iterate fast — pin, don't
+  # track latest.
+  SF_CLI_VERSION: "2.133.4"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate — is the JWT auth secret configured? If not (before the operator sets the
+  # secrets, or on a fork PR), the Salesforce jobs below SKIP cleanly instead of
+  # failing — mirroring `make test-integration` ("auto-skipped if SF env missing").
+  # Once SF_JWT_KEY_B64 is set, they run for real.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: Check Salesforce CI secrets
+    runs-on: ubuntu-24.04
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          SF_JWT_KEY_B64: ${{ secrets.SF_JWT_KEY_B64 }}
+        run: |
+          if [ -n "$SF_JWT_KEY_B64" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Salesforce CI not configured::SF_JWT_KEY_B64 is not set — skipping the Salesforce validate/deploy jobs. See _private/docs/build/07_agentforce.md (Group E) for one-time JWT setup."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # PR gate — check-only deploy + Apex tests. Zero org mutation.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Validate (check-only deploy + Apex tests)
+    needs: gate
+    if: github.event_name == 'pull_request' && needs.gate.outputs.configured == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli@${{ env.SF_CLI_VERSION }}
+
+      - name: Authenticate to afm-dev (JWT)
+        env:
+          SF_JWT_KEY_B64: ${{ secrets.SF_JWT_KEY_B64 }}
+          SF_CONSUMER_KEY: ${{ secrets.SF_CONSUMER_KEY }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_INSTANCE_URL: ${{ secrets.SF_INSTANCE_URL }}
+        run: |
+          printf '%s' "$SF_JWT_KEY_B64" | base64 -d > "$RUNNER_TEMP/server.key"
+          chmod 600 "$RUNNER_TEMP/server.key"
+          sf org login jwt --client-id "$SF_CONSUMER_KEY" \
+            --jwt-key-file "$RUNNER_TEMP/server.key" \
+            --username "$SF_USERNAME" --instance-url "$SF_INSTANCE_URL" \
+            --alias afm-dev --set-default
+
+      - name: Validate metadata (check-only + RunLocalTests)
+        run: make sf-validate
+
+      - name: Remove JWT key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/server.key"
+
+  # ---------------------------------------------------------------------------
+  # Merge / manual — full live agent lifecycle against afm-dev.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy + test + seed + publish + activate
+    needs: gate
+    if: github.event_name != 'pull_request' && needs.gate.outputs.configured == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli@${{ env.SF_CLI_VERSION }}
+
+      - name: Authenticate to afm-dev (JWT)
+        env:
+          SF_JWT_KEY_B64: ${{ secrets.SF_JWT_KEY_B64 }}
+          SF_CONSUMER_KEY: ${{ secrets.SF_CONSUMER_KEY }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_INSTANCE_URL: ${{ secrets.SF_INSTANCE_URL }}
+        run: |
+          printf '%s' "$SF_JWT_KEY_B64" | base64 -d > "$RUNNER_TEMP/server.key"
+          chmod 600 "$RUNNER_TEMP/server.key"
+          sf org login jwt --client-id "$SF_CONSUMER_KEY" \
+            --jwt-key-file "$RUNNER_TEMP/server.key" \
+            --username "$SF_USERNAME" --instance-url "$SF_INSTANCE_URL" \
+            --alias afm-dev --set-default
+
+      - name: Deploy metadata (force-app; customMetadata + publish artifacts force-ignored)
+        run: make sf-deploy
+
+      - name: Run Apex tests (gate before publishing the agent)
+        run: make sf-test
+
+      - name: Seed runbook CMDT records + Files (Apex Metadata API — GACK workaround)
+        run: make sf-seed-runbooks
+
+      - name: Provision agent user + publish + activate the agent
+        run: make sf-publish-agent
+
+      - name: Verify the agent is live
+        run: |
+          sf data query --target-org afm-dev --result-format human \
+            --query "SELECT DeveloperName, BotUserId FROM BotDefinition WHERE DeveloperName='Fleet_Anomaly_Triage'"
+
+      - name: Remove JWT key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/server.key"
