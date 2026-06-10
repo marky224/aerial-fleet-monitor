@@ -134,6 +134,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history so the agent-bundle change-detection step can diff the push.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -172,7 +175,32 @@ jobs:
           AFM_CMDT_SEED_MODE: apex
         run: make sf-seed-runbooks
 
+      # Publishing mints a new BotVersion + re-activates. Only do that when the
+      # authoring bundle actually changed (or on a manual run) — otherwise every
+      # unrelated merge to main churns throwaway BotVersions. deploy/test/seed above
+      # still run for any Salesforce change.
+      # (The CI connected app must grant the SFAP scopes — chatbot_api, sfap_api, web —
+      # so `sf agent publish` can obtain its named-user token.)
+      - name: Detect agent-bundle changes
+        id: bundle
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            decision=true;  reason="manual run (forced)"
+          else
+            before="${{ github.event.before }}"
+            git rev-parse -q --verify "$before^{commit}" >/dev/null 2>&1 || before="${{ github.sha }}^"
+            if git diff --name-only "$before" "${{ github.sha }}" -- \
+                 'salesforce/force-app/main/default/aiAuthoringBundles/**' | grep -q .; then
+              decision=true;  reason="agent bundle changed"
+            else
+              decision=false; reason="no agent-bundle change"
+            fi
+          fi
+          echo "changed=$decision" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Agent publish::$reason -> publish=$decision"
+
       - name: Provision agent user + publish + activate the agent
+        if: steps.bundle.outputs.changed == 'true'
         run: make sf-publish-agent
 
       - name: Verify the agent is live
