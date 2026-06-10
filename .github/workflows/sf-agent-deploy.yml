@@ -162,7 +162,14 @@ jobs:
       - name: Run Apex tests (gate before publishing the agent)
         run: make sf-test
 
-      - name: Seed runbook CMDT records + Files (Apex Metadata API — GACK workaround)
+      - name: Seed runbook CMDT records + Files (org-adaptive seed — apex mode on afm-dev)
+        # seed_runbook_cmdt.sh is org-adaptive (standard MDAPI -> Apex fallback on
+        # the GACK). afm-dev reliably hits the CustomMetadata-record GACK
+        # (-315522575), so force the Apex path here to skip the ~15s doomed standard
+        # attempt. If Salesforce fixes the org, drop this env so `auto` uses the
+        # standard path. See scripts/seed_runbook_cmdt.sh + 07_agentforce.md (Group E).
+        env:
+          AFM_CMDT_SEED_MODE: apex
         run: make sf-seed-runbooks
 
       - name: Provision agent user + publish + activate the agent
