@@ -1,0 +1,330 @@
+{
+  "id": null,
+  "uid": "afm-pipeline-health",
+  "title": "AFM — Pipeline Health",
+  "tags": ["afm", "phase-09"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Runs (last 24h)",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "sum(afm_dagster_runs_24h) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Failures (last 24h)",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "sum(afm_dagster_runs_24h{status=\"FAILURE\"}) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Running now",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "sum(afm_dagster_runs_24h{status=\"STARTED\"}) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Pipeline lag",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "afm_pipeline_lag_seconds",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Runs last 24h by pipeline",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 13, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "continuous-BlPu" } },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "sum by (pipeline) (afm_dagster_runs_24h)",
+          "instant": true,
+          "legendFormat": "{{pipeline}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "Failures last 24h by pipeline",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 13, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "sum by (pipeline) (afm_dagster_runs_24h{status=\"FAILURE\"})",
+          "instant": true,
+          "legendFormat": "{{pipeline}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "bargauge",
+      "title": "Pipeline freshness — time since last completed run",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 13, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red", "value": 14400 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "afm_dagster_job_last_age_seconds",
+          "instant": true,
+          "legendFormat": "{{pipeline}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "bargauge",
+      "title": "Last run duration by pipeline",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 13, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "color": { "mode": "continuous-GrYlRd" } },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "afm_dagster_job_last_duration_seconds",
+          "instant": true,
+          "legendFormat": "{{pipeline}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Pipeline lag over time",
+      "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 120 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "afm-prometheus" },
+          "expr": "afm_pipeline_lag_seconds",
+          "range": true,
+          "legendFormat": "fleet position lag"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "logs",
+      "title": "Pipeline errors (Loki — dagster)",
+      "datasource": { "type": "loki", "uid": "afm-loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 38 },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": false,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "afm-loki" },
+          "expr": "{service=~\"dagster.*\"} |~ \"ERROR|Exception|Traceback\"",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}

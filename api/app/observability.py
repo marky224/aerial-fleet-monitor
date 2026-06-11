@@ -16,9 +16,10 @@ Two exposition surfaces:
     from its own registry via a custom collector so it doesn't interleave with
     the multiprocess RED registry.
 
-Dagster pipeline-run metrics (from the separate ``dagster`` database) are a
-follow-up: the one Phase-09 dashboard uses pipeline *lag* (derived here from
-``current_positions``) as its freshness signal.
+Dagster pipeline-run metrics (job run counts, last-run duration/age) come
+from the separate ``dagster`` run-store database via a second, independent
+pool (``app.state.dagster_postgres``). That collection is isolated in its own
+try/except so a dagster-store hiccup never zeroes the business gauges.
 """
 
 from __future__ import annotations
@@ -50,11 +51,14 @@ class AFMMetricsCollector:
 
     ``collect()`` runs a handful of aggregate queries against ``app.cases``
     and ``app.current_positions`` on each scrape and yields point-in-time
-    gauges. Every query is a cheap COUNT/GROUP BY on indexed columns.
+    gauges. Every query is a cheap COUNT/GROUP BY on indexed columns. It also
+    reads Dagster's run store (a second pool) for pipeline-run metrics.
 
-    Resilient by design: if the pool isn't up yet (a scrape during startup) or
-    a query fails, it emits ``afm_metrics_collector_up 0`` and no business
-    gauges, rather than failing the whole scrape with a 500.
+    Resilient by design: if the main pool isn't up yet (a scrape during
+    startup) or a business query fails, it emits ``afm_metrics_collector_up 0``
+    and no business gauges, rather than failing the whole scrape with a 500.
+    Dagster collection is guarded separately, so its failure leaves the
+    business gauges (and the up-signal) intact.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -62,6 +66,9 @@ class AFMMetricsCollector:
 
     def _pool(self) -> PostgresPool | None:
         return getattr(self._app.state, "postgres", None)
+
+    def _dagster_pool(self) -> PostgresPool | None:
+        return getattr(self._app.state, "dagster_postgres", None)
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
         pool = self._pool()
@@ -75,6 +82,15 @@ class AFMMetricsCollector:
             log.warning("metrics.extras.collect_failed", error=str(exc))
             yield GaugeMetricFamily(_COLLECTOR_UP, _COLLECTOR_UP_HELP, value=0.0)
             return
+        # Dagster pipeline-run metrics live in a separate database/pool and are
+        # collected under their own guard: a dagster-store failure must never
+        # zero the business gauges above (nor the up-signal).
+        dagster_pool = self._dagster_pool()
+        if dagster_pool is not None:
+            try:
+                yield from self._collect_dagster(dagster_pool)
+            except Exception as exc:
+                log.warning("metrics.extras.dagster_collect_failed", error=str(exc))
         yield GaugeMetricFamily(_COLLECTOR_UP, _COLLECTOR_UP_HELP, value=1.0)
 
     def _collect_fleet(self, pool: PostgresPool) -> Iterator[GaugeMetricFamily]:
@@ -144,6 +160,49 @@ class AFMMetricsCollector:
             by_type.add_metric([r["case_type"]], float(r["n"]))
         yield by_type
 
+        by_type_severity = GaugeMetricFamily(
+            "afm_cases_by_type_severity",
+            "Current case count by detector rule (case_type) and severity.",
+            labels=["case_type", "severity"],
+        )
+        for r in pool.fetchall(
+            "SELECT coalesce(case_type, 'unknown') AS case_type, "
+            "coalesce(severity, 'unknown') AS severity, count(*) AS n "
+            "FROM app.cases GROUP BY 1, 2"
+        ):
+            by_type_severity.add_metric([r["case_type"], r["severity"]], float(r["n"]))
+        yield by_type_severity
+
+        created_24h = GaugeMetricFamily(
+            "afm_cases_created_24h",
+            "Cases created in the last 24 hours by detector rule (case_type).",
+            labels=["case_type"],
+        )
+        for r in pool.fetchall(
+            "SELECT coalesce(case_type, 'unknown') AS case_type, count(*) AS n "
+            "FROM app.cases WHERE created_at > now() - interval '24 hours' GROUP BY 1"
+        ):
+            created_24h.add_metric([r["case_type"]], float(r["n"]))
+        yield created_24h
+
+        # By site: cap label cardinality at the top 20 busiest airports, with
+        # the long tail folded into a single "other" bucket.
+        by_site = GaugeMetricFamily(
+            "afm_cases_by_site",
+            "Current case count by site ICAO (top 20 busiest; remainder as 'other').",
+            labels=["site_icao"],
+        )
+        site_rows = pool.fetchall(
+            "SELECT coalesce(site_icao, 'unknown') AS site_icao, count(*) AS n "
+            "FROM app.cases GROUP BY 1 ORDER BY n DESC"
+        )
+        for r in site_rows[:20]:
+            by_site.add_metric([r["site_icao"]], float(r["n"]))
+        other = sum(int(r["n"]) for r in site_rows[20:])
+        if other:
+            by_site.add_metric(["other"], float(other))
+        yield by_site
+
         sync = GaugeMetricFamily(
             "afm_sf_sync_backlog",
             "Case count by Salesforce sync status (pending/failed/skipped/synced).",
@@ -155,6 +214,56 @@ class AFMMetricsCollector:
         ):
             sync.add_metric([r["sync_status"]], float(r["n"]))
         yield sync
+
+    def _collect_dagster(self, pool: PostgresPool) -> Iterator[GaugeMetricFamily]:
+        """Pipeline-run metrics from Dagster's run store (separate database).
+
+        The label is ``pipeline`` (not ``job``) on purpose: ``job`` is a
+        reserved Prometheus scrape label, so emitting our own ``job`` would
+        collide and surface as ``exported_job`` after a scrape.
+        """
+        runs_24h = GaugeMetricFamily(
+            "afm_dagster_runs_24h",
+            "Dagster pipeline runs in the last 24 hours by pipeline and status.",
+            labels=["pipeline", "status"],
+        )
+        for r in pool.fetchall(
+            "SELECT coalesce(pipeline_name, 'unknown') AS pipeline, "
+            "coalesce(status, 'unknown') AS status, count(*) AS n "
+            "FROM runs WHERE create_timestamp > now() - interval '24 hours' "
+            "GROUP BY 1, 2"
+        ):
+            runs_24h.add_metric([r["pipeline"], r["status"]], float(r["n"]))
+        yield runs_24h
+
+        # Per pipeline, the most recently *completed* run: how long it took and
+        # how long ago it finished (freshness). start_time/end_time are epoch
+        # doubles, so these are timezone-safe regardless of the session TZ.
+        last_duration = GaugeMetricFamily(
+            "afm_dagster_job_last_duration_seconds",
+            "Duration of each pipeline's most recently completed run, in seconds.",
+            labels=["pipeline"],
+        )
+        last_age = GaugeMetricFamily(
+            "afm_dagster_job_last_age_seconds",
+            "Seconds since each pipeline's most recently completed run finished.",
+            labels=["pipeline"],
+        )
+        for r in pool.fetchall(
+            "SELECT DISTINCT ON (pipeline_name) "
+            "coalesce(pipeline_name, 'unknown') AS pipeline, "
+            "start_time, end_time, "
+            "extract(epoch FROM now()) - end_time AS age "
+            "FROM runs WHERE end_time IS NOT NULL AND end_time > 0 "
+            "ORDER BY pipeline_name, end_time DESC"
+        ):
+            if r["start_time"] is not None:
+                last_duration.add_metric(
+                    [r["pipeline"]], float(r["end_time"]) - float(r["start_time"])
+                )
+            last_age.add_metric([r["pipeline"]], float(r["age"]))
+        yield last_duration
+        yield last_age
 
 
 def setup_observability(app: FastAPI) -> None:
