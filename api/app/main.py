@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
-from app.exceptions import AFMException
+from app.exceptions import AFMException, UpstreamUnavailable
 from app.logging import configure_logging, get_logger
 from app.models.common import ErrorDetail, ErrorResponse
 from app.observability import setup_observability
@@ -61,6 +61,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.postgres = PostgresPool(settings.database_url)
     log.info("pool.created")
+    # Observability reads Dagster's run store (a separate database) for
+    # pipeline-run metrics. It's non-essential to serving requests, so a
+    # failure to connect must not block startup — degrade to None and the
+    # collector simply omits the dagster gauges.
+    try:
+        app.state.dagster_postgres = PostgresPool(settings.dagster_dsn, min_conns=1, max_conns=3)
+        log.info("dagster_pool.created")
+    except UpstreamUnavailable:
+        app.state.dagster_postgres = None
+        log.warning("dagster_pool.unavailable")
     app.state.lakehouse = LakehouseQuery(settings.afm_lake_path)
     log.info("lakehouse.ready", path=settings.afm_lake_path)
     app.state.watched_airports = WatchedAirportsProvider(app.state.postgres)
@@ -70,6 +80,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     app.state.postgres.close()
+    if app.state.dagster_postgres is not None:
+        app.state.dagster_postgres.close()
     log.info("pool.closed")
     log.info("api.shutdown")
 
