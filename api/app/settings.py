@@ -12,6 +12,7 @@ get added when the matching phase lands.
 from __future__ import annotations
 
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +41,21 @@ class Settings(BaseSettings):
     # missing config fails at import time instead of at first DB call in
     # Phase 01. Tests will pass a test DSN via env override or a test .env.
     database_url: str = Field(...)
+
+    # Dagster's run store lives in a separate `dagster` database on the same
+    # Postgres server (see pipelines/dagster.yaml). Phase 09 observability
+    # reads it for pipeline-run metrics. If DAGSTER_DATABASE_URL isn't in the
+    # API's env, `dagster_dsn` derives it from database_url (same creds/host,
+    # db name -> "dagster").
+    dagster_database_url: str | None = Field(default=None)
+
+    @property
+    def dagster_dsn(self) -> str:
+        """DSN for the Dagster run-store database (observability metrics only)."""
+        if self.dagster_database_url:
+            return self.dagster_database_url
+        parts = urlsplit(self.database_url)
+        return urlunsplit(parts._replace(path="/dagster"))
 
     # Parquet lakehouse root. `/lake` in the docker-compose `parquet_lake`
     # volume; same env var name (AFM_LAKE_PATH) pipelines uses, so a single
