@@ -1,0 +1,22 @@
+# Grafana datasource provisioning — AFM observability stack (Phase 09).
+# Both datasources resolve over the `afm` docker network by service name.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: afm-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    uid: afm-loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000

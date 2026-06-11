@@ -26,6 +26,7 @@ from starlette.responses import Response
 from app.exceptions import AFMException
 from app.logging import configure_logging, get_logger
 from app.models.common import ErrorDetail, ErrorResponse
+from app.observability import setup_observability
 from app.routers import admin, auth_stub, cases, flights, positions, sites
 from app.services.lakehouse import LakehouseQuery
 from app.services.postgres import PostgresPool, WatchedAirportsProvider
@@ -176,3 +177,9 @@ async def health() -> HealthResponse:
         service=settings.service_name,
         version=settings.service_version,
     )
+
+
+# Prometheus metrics: RED at /v1/metrics + PG-derived gauges at
+# /v1/metrics/extras. Registered last so the instrumentator middleware wraps
+# every route declared above.
+setup_observability(app)

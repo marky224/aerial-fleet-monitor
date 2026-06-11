@@ -1,0 +1,16 @@
+# Grafana dashboard provider — AFM observability stack (Phase 09).
+# Loads dashboard JSON from /var/lib/grafana/dashboards (bind-mounted from
+# infra/observability/grafana/dashboards) into the "AFM" folder.
+apiVersion: 1
+
+providers:
+  - name: AFM
+    orgId: 1
+    folder: AFM
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

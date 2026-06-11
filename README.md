@@ -87,6 +87,14 @@ Cases sync bidirectionally between AFM and Salesforce via two Dagster assets (`s
 - **DuckDB-over-Parquet lakehouse** for atomic position snapshots written by the ingestion asset.
 - **Dagster orchestration** with 14 assets organized into ingestion (OpenSky positions @30s, NOAA weather @5m), detection (`case_detector`), flight enrichment, Salesforce sync (push + pull), Foundry sync (positions, sites, flights, cases, aircraft reconcile), and maintenance (TTL pruning, reference seeding).
 
+### Observability
+
+A local-first monitoring stack runs alongside the app in the same compose project: **Prometheus** scrapes the API, **Loki + Promtail** aggregate every service's logs, and **Grafana** renders both. The API exposes RED request metrics (`/v1/metrics`, aggregated across its uvicorn workers) plus AFM business gauges derived live from Postgres (`/v1/metrics/extras`) — active aircraft, pipeline lag, case inventory by severity / region / rule, and the Salesforce sync backlog. The *Fleet Ops Overview* dashboard ties metrics and logs into a single board.
+
+![Grafana Fleet Ops Overview](./docs/assets/images/grafana-fleet-ops-overview.png)
+
+Every service binds to localhost — observability is an operator surface, not a public one.
+
 ### Salesforce metadata
 
 - 2 custom objects (`AFM_Site__c`, `AFM_Flight__c`)
@@ -110,6 +118,8 @@ All managed as SFDX source and deployed to an Agentforce Developer Edition org.
 
 **Infrastructure:** Docker Compose on Ubuntu 24.04 · self-hosted reverse tunnel for public API · Foundry-hosted dashboard (no separate frontend hosting)
 
+**Observability:** Prometheus · Grafana · Loki · Promtail · prometheus-fastapi-instrumentator (RED) · Postgres-derived business gauges
+
 **Testing:** pytest · 9 API test modules · 15 pipelines test modules · 6 Foundry sync test modules · GitHub Actions CI
 
 ## Local development
@@ -130,6 +140,8 @@ make dev                         # docker compose up -d (dashboard lives in Foun
 Then:
 - API: [http://localhost:8000/v1/docs](http://localhost:8000/v1/docs) (Swagger UI)
 - Dagster: [http://localhost:3000](http://localhost:3000)
+- Grafana: [http://localhost:3001](http://localhost:3001) (user `admin`; set `GRAFANA_ADMIN_PASSWORD` in `.env`)
+- Prometheus: [http://localhost:9090](http://localhost:9090)
 - Dashboard: Foundry workspace (separate developer-tier tenant; tenant URL in `_private/foundry/.env`)
 
 For Salesforce integration: a separate Agentforce Developer Edition org is required.
