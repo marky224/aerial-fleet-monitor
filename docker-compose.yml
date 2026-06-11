@@ -19,6 +19,10 @@ volumes:
   postgres_data:
   parquet_lake:
   dagster_home:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  promtail_positions:
 
 services:
   postgres:
@@ -68,6 +72,16 @@ services:
       --workers 3
     env_file:
       - .env
+    environment:
+      # In-stack, emit structured JSON logs so Promtail → Loki can parse
+      # fields (LogQL `| json`). Local `make dev` keeps the console default.
+      LOG_FORMAT: json
+      # Aggregate Prometheus metrics across the 3 uvicorn workers via a shared
+      # multiprocess dir (the tmpfs below — fresh on every container start, so
+      # no stale per-worker metric files survive a restart).
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
+    tmpfs:
+      - /tmp/prometheus_multiproc
     volumes:
       - parquet_lake:/lake
     ports:
@@ -213,5 +227,84 @@ services:
         condition: service_healthy
       dagster-user-code:
         condition: service_healthy
+    networks:
+      - afm
+
+  # ---------------------------------------------------------------------------
+  # Observability stack (Phase 09): Loki/Promtail (logs) + Prometheus (metrics)
+  # + Grafana (dashboards). All localhost-bound like the rest of the stack —
+  # public exposure is deliberately out of scope (AFM is local-first). Image
+  # tags pinned for reproducibility; mem limits kept modest since the host
+  # is shared with a co-resident tenant. No container healthchecks: the images
+  # are minimal (no wget/grep), so health is verified from the host via the
+  # bound ports instead.
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./infra/observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks:
+      - afm
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./infra/observability/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/promtail
+    depends_on:
+      - loki
+    networks:
+      - afm
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=14d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - afm
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+      - loki
     networks:
       - afm

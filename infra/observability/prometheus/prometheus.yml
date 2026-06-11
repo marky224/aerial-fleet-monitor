@@ -1,0 +1,32 @@
+# Prometheus scrape config — AFM observability stack (Phase 09).
+#
+# Local-first: Prometheus runs inside the `afm` docker network and scrapes the
+# API's two metrics endpoints by service name. Dagster exposes no Prometheus
+# endpoint of its own — its pipeline metrics are derived from the Postgres
+# `dagster` run store and surfaced through the API's /v1/metrics/extras
+# collector (see api/app/observability.py).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-monitoring.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # API RED metrics (request rate / errors / duration) from
+  # prometheus-fastapi-instrumentator, multiprocess-aggregated across the 3
+  # uvicorn workers. Target is DOWN until Group B lands /v1/metrics.
+  - job_name: afm-api
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ["api:8000"]
+
+  # AFM business + pipeline gauges derived live from Postgres (afm + dagster
+  # DBs). Point-in-time gauges, so a slower cadence is fine.
+  - job_name: afm-api-extras
+    metrics_path: /v1/metrics/extras
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["api:8000"]

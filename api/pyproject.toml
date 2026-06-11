@@ -29,6 +29,8 @@ dependencies = [
     "duckdb>=1.1,<2",
     "pytz>=2024.1",  # duckdb soft-requires for materializing TIMESTAMPTZ columns
     "simple-salesforce>=1.12,<2",  # Phase 04 — AFM→SF Case writes (planned tech stack)
+    "prometheus-client>=0.21,<1",  # Phase 09 — metrics exposition (custom collector)
+    "prometheus-fastapi-instrumentator>=7,<8",  # Phase 09 — RED request metrics
 ]
 
 [project.optional-dependencies]
@@ -87,7 +89,14 @@ plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions/"]
 
 [[tool.mypy.overrides]]
-module = ["simple_salesforce.*", "duckdb.*", "psycopg2", "psycopg2.*"]
+module = [
+    "simple_salesforce.*",
+    "duckdb.*",
+    "psycopg2",
+    "psycopg2.*",
+    "prometheus_client.*",
+    "prometheus_fastapi_instrumentator.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -1,0 +1,45 @@
+# Promtail config — AFM observability stack (Phase 09).
+#
+# Discovers containers via the Docker API and ships their stdout/stderr to
+# Loki. Scoped to AFM's own compose project (com.docker.compose.project=afm)
+# so the co-resident host tenant's containers are never ingested
+# (the host is multi-tenant — keep AFM's footprint scoped to its own project).
+#
+# AFM's API + pipelines already log structlog JSON to stdout, so the lines
+# arrive parseable; the `json` stage lifts `level` to a label and leaves the
+# rest queryable via LogQL `| json`.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: afm-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=afm"]
+    relabel_configs:
+      # service = compose service name (api, dagster-user-code, postgres, ...).
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+      # container = the docker container name, minus the leading slash.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+    pipeline_stages:
+      # Lines are already the container's stdout (docker_sd handles framing);
+      # parse the structlog JSON and promote `level` to a low-cardinality label.
+      - json:
+          expressions:
+            level: level
+      - labels:
+          level:
