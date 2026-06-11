@@ -89,9 +89,23 @@ Cases sync bidirectionally between AFM and Salesforce via two Dagster assets (`s
 
 ### Observability
 
-A local-first monitoring stack runs alongside the app in the same compose project: **Prometheus** scrapes the API, **Loki + Promtail** aggregate every service's logs, and **Grafana** renders both. The API exposes RED request metrics (`/v1/metrics`, aggregated across its uvicorn workers) plus AFM business gauges derived live from Postgres (`/v1/metrics/extras`) — active aircraft, pipeline lag, case inventory by severity / region / rule, and the Salesforce sync backlog. The *Fleet Ops Overview* dashboard ties metrics and logs into a single board.
+A local-first monitoring stack runs alongside the app in the same compose project: **Prometheus** scrapes the API, **Loki + Promtail** aggregate every service's logs, and **Grafana** renders both. The API exposes RED request metrics (`/v1/metrics`, aggregated across its uvicorn workers) plus AFM business gauges derived live from Postgres (`/v1/metrics/extras`) — active aircraft, pipeline lag, case inventory by severity / region / rule / site, and the Salesforce sync backlog — alongside Dagster pipeline-run metrics (run counts, per-pipeline freshness and duration) read from the run store. Five Grafana dashboards tie metrics and logs together.
 
 ![Grafana Fleet Ops Overview](./docs/assets/images/grafana-fleet-ops-overview.png)
+
+Four more operator boards cover the rest of the system:
+
+**Salesforce Health** — sync backlog by status, request/error rate, p95 latency, and live sync events.
+![Grafana Salesforce Health](./docs/assets/images/grafana-salesforce-health.png)
+
+**Pipeline Health** — Dagster run counts and failures, per-pipeline freshness and duration, fleet position lag, and pipeline error logs.
+![Grafana Pipeline Health](./docs/assets/images/grafana-pipeline-health.png)
+
+**Sites** — fleet stats and case distribution by airport and customer region.
+![Grafana Sites](./docs/assets/images/grafana-sites.png)
+
+**Case Detector Tuning** — open-case inventory by rule, severity mix, 24h intake, and the rule × severity breakdown.
+![Grafana Case Detector Tuning](./docs/assets/images/grafana-case-detector-tuning.png)
 
 Every service binds to localhost — observability is an operator surface, not a public one.
 
