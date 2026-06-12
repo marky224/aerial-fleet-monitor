@@ -129,11 +129,20 @@ services:
       # `environment:` wins over `env_file:`. Without this every foundry
       # sync/reconcile job FoundrySyncSkips ("api unreachable").
       AFM_API_BASE: "http://api:8000"
+    # `--log-format json` makes Dagster emit JSON to stdout so Promtail/Loki
+    # parse it via `| json`, consistent with the API. It covers this code
+    # server plus the daemon + webserver (same flag below). Caveat: the
+    # per-run worker subprocesses (`dagster api execute_run`) don't inherit
+    # the flag and stay plain text — a Dagster 1.9.13 limitation with no clean
+    # override (Definitions/define_asset_job take no logger arg; the
+    # experimental python_logs route double-logs). Run events are still in the
+    # Postgres event log + the Dagster UI.
     command: >
       dagster api grpc
       -h 0.0.0.0
       -p 4000
       -m pipelines.definitions
+      --log-format json
     volumes:
       - parquet_lake:/lake
     expose:
@@ -178,6 +187,7 @@ services:
       -h 0.0.0.0
       -p 3000
       -w /opt/dagster/workspace.yaml
+      --log-format json
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./pipelines/workspace.yaml:/opt/dagster/workspace.yaml:ro
@@ -218,6 +228,7 @@ services:
     command: >
       dagster-daemon run
       -w /opt/dagster/workspace.yaml
+      --log-format json
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./pipelines/workspace.yaml:/opt/dagster/workspace.yaml:ro

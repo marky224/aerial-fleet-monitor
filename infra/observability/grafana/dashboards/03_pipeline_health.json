@@ -321,7 +321,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "afm-loki" },
-          "expr": "{service=~\"dagster.*\"} |~ \"ERROR|Exception|Traceback\"",
+          "expr": "{service=~\"dagster.*\"} |~ \"(?i)(error|exception|traceback)\"",
           "queryType": "range"
         }
       ]
