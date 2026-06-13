@@ -82,6 +82,8 @@ install:
 	cd pipelines && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing afm_foundry_sync into the pipelines venv (Phase 03 Foundry sync assets import it)"
 	cd pipelines && . .venv/bin/activate && pip install -e ../foundry/sync
+	@echo "→ Installing foundry/sync own venv with [dev] (its tests use respx; exercised by make test-unit)"
+	cd foundry/sync && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 
 .PHONY: dev
 dev:
@@ -109,8 +111,12 @@ lint:
 
 .PHONY: test-unit
 test-unit:
-	@echo "→ test-unit: running API pytest suite (integration tests excluded)"
-	cd api && . .venv/bin/activate && pytest -m "not integration"
+	@echo "→ test-unit (api): integration + contract excluded"
+	cd api && . .venv/bin/activate && pytest -m "not integration and not contract"
+	@echo "→ test-unit (pipelines)"
+	cd pipelines && . .venv/bin/activate && pytest
+	@echo "→ test-unit (foundry/sync)"
+	cd foundry/sync && . .venv/bin/activate && pytest
 
 .PHONY: db-migrate
 db-migrate:

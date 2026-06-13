@@ -49,6 +49,7 @@ jobs:
           cache-dependency-path: |
             api/pyproject.toml
             pipelines/pyproject.toml
+            foundry/sync/pyproject.toml
 
       - name: Install api deps
         working-directory: api
@@ -70,6 +71,17 @@ jobs:
           # so lint (mypy) + tests resolve it; it is intentionally not a
           # PEP 508 dep (see pipelines/pyproject.toml dependencies note).
           pip install -e ../foundry/sync
+
+      - name: Install foundry/sync deps
+        working-directory: foundry/sync
+        run: |
+          # foundry/sync keeps its own venv: its test suite needs the [dev]
+          # extras (respx), which the pipelines-venv editable install above
+          # does NOT pull in. `make test-unit` runs its 195 tests from here.
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
+          pip install -e '.[dev]'
 
       # ----------------------------------------------------------------
       # Lint + unit tests

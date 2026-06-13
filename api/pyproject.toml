@@ -105,4 +105,5 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "integration: requires a live afm-dev Salesforce org (auto-skipped when SF env vars are absent). Run via `make test-integration`.",
+    "contract: schemathesis OpenAPI contract tests; needs a running API + Postgres. Run via `make test-contract`.",
 ]
