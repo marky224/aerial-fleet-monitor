@@ -28,6 +28,10 @@ PY_PIPELINES := pipelines/.venv
 SF_ORG ?= afm-dev
 SF_DIR := salesforce
 
+# Base URL the contract suite (schemathesis) fires GET requests at. Defaults
+# to the local stack; override to point at another running API.
+AFM_CONTRACT_BASE_URL ?= http://localhost:8000
+
 # ----------------------------------------------------------------------------
 # Help
 # ----------------------------------------------------------------------------
@@ -52,11 +56,11 @@ help:
 	@echo "  sf-agent-up            Full agent stack: deploy + seed + publish     [Phase 07]"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test                   Full suite (unit + integration + contract + e2e) [Phase 10]"
+	@echo "  test                   Full suite (unit + contract + integration)    [Phase 10]"
 	@echo "  test-unit              Fast unit tests"
 	@echo "  test-integration       Tests against live SF dev org                [Phase 04]"
 	@echo "  test-e2e               (deprecated; no local frontend)              [n/a]"
-	@echo "  test-contract          API contract tests (schemathesis)            [Phase 02]"
+	@echo "  test-contract          API contract tests (schemathesis)            [Phase 10]"
 	@echo "  sf-test                Apex unit tests in DE org                    [Phase 04]"
 	@echo "  lint                   ruff + mypy"
 	@echo "  lint-runbooks          Validate runbook frontmatter + cross-links   [Phase 08]"
@@ -202,8 +206,8 @@ api-shell:
 
 .PHONY: test-contract
 test-contract:
-	@echo "Target 'test-contract' available after Phase 02 — see docs/build/02_api_basic.md"
-	@exit 1
+	@echo "→ test-contract: schemathesis vs the running API at $(AFM_CONTRACT_BASE_URL) (needs the stack up — make dev)"
+	cd api && . .venv/bin/activate && AFM_CONTRACT_BASE_URL="$(AFM_CONTRACT_BASE_URL)" pytest -m contract
 
 .PHONY: test-integration
 test-integration:
@@ -216,9 +220,8 @@ test-e2e:
 	@exit 1
 
 .PHONY: test
-test:
-	@echo "Target 'test' available after Phase 10 — see docs/build/10_testing_ci.md"
-	@exit 1
+test: test-unit test-contract test-integration
+	@echo "✔ Full test pyramid: unit + contract + integration (integration auto-skips without SF env)."
 
 .PHONY: afm-issue-service-token
 afm-issue-service-token:
