@@ -80,9 +80,18 @@ def configure_logging() -> None:
     root.handlers = [handler]
     root.setLevel(settings.log_level.upper())
 
-    # Tame uvicorn's access logger volume but keep it informational.
-    logging.getLogger("uvicorn.access").setLevel("INFO")
-    logging.getLogger("uvicorn.error").setLevel("INFO")
+    # uvicorn installs its own stdout handlers on these loggers — the access
+    # logger renders plain-text lines (`INFO:     <ip> - "GET /x" 200`) — and
+    # sets propagate=False, so their records never reach the root JSON handler
+    # above. Detach those handlers and let the records propagate to root so
+    # uvicorn's access + error + server logs render in the same format (JSON
+    # in-stack). uvicorn enables access logging when the logger hasHandlers(),
+    # which still resolves True via root's handler through propagation.
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        uvicorn_logger = logging.getLogger(name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
+        uvicorn_logger.setLevel("INFO")
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
