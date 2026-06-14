@@ -28,6 +28,10 @@ PY_PIPELINES := pipelines/.venv
 SF_ORG ?= afm-dev
 SF_DIR := salesforce
 
+# Base URL the contract suite (schemathesis) fires GET requests at. Defaults
+# to the local stack; override to point at another running API.
+AFM_CONTRACT_BASE_URL ?= http://localhost:8000
+
 # ----------------------------------------------------------------------------
 # Help
 # ----------------------------------------------------------------------------
@@ -52,11 +56,11 @@ help:
 	@echo "  sf-agent-up            Full agent stack: deploy + seed + publish     [Phase 07]"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test                   Full suite (unit + integration + contract + e2e) [Phase 10]"
+	@echo "  test                   Full suite (unit + contract + integration)    [Phase 10]"
 	@echo "  test-unit              Fast unit tests"
 	@echo "  test-integration       Tests against live SF dev org                [Phase 04]"
 	@echo "  test-e2e               (deprecated; no local frontend)              [n/a]"
-	@echo "  test-contract          API contract tests (schemathesis)            [Phase 02]"
+	@echo "  test-contract          API contract tests (schemathesis)            [Phase 10]"
 	@echo "  sf-test                Apex unit tests in DE org                    [Phase 04]"
 	@echo "  lint                   ruff + mypy"
 	@echo "  lint-runbooks          Validate runbook frontmatter + cross-links   [Phase 08]"
@@ -82,6 +86,8 @@ install:
 	cd pipelines && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 	@echo "→ Installing afm_foundry_sync into the pipelines venv (Phase 03 Foundry sync assets import it)"
 	cd pipelines && . .venv/bin/activate && pip install -e ../foundry/sync
+	@echo "→ Installing foundry/sync own venv with [dev] (its tests use respx; exercised by make test-unit)"
+	cd foundry/sync && $(PYTHON) -m venv .venv && . .venv/bin/activate && pip install -e '.[dev]'
 
 .PHONY: dev
 dev:
@@ -107,10 +113,22 @@ lint:
 	@echo "→ mypy (pipelines)"
 	cd pipelines && . .venv/bin/activate && mypy .
 
+# Each package enforces its own coverage floor (--cov-fail-under). Thresholds:
+# api 75 / pipelines 70 / foundry 75 (Phase 10 decision; no Codecov, no badge —
+# the gate lives here so CI fails loud on a regression). Source/omit live in
+# each package's [tool.coverage.run]. Plain `cd <pkg> && pytest` stays fast
+# (no coverage) for local iteration; the gate runs here + in CI.
 .PHONY: test-unit
 test-unit:
-	@echo "→ test-unit: running API pytest suite (integration tests excluded)"
-	cd api && . .venv/bin/activate && pytest -m "not integration"
+	@echo "→ test-unit (api): integration + contract excluded"
+	cd api && . .venv/bin/activate && pytest -m "not integration and not contract" \
+		--cov=app --cov-report=term-missing --cov-fail-under=75
+	@echo "→ test-unit (pipelines)"
+	cd pipelines && . .venv/bin/activate && pytest \
+		--cov=pipelines --cov-report=term-missing --cov-fail-under=70
+	@echo "→ test-unit (foundry/sync)"
+	cd foundry/sync && . .venv/bin/activate && pytest \
+		--cov=afm_foundry_sync --cov-report=term-missing --cov-fail-under=75
 
 .PHONY: db-migrate
 db-migrate:
@@ -196,8 +214,8 @@ api-shell:
 
 .PHONY: test-contract
 test-contract:
-	@echo "Target 'test-contract' available after Phase 02 — see docs/build/02_api_basic.md"
-	@exit 1
+	@echo "→ test-contract: schemathesis vs the running API at $(AFM_CONTRACT_BASE_URL) (needs the stack up — make dev)"
+	cd api && . .venv/bin/activate && AFM_CONTRACT_BASE_URL="$(AFM_CONTRACT_BASE_URL)" pytest -m contract
 
 .PHONY: test-integration
 test-integration:
@@ -210,9 +228,8 @@ test-e2e:
 	@exit 1
 
 .PHONY: test
-test:
-	@echo "Target 'test' available after Phase 10 — see docs/build/10_testing_ci.md"
-	@exit 1
+test: test-unit test-contract test-integration
+	@echo "✔ Full test pyramid: unit + contract + integration (integration auto-skips without SF env)."
 
 .PHONY: afm-issue-service-token
 afm-issue-service-token:
