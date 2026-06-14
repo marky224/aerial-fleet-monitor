@@ -40,6 +40,7 @@ from simple_salesforce.exceptions import SalesforceError
 
 from app.exceptions import AFMException, BadRequest, UpstreamUnavailable
 from app.logging import get_logger
+from app.models.briefs import BriefSynthesisResult
 from app.models.common import Region
 from app.models.salesforce import CaseCreateInput, CaseSyncRecord, SalesforceCaseRef
 from app.settings import Settings
@@ -329,6 +330,56 @@ class SalesforceService:
     async def delete_case(self, case_id: str) -> None:
         """Hard-delete a Case by Salesforce Id (used by the dev smoke test)."""
         await asyncio.to_thread(self._delete_case_sync, case_id)
+
+    # -- brief synthesis (Phase 11) ---------------------------------------
+
+    def _synthesize_and_post_brief_sync(
+        self, prompt: str, chatter_group_id: str | None, subject: str | None
+    ) -> BriefSynthesisResult:
+        # apexecute('afm/brief-synthesis') hits {instance}/services/apexrest/
+        # afm/brief-synthesis (AFM_BriefSynthesis @RestResource). chatterGroupId /
+        # subject are omitted when unset so Apex's String.isBlank() branches read
+        # them as absent (an unset group => Apex skips the Chatter post).
+        payload: dict[str, Any] = {"prompt": prompt}
+        if chatter_group_id:
+            payload["chatterGroupId"] = chatter_group_id
+        if subject:
+            payload["subject"] = subject
+        try:
+            raw = self._with_session_retry(
+                lambda: self._client().apexecute("afm/brief-synthesis", method="POST", data=payload)
+            )
+        except SalesforceError as exc:
+            raise self._translate_sf_error(exc, "Salesforce brief synthesis failed") from exc
+        if not isinstance(raw, dict):
+            # apexecute returns parsed JSON for a 2xx JSON body; a non-dict means
+            # the endpoint answered with text (an unexpected error page) — treat
+            # as transient degradation so the caller can retry next cycle.
+            raise UpstreamUnavailable(
+                "Salesforce brief synthesis returned an unexpected body",
+                details={"body": str(raw)[:200]},
+            )
+        return BriefSynthesisResult(
+            generated_text=cast(str, raw.get("generatedText") or ""),
+            feed_element_id=cast("str | None", raw.get("feedElementId")),
+        )
+
+    async def synthesize_and_post_brief(
+        self, prompt: str, chatter_group_id: str | None = None, subject: str | None = None
+    ) -> BriefSynthesisResult:
+        """Generate a brief via the Models API and post it to Chatter (Apex action).
+
+        Calls the ``AFM_BriefSynthesis`` Apex REST endpoint (run-as the connected
+        app's admin user): it synthesizes ``prompt`` via ``aiplatform.ModelsAPI``
+        and, when ``chatter_group_id`` is set, posts the result to that group's
+        feed. The external ``api.salesforce.com`` Models gateway is not
+        provisioned on this org, so synthesis runs in-org through Apex (the same
+        proven path as ``AFM_TriageNarrative``; see SALESFORCE.md). Returns the
+        generated text + the Chatter feed-element id.
+        """
+        return await asyncio.to_thread(
+            self._synthesize_and_post_brief_sync, prompt, chatter_group_id, subject
+        )
 
     # -- scope read (Half-A: provided + tested, not yet wired) ------------
 

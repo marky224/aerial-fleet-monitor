@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     salesforce_client_secret: str | None = Field(default=None)
     salesforce_case_record_type: str = Field(default="Fleet_Operations")
 
+    # Phase 11 — daily brief. The Chatter group (CollaborationGroup Id) the
+    # synthesized brief is posted to. Unset → the brief still generates and
+    # persists but AFM_BriefSynthesis skips the Chatter post (no external side
+    # effect), which is the effective off-switch for auto-posting.
+    salesforce_chatter_brief_group_id: str | None = Field(default=None)
+
 
 settings = Settings()
 """Module-level singleton. Import as `from app.settings import settings`."""
