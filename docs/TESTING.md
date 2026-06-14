@@ -4,7 +4,7 @@ The full testing specification documents AFM's test pyramid (pytest unit + integ
 
 ## Topics covered in the full specification
 
-- The test pyramid (counts and wall-time targets per layer: ~80 unit, ~20 integration, plus contract and Apex)
+- The test pyramid as built: ~524 unit (api · pipelines · foundry sync), Salesforce integration (run locally against the dev org), OpenAPI contract (schemathesis), and Apex
 - What each layer is for (unit = pure logic; integration = real Salesforce dev org; contract = OpenAPI drift detection via schemathesis; Apex = Salesforce test framework)
 - Test organization (where tests live alongside their code in `api/tests/`, `pipelines/tests/`, `foundry/sync/tests/`, and `salesforce/.../classes/`)
 - Markers and selective runs (pytest markers, `make test-unit` / `test-integration` / `test-contract` targets, total wall time)
@@ -13,8 +13,8 @@ The full testing specification documents AFM's test pyramid (pytest unit + integ
   - Recorded OpenSky JSON fixtures across 5 scenarios
   - Per-user Salesforce session fixtures (`sf_internal_session`, `sf_west_session`, `sf_east_session`)
   - Mandatory cleanup discipline for any SF integration test
-- CI pipeline (4 GitHub Actions workflows running in parallel; required secrets per environment, including per-username SF credentials)
-- Coverage targets per component (Python ≥75% line, Apex organic 75%+; Foundry Workshop apps tested in Foundry's own framework)
+- CI pipeline (one GitHub Actions workflow: secret scan + lint + unit (with coverage gates) + OpenAPI contract, run in parallel; the Salesforce integration suite runs locally, not in CI)
+- Coverage gates enforced in CI via `--cov-fail-under` (API ≥75%, pipelines ≥70%, Foundry sync ≥75%; Apex organic 75%+) — no third-party coverage service or badge
 - Test authoring conventions (one assertion per test, AAA structure, fixtures over factories, frozen time for time-dependent logic)
 - Flake handling (retries, quarantine policy, escape hatch)
 - What we don't test in v1 (perf/load, mutation, visual regression, Salesforce metadata snapshots, chaos)
