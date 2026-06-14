@@ -134,7 +134,7 @@ All managed as SFDX source and deployed to an Agentforce Developer Edition org.
 
 **Observability:** Prometheus · Grafana · Loki · Promtail · prometheus-fastapi-instrumentator (RED) · Postgres-derived business gauges
 
-**Testing:** pytest · 9 API test modules · 15 pipelines test modules · 6 Foundry sync test modules · GitHub Actions CI
+**Testing:** pytest · 500+ unit tests across api/pipelines/foundry-sync · OpenAPI contract tests (schemathesis) · in-CI coverage gates (`--cov-fail-under`) · GitHub Actions CI
 
 ## Local development
 
@@ -162,8 +162,9 @@ For Salesforce integration: a separate Agentforce Developer Edition org is requi
 
 Tests:
 ```bash
-make test-unit           # ~30 seconds
-make test-integration    # ~3 minutes (needs SF dev org credentials; auto-skipped without)
+make test-unit           # all packages + coverage gates (~1 min)
+make test-contract       # schemathesis vs a running API (run `make dev` first)
+make test-integration    # live SF dev org (~3 min; auto-skipped without SF credentials)
 ```
 
 ## Documentation
