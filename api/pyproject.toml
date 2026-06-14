@@ -115,3 +115,12 @@ filterwarnings = [
     "ignore:jsonschema.exceptions.RefResolutionError is deprecated:DeprecationWarning",
     "ignore:jsonschema.RefResolver is deprecated:DeprecationWarning",
 ]
+
+# Coverage is measured over `app` only (tests live in api/tests/, outside the
+# package). Gate enforced in `make test-unit` via --cov-fail-under=75.
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true

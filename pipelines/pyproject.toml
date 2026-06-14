@@ -133,3 +133,16 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+
+[tool.coverage.run]
+# pipelines/ is a flat-layout package, so its tests live UNDER the package
+# (pipelines/tests/). --cov=pipelines would otherwise count the test modules
+# as covered source and inflate the number ~12 pts; omit them so the gate
+# (make test-unit, --cov-fail-under=70) reflects real source coverage. api/
+# and foundry/sync keep tests outside the measured package, but carry the
+# same omit for cross-package consistency.
+source = ["pipelines"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true

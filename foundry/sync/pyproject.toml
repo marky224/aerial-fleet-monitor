@@ -80,3 +80,12 @@ plugins = ["pydantic.mypy"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers --strict-config"
+
+# Coverage over the installed `afm_foundry_sync` package (src/ layout; tests
+# live outside it). Gate enforced in `make test-unit` via --cov-fail-under=75.
+[tool.coverage.run]
+source = ["afm_foundry_sync"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true

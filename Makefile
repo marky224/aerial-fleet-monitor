@@ -113,14 +113,22 @@ lint:
 	@echo "→ mypy (pipelines)"
 	cd pipelines && . .venv/bin/activate && mypy .
 
+# Each package enforces its own coverage floor (--cov-fail-under). Thresholds:
+# api 75 / pipelines 70 / foundry 75 (Phase 10 decision; no Codecov, no badge —
+# the gate lives here so CI fails loud on a regression). Source/omit live in
+# each package's [tool.coverage.run]. Plain `cd <pkg> && pytest` stays fast
+# (no coverage) for local iteration; the gate runs here + in CI.
 .PHONY: test-unit
 test-unit:
 	@echo "→ test-unit (api): integration + contract excluded"
-	cd api && . .venv/bin/activate && pytest -m "not integration and not contract"
+	cd api && . .venv/bin/activate && pytest -m "not integration and not contract" \
+		--cov=app --cov-report=term-missing --cov-fail-under=75
 	@echo "→ test-unit (pipelines)"
-	cd pipelines && . .venv/bin/activate && pytest
+	cd pipelines && . .venv/bin/activate && pytest \
+		--cov=pipelines --cov-report=term-missing --cov-fail-under=70
 	@echo "→ test-unit (foundry/sync)"
-	cd foundry/sync && . .venv/bin/activate && pytest
+	cd foundry/sync && . .venv/bin/activate && pytest \
+		--cov=afm_foundry_sync --cov-report=term-missing --cov-fail-under=75
 
 .PHONY: db-migrate
 db-migrate:

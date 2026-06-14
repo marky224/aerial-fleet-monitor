@@ -91,3 +91,81 @@ jobs:
 
       - name: Unit tests
         run: make test-unit
+
+  contract:
+    name: Contract tests (schemathesis)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    # Schemathesis drives the 13 GET endpoints against a REAL running API
+    # (the make test-contract path). The API's lifespan opens a Postgres pool
+    # on boot, so spin Postgres up as a service and migrate an EMPTY database:
+    # reads then return empty lists / 404s but still conform to the OpenAPI
+    # schema (the only check is response_schema_conformance). The `dagster`
+    # run-store DB is intentionally absent — the API degrades that optional
+    # pool to None (observability gauges only) and still serves requests.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: afm
+          POSTGRES_USER: afm
+          POSTGRES_PASSWORD: afm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U afm -d afm"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://afm:afm@localhost:5432/afm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/pyproject.toml
+
+      - name: Install api deps
+        working-directory: api
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Migrate an empty DB (app/ref schemas + alembic head)
+        working-directory: api
+        run: |
+          . .venv/bin/activate
+          # The compose bootstrap (infra/postgres/init.sql) creates these two
+          # schemas; the CI service container doesn't run it, so create them
+          # here (via the already-installed psycopg2) before the migrations,
+          # which only create tables WITHIN app/ref.
+          python -c "import os, psycopg2; c = psycopg2.connect(os.environ['DATABASE_URL']); c.autocommit = True; cur = c.cursor(); cur.execute('CREATE SCHEMA IF NOT EXISTS app'); cur.execute('CREATE SCHEMA IF NOT EXISTS ref'); print('schemas ready')"
+          alembic upgrade head
+
+      - name: Boot API + run contract tests
+        working-directory: api
+        env:
+          # Empty lake → positions/flights reads return empty, still schema-valid.
+          AFM_LAKE_PATH: ${{ runner.temp }}/afm-lake
+          AFM_CONTRACT_BASE_URL: http://127.0.0.1:8000
+        run: |
+          . .venv/bin/activate
+          # Body of `make test-contract`, inlined so the background uvicorn is
+          # owned by this one shell (and torn down on exit).
+          mkdir -p "$AFM_LAKE_PATH"
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          UVPID=$!
+          trap 'kill $UVPID 2>/dev/null || true' EXIT
+          curl --retry 40 --retry-delay 1 --retry-connrefused --retry-all-errors -sf \
+            http://127.0.0.1:8000/v1/health
+          pytest -m contract
