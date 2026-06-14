@@ -26,7 +26,7 @@ and never names an ``AFM_*__c`` field.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from psycopg2.extras import Json
@@ -106,6 +106,20 @@ def _format_subject(case_type: str, site_icao: str, facts: dict[str, Any]) -> st
         destination = facts.get("destination") or "?"
         return f"Delayed flight — {callsign} {origin}→{destination}"
     return f"{case_type} — {callsign} near {site}"
+
+
+def _pg_safe_timestamp(ts: datetime) -> datetime:
+    """Coerce an aware datetime to UTC so Postgres' ``timestamptz`` accepts it.
+
+    pydantic parses a query ``since`` with any offset Python allows (±24h), but
+    Postgres bounds ``timestamptz`` offsets to ±15:59 and raises
+    ``InvalidTimeZoneDisplacementValue`` otherwise — which would surface as an
+    unhandled 500 (the value is a valid *instant*, just expressed in an offset
+    Postgres won't take). Converting to UTC preserves the instant and always
+    yields a valid ``+00:00`` offset. Naive datetimes pass through unchanged
+    (Postgres reads them in the session timezone).
+    """
+    return ts.astimezone(UTC) if ts.tzinfo is not None else ts
 
 
 _FOR_SYNC_COLUMNS = (
@@ -482,7 +496,7 @@ class CaseSyncService:
             f"SELECT {_FOR_SYNC_COLUMNS} FROM app.cases "
             "WHERE updated_at > %(since)s "
             "ORDER BY updated_at ASC, case_id ASC LIMIT %(limit)s",
-            {"since": since, "limit": limit},
+            {"since": _pg_safe_timestamp(since), "limit": limit},
         )
 
     @staticmethod

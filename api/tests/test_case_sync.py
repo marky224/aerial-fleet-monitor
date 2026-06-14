@@ -10,14 +10,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 
 from app.exceptions import BadRequest, UpstreamUnavailable
 from app.models.salesforce import CaseCreateInput, CaseSyncRecord, SalesforceCaseRef
-from app.services.case_sync import MAX_ATTEMPTS, CaseSyncService, _format_subject
+from app.services.case_sync import (
+    MAX_ATTEMPTS,
+    CaseSyncService,
+    _format_subject,
+    _pg_safe_timestamp,
+)
 
 
 class _FakeSF:
@@ -451,6 +456,69 @@ async def test_list_for_sync_passes_since_through_to_fetch() -> None:
     await svc.list_for_sync(since=cursor, limit=42)
 
     assert captured == {"since": cursor, "limit": 42}
+
+
+# -- _fetch_for_sync timezone safety (follow-up: all-for-sync 500) -------
+
+
+class _CapturePG:
+    """Captures the params dict `_fetch_for_sync` hands to `fetchall`."""
+
+    def __init__(self) -> None:
+        self.params: dict[str, Any] = {}
+
+    def fetchall(self, _query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        self.params = params
+        return []
+
+
+# An offset pydantic accepts (Python allows ±24h) but Postgres rejects
+# (timestamptz is bounded to ±15:59) — the exact shape schemathesis fuzzing
+# turned into an unhandled 500 on GET /v1/cases/all-for-sync.
+_OUT_OF_RANGE_TZ = timezone(timedelta(hours=-22, minutes=-47))
+
+
+def test_pg_safe_timestamp_coerces_out_of_range_offset_to_utc() -> None:
+    since = datetime(947, 8, 25, 14, 1, 17, 99999, tzinfo=_OUT_OF_RANGE_TZ)
+    out = _pg_safe_timestamp(since)
+    assert out.utcoffset() == timedelta(0)  # +00:00 — Postgres-valid
+    assert out == since  # same instant preserved
+
+
+def test_pg_safe_timestamp_utc_offset_is_a_noop() -> None:
+    ts = datetime(2026, 5, 24, 9, 30, tzinfo=UTC)
+    assert _pg_safe_timestamp(ts) == ts
+    assert _pg_safe_timestamp(ts).utcoffset() == timedelta(0)
+
+
+def test_pg_safe_timestamp_naive_passes_through_unchanged() -> None:
+    ts = datetime(2026, 5, 24, 12, 0)  # naive — Postgres reads it in the session tz
+    out = _pg_safe_timestamp(ts)
+    assert out is ts
+    assert out.tzinfo is None
+
+
+def test_fetch_for_sync_normalizes_since_before_the_query() -> None:
+    """The `since` bound reaching Postgres is UTC, so an out-of-range offset
+    can't raise InvalidTimeZoneDisplacementValue (the all-for-sync 500)."""
+    pg = _CapturePG()
+    svc = CaseSyncService(postgres=pg)  # type: ignore[arg-type]
+    since = datetime(947, 8, 25, 14, 1, 17, 99999, tzinfo=_OUT_OF_RANGE_TZ)
+
+    svc._fetch_for_sync(since, 200)
+
+    assert pg.params["since"].utcoffset() == timedelta(0)
+    assert pg.params["since"] == since  # same instant
+    assert pg.params["limit"] == 200
+
+
+def test_fetch_for_sync_none_omits_the_since_bind() -> None:
+    pg = _CapturePG()
+    svc = CaseSyncService(postgres=pg)  # type: ignore[arg-type]
+
+    svc._fetch_for_sync(None, 10)
+
+    assert pg.params == {"limit": 10}  # unfiltered query — no `since` bind
 
 
 async def test_constructed_without_sf_rejects_push() -> None:
