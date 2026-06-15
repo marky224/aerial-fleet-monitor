@@ -13,6 +13,7 @@ The full Salesforce specification covers org provisioning, OAuth Connected App c
   - `AFM_AgentActionsController` (consolidated `@InvocableMethod` actions wired to the agent)
   - `AFM_TelemetryController` (LWC's bridge to the AFM API via Named Credential)
   - `AFM_TestDataFactory` (`@IsTest` helpers)
+  - `AFM_BriefSynthesis` (Phase 11 — `@RestResource` daily-brief action: Salesforce Models API synthesis + Chatter post to the "Fleet Operations Daily" group)
   - `*_Test` class patterns
 - Lightning Web Component `afmFlightTelemetry` (HTML template, JS implementation, JS-meta config, Case Lightning Record Page placement, Jest tests)
 - Agentforce agent: agent-script structure, action invocation sequence, severity-decision criteria, deployment via the `sf agent` CLI

@@ -629,44 +629,54 @@ previous page's tail row is harmless.
 
 ## 7. Briefs
 
-### 7.1 `GET /v1/briefs`
+### 7.1 `POST /v1/briefs/generate`
 
-List briefs visible in scope.
+System-internal trigger for the daily-brief feature (Phase 11). Composes the
+prior-local-day operations brief for `region` from `app.cases`, synthesizes it
+via the Salesforce Models API (the `AFM_BriefSynthesis` Apex action — §10), posts
+it to the Fleet Operations Chatter group, and upserts `app.briefs`. No scope
+filter — server-to-server, like §6.4–6.6. The three per-region `daily_brief_*`
+Dagster schedules fire it at 07:00 in each region's local timezone.
 
-**Query params:** `region` (optional, defaults to caller's), `limit` (default 30).
+`region` is `west` | `east` | `all` (`all` is fleet-wide — no region filter, not
+the `customer_region='all'` partition). The window is the region's prior *local*
+calendar day (west→`America/Los_Angeles`, east→`America/New_York`,
+all→`America/Chicago`).
+
+Idempotent on `(region, brief_date)`: a brief already generated for the day is a
+no-op (`status: "already_posted"` — no second LLM call or Chatter post) unless
+`force=true`. The outward Chatter post is separately gated by
+`SALESFORCE_CHATTER_BRIEF_GROUP_ID`; unset, the brief still generates and persists
+but is not posted (`chatter_post_id: null`).
+
+**Request body:**
+```python
+class BriefGenerateRequest(BaseModel):
+    region: Literal["west", "east", "all"]
+```
+
+**Query params:**
+- `force`: regenerate even if this region's brief for the day exists (default `false`).
 
 **Response 200:**
 ```python
-class BriefListItem(BaseModel):
-    brief_id: int
+class BriefGenerateSummary(BaseModel):
     region: str
-    brief_date: date
-    timezone: str
-    generated_at: datetime
-    chatter_post_url: str | None
-
-class BriefListResponse(BaseModel):
-    items: list[BriefListItem]
-    count: int
+    brief_date: date                         # the prior local day the brief covers
+    status: Literal["posted", "already_posted"]
+    chatter_post_id: str | None              # Chatter FeedItem id, when posted
+    opened: int                              # cases opened in the window
+    resolved: int                            # cases resolved in the window
+    brief_id: int | None                     # app.briefs row id
 ```
 
-### 7.2 `GET /v1/briefs/{brief_id}`
+**Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
 
-Single brief content.
-
-**Response 200:**
-```python
-class BriefDetail(BaseModel):
-    brief_id: int
-    region: str
-    brief_date: date
-    timezone: str
-    generated_at: datetime
-    summary_md: str
-    key_metrics: dict                                # rendered as cards
-    notable_cases: list[CaseListItem]
-    chatter_post_url: str | None
-```
+The persisted `app.briefs` row carries the synthesized text (`summary_md`), the
+composed facts (`key_metrics`), the notable case ids (`notable_cases`), the
+region's `timezone`, and `chatter_post_id`. A read-side `GET /v1/briefs`
+list/detail API is intentionally not built — the brief's consumer is the
+Salesforce Chatter feed, not an AFM-hosted UI.
 
 ## 8. Runbooks
 
@@ -764,8 +774,7 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
 | POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
 | GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) | yes |
-| GET | `/v1/briefs` | brief list | yes |
-| GET | `/v1/briefs/{brief_id}` | brief content | yes |
+| POST | `/v1/briefs/generate` | generate + post the daily brief for a region (system; daily 07:00 local) | yes |
 | GET | `/v1/runbooks` | runbook list | yes |
 | GET | `/v1/runbooks/{runbook_id}` | single runbook | yes |
 | GET | `/v1/health` | liveness | no |
