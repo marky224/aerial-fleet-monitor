@@ -38,7 +38,7 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 - An Agentforce-driven triage workflow that automatically sets case severity, creates investigation tasks, drafts customer notifications, and escalates engineering on critical events
 - A Lightning Web Component embedded on the Salesforce Case page, surfacing live telemetry inside the Service Console where support advocates work
 - Region-scoped customer views authenticated via real Salesforce OAuth + Permission Sets, demonstrating the same pattern used in production Experience Cloud deployments
-- Daily operations briefs generated per-region in customer-local time, posted to Salesforce Chatter and delivered via email
+- Daily operations briefs generated per-region in customer-local time, synthesized by the Salesforce Models API and posted to a Salesforce Chatter group
 - A markdown-based runbook library version-controlled in GitHub and synced to Notion, with each runbook structured for both human readers and the Agentforce agent's reasoning
 - Self-hosted observability (Loki + Prometheus + Grafana) demonstrating operational maturity and quantifiable system health
 
@@ -47,7 +47,7 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 | Role | Interaction with AFM |
 |---|---|
 | **Internal-ops advocate** (fleet operations team) | Primary user. Logs into the Service Console; works Cases as they're triaged by Agentforce. Reviews per-airport SLA scorecards. Reads daily ops brief in Chatter. |
-| **Customer ops manager** (West Coast or East Coast) | Authenticated user via Salesforce OAuth. Sees only their region's data. Receives customer-friendly notifications and daily briefs. |
+| **Customer ops manager** (West Coast or East Coast) | Authenticated user via Salesforce OAuth. Sees only their region's data. Receives customer-friendly notifications. |
 | **Engineering on-call** | Recipient of escalation Tasks for critical cases. May extend or tune detection rules. |
 | **Product / leadership** | Reviews Grafana dashboards for system health and operational trends. Approves runbook changes via PR review. |
 | **Hiring manager** (portfolio reviewer) | Evaluates the system as evidence of relevant capabilities. Cold-visits the demo, walks the cases workflow, reads the BRD and the architecture doc. |

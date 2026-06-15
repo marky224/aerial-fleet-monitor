@@ -28,7 +28,7 @@ The project covers an end-to-end aircraft-information toolchain — telemetry vi
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  Data plane (self-hosted Linux, public API via reverse tunnel)          │
 │    FastAPI  ←→  Postgres 16  ←→  Parquet lakehouse (DuckDB)             │
-│    Dagster orchestration: 14 assets across ingest, detection, sync      │
+│    Dagster orchestration: 20 assets across ingest, detection, sync      │
 └─────────────────────────────────────────────────────────────────────────┘
                                   │ REST + OAuth (Client Credentials)
                                   ▼
@@ -80,12 +80,16 @@ The AFM Fleet Operations dashboard (Service Console app) shows internal ops the 
 
 Cases sync bidirectionally between AFM and Salesforce via two Dagster assets (`sf_case_push`, `sf_case_sync`), keyed on `AFM_External_Id__c`. Closures in Salesforce flow back to AFM as `resolved` state.
 
+### Daily operations brief
+
+Once per region per local day, a Dagster schedule triggers an LLM-synthesized operations brief. The API composes the prior local day's case facts — opened, resolved, open-by-severity, anomalies by type, and a few notable cases — and hands them to the **Salesforce Models API** via a consolidated Apex action, which writes a concise plain-text summary and posts it to the "Fleet Operations Daily" Chatter group. Synthesis runs in-org through Apex (`aiplatform.ModelsAPI`), so no third-party LLM key is involved; briefs are idempotent per region per day, and the persisted record links back to the Chatter post.
+
 ### Data plane
 
-- **FastAPI** with 17 endpoints under `/v1/` covering positions (live + SSE stream), flights (detail + trail + batch trail), sites (list + detail + SLA + inbound/outbound), case sync, and health.
+- **FastAPI** with 18 endpoints under `/v1/` covering positions (live + SSE stream), flights (detail + trail + batch trail), sites (list + detail + SLA + inbound/outbound), case sync, daily brief generation, and health.
 - **Postgres 16** with 14 tables across `app.` (operational) and `ref.` (reference data) schemas, managed by Alembic.
 - **DuckDB-over-Parquet lakehouse** for atomic position snapshots written by the ingestion asset.
-- **Dagster orchestration** with 14 assets organized into ingestion (OpenSky positions @30s, NOAA weather @5m), detection (`case_detector`), flight enrichment, Salesforce sync (push + pull), Foundry sync (positions, sites, flights, cases, aircraft reconcile), and maintenance (TTL pruning, reference seeding).
+- **Dagster orchestration** with 20 assets organized into ingestion (OpenSky positions, NOAA weather @5m), detection (`case_detector`), flight enrichment, Salesforce sync (push + pull), the daily brief (three per-region Chatter posts), Foundry sync (positions, sites, flights, cases, aircraft reconcile), and maintenance (TTL pruning, reference seeding).
 
 ### Observability
 
