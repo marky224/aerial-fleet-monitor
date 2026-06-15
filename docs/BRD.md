@@ -11,8 +11,8 @@ Aerial Fleet Monitor (AFM) is a real-time information console that demonstrates 
 
 The project demonstrates competencies across:
 
-- **Salesforce Service Cloud architecture** — Connected App design, OAuth Web Server Flow, custom data modeling, Permission Sets and custom permissions, Lightning Web Components, Agentforce agents
-- **Customer experience design** — internal-vs-customer view modes, scoped data access via real Salesforce sharing, region-tailored notifications
+- **Salesforce Service Cloud architecture** — Connected App design, OAuth 2.0 Client Credentials, custom data modeling, Permission Sets and custom permissions, Apex (consolidated invocable actions, Models API, Chatter), Agentforce agents
+- **Customer experience design** — internal-vs-customer view modes, scoped data access via Salesforce custom permissions, region-tailored notifications
 - **Data engineering** — operational/analytical storage split, real-time ingestion pipelines, lakehouse-pattern analytics
 - **AI integration** — agent-driven case triage with multi-action workflows; LLM-powered case summarization and operational digests
 - **Production discipline** — observability, automated testing, CI/CD, knowledge management via runbooks
@@ -36,10 +36,10 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 - A real-time map-based dashboard showing all flights in the United States, with airport drill-down, single-flight telemetry detail, and dotted flight-path trails
 - Real-time anomaly detection across six rule types (lost signal, diversion, excessive holding, weather impact, go-around, delay), generating Salesforce Cases with structured detection facts and runbook references
 - An Agentforce-driven triage workflow that automatically sets case severity, creates investigation tasks, drafts customer notifications, and escalates engineering on critical events
-- A Lightning Web Component embedded on the Salesforce Case page, surfacing live telemetry inside the Service Console where support advocates work
-- Region-scoped customer views authenticated via real Salesforce OAuth + Permission Sets, demonstrating the same pattern used in production Experience Cloud deployments
+- Structured detection facts, runbook references, and an Agentforce-authored severity justification surfaced on each Salesforce Case, where support advocates work the queue in the Service Console
+- Region-scoped data access modeled with Salesforce Permission Sets + custom permissions and enforced through to a backend scope filter on every query (the interactive per-customer OAuth login is a deferred increment)
 - Daily operations briefs generated per-region in customer-local time, synthesized by the Salesforce Models API and posted to a Salesforce Chatter group
-- A markdown-based runbook library version-controlled in GitHub and synced to Notion, with each runbook structured for both human readers and the Agentforce agent's reasoning
+- A markdown-based runbook library version-controlled in GitHub, indexed for the detector and linked onto Cases as Salesforce Files, with each runbook structured for both human readers and the Agentforce agent's reasoning
 - Self-hosted observability (Loki + Prometheus + Grafana) demonstrating operational maturity and quantifiable system health
 
 ## Stakeholder roles
@@ -67,17 +67,17 @@ AFM is a single console plus a deeply integrated Service Cloud back-end. It prov
 The system spans three planes:
 
 - **Dashboard plane** — Palantir Foundry (developer tier): Workshop apps + Ontology + AIP Logic, replacing what would otherwise be a custom React frontend
-- **Data plane** — FastAPI + Dagster + Postgres + Parquet lakehouse, running in Docker Compose on a self-hosted Linux server, with the API exposed publicly via a self-hosted reverse tunnel (observability UIs and Postgres stay private)
-- **CRM plane** — Salesforce Agentforce Developer Edition with custom data model, Apex callouts, Lightning Web Components, Agentforce agent, Record-Triggered Flow
+- **Data plane** — FastAPI + Dagster + Postgres + Parquet lakehouse, running in Docker Compose on a self-hosted Linux server, local-first (every service binds to localhost; public exposure is deferred)
+- **CRM plane** — Salesforce Agentforce Developer Edition with custom data model, Apex (an after-insert Case trigger, consolidated invocable actions, the Models API, and Chatter), and an Agentforce agent
 
-Auth flows through Salesforce as the IdP via OAuth 2.0 Web Server Flow. Region scoping flows from real Salesforce custom permissions through to the AFM JWT and into every backend query.
+The AFM→Salesforce integration authenticates via OAuth 2.0 Client Credentials. Region scoping is modeled with Salesforce custom permissions that map to a backend scope filter on every query; the interactive per-user OAuth login that would derive scope from a live session is a deferred increment.
 
 ## Success metrics
 
 The system is successful when:
 
 - An authorized user logs into the Foundry workspace, opens the Fleet Overview Workshop app, understands what they're seeing within 30 seconds, and successfully switches view-mode (internal-ops vs customer scope) within 60 seconds.
-- A real anomaly triggers a Case in Salesforce, the Agentforce agent runs all five actions, and the resulting state is visible in both the dashboard and the Service Console within 90 seconds end-to-end.
+- A real anomaly triggers a Case in Salesforce, the after-insert triage runs (investigation Tasks, severity justification, runbook File links, region notification, and engineering escalation on critical events), and the resulting state is visible in both the dashboard and the Service Console within 90 seconds end-to-end.
 - A reviewer reading the BRD, README, and one technical doc can answer: what does it do, who is it for, why does it exist, how does it work, what does success look like, what's next.
 - A hiring manager opening Grafana sees five dashboards with real data, a pipeline lag under 30 seconds, and a Salesforce sync queue at zero. The system looks like it's running at production discipline.
 
@@ -85,7 +85,7 @@ The system is successful when:
 
 ### v1 (this release)
 
-Real-time visibility, anomaly detection, Agentforce triage, scoped customer views, LWC inside Service Console, daily briefs, runbook library, full observability stack, full test pyramid, two demo customer regions.
+Real-time visibility, anomaly detection, Agentforce triage, region-scoped data model, daily Chatter briefs, runbook library, full observability stack, full test pyramid, two demo customer regions.
 
 ### v2 (post-deployment)
 
@@ -119,7 +119,7 @@ The system is **not**:
 - A military or sensitive-flight observability tool (denylist filters these at ingestion)
 - A general-purpose Salesforce package or AppExchange listing
 - A multi-tenant SaaS product (single-tenant demo only)
-- A customer-facing Salesforce UI (v1 customers interact with AFM via the dashboard only; the Service Console, the `afmFlightTelemetry` LWC, and direct Salesforce record access are internal-ops only)
+- A customer-facing Salesforce UI (v1 customers interact with AFM via the dashboard only; the Service Console and direct Salesforce record access are internal-ops only)
 
 ---
 

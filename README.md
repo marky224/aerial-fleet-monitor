@@ -26,7 +26,7 @@ The project covers an end-to-end aircraft-information toolchain — telemetry vi
                                   │ Foundry sync (Dagster assets)
                                   │
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Data plane (self-hosted Linux, public API via reverse tunnel)          │
+│  Data plane (self-hosted Linux; local-first, localhost-bound)           │
 │    FastAPI  ←→  Postgres 16  ←→  Parquet lakehouse (DuckDB)             │
 │    Dagster orchestration: 20 assets across ingest, detection, sync      │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -134,7 +134,7 @@ All managed as SFDX source and deployed to an Agentforce Developer Edition org.
 
 **CRM:** Salesforce Agentforce Developer Edition · SFDX metadata · OAuth 2.0 Client Credentials
 
-**Infrastructure:** Docker Compose on Ubuntu 24.04 · self-hosted reverse tunnel for public API · Foundry-hosted dashboard (no separate frontend hosting)
+**Infrastructure:** Docker Compose on Ubuntu 24.04 · local-first (services bound to localhost; public exposure deferred) · Foundry-hosted dashboard (no separate frontend hosting)
 
 **Observability:** Prometheus · Grafana · Loki · Promtail · prometheus-fastapi-instrumentator (RED) · Postgres-derived business gauges
 
@@ -156,7 +156,7 @@ make dev                         # docker compose up -d (dashboard lives in Foun
 ```
 
 Then:
-- API: [http://localhost:8000/v1/docs](http://localhost:8000/v1/docs) (Swagger UI)
+- API: [http://localhost:8000](http://localhost:8000) (Swagger UI at `/docs` when `EXPOSE_DOCS=true`)
 - Dagster: [http://localhost:3000](http://localhost:3000)
 - Grafana: [http://localhost:3001](http://localhost:3001) (user `admin`; set `GRAFANA_ADMIN_PASSWORD` in `.env`)
 - Prometheus: [http://localhost:9090](http://localhost:9090)
