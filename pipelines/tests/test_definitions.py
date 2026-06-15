@@ -40,6 +40,9 @@ EXPECTED_JOBS = {
     "sf_case_sync_job",
     "case_detector_job",
     "prune_stale_positions_job",
+    "daily_brief_west_job",
+    "daily_brief_east_job",
+    "daily_brief_all_job",
 }
 
 EXPECTED_SCHEDULES = {
@@ -55,6 +58,9 @@ EXPECTED_SCHEDULES = {
     "flight_plan_enrichment_schedule",
     "case_detector_schedule",
     "prune_stale_positions_schedule",
+    "daily_brief_west_schedule",
+    "daily_brief_east_schedule",
+    "daily_brief_all_schedule",
 }
 
 EXPECTED_SENSORS = {

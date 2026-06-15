@@ -1,5 +1,6 @@
 """Dagster assets for AFM pipelines."""
 
+from pipelines.assets.brief import daily_brief_all, daily_brief_east, daily_brief_west
 from pipelines.assets.detection import case_detector
 from pipelines.assets.flight_archival import (
     archive_and_tenant_disjoint,
@@ -26,6 +27,9 @@ __all__ = [
     "archive_and_tenant_disjoint",
     "archive_retention_enforced",
     "case_detector",
+    "daily_brief_all",
+    "daily_brief_east",
+    "daily_brief_west",
     "flight_plan_enrichment",
     "foundry_aircraft_reconcile",
     "foundry_cases_reconcile",

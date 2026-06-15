@@ -457,3 +457,65 @@ async def test_query_cases_modified_since_builds_soql(monkeypatch: pytest.Monkey
     assert "ORDER BY SystemModstamp ASC" in soql
     assert "LIMIT 200" in soql
     assert len(out) == 1 and out[0].status == "in_progress"
+
+
+# -- brief synthesis (Phase 11 AFM_BriefSynthesis Apex action) ------------
+
+
+async def test_synthesize_and_post_brief_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    fake.apexecute.return_value = {"generatedText": "- all quiet", "feedElementId": "0D5XYZ"}
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    res = await svc.synthesize_and_post_brief("the prompt", chatter_group_id="0F9G", subject="subj")
+    assert res.generated_text == "- all quiet"
+    assert res.feed_element_id == "0D5XYZ"
+    # Hits the Apex REST action with a POST JSON body of exactly the three keys.
+    assert fake.apexecute.call_args.args[0] == "afm/brief-synthesis"
+    assert fake.apexecute.call_args.kwargs["method"] == "POST"
+    assert fake.apexecute.call_args.kwargs["data"] == {
+        "prompt": "the prompt",
+        "chatterGroupId": "0F9G",
+        "subject": "subj",
+    }
+
+
+async def test_synthesize_and_post_brief_omits_blank_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    # No group / subject → those keys are omitted so Apex's String.isBlank()
+    # branch skips the Chatter post (the off-switch); no feed id returned.
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    fake.apexecute.return_value = {"generatedText": "- text"}
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    res = await svc.synthesize_and_post_brief("p")
+    assert fake.apexecute.call_args.kwargs["data"] == {"prompt": "p"}
+    assert res.feed_element_id is None
+
+
+async def test_synthesize_and_post_brief_non_dict_body_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # apexecute returns text (an unexpected error page) instead of JSON → treat
+    # as transient degradation so the caller can retry next cycle.
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    fake.apexecute.return_value = "<html>gateway error</html>"
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    with pytest.raises(UpstreamUnavailable):
+        await svc.synthesize_and_post_brief("p", chatter_group_id="0F9G")
+
+
+async def test_synthesize_and_post_brief_5xx_translates_to_upstream_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc = SalesforceService(_settings())
+    fake = MagicMock()
+    fake.apexecute.side_effect = SalesforceGeneralError(
+        url="https://x/apexrest",
+        status=500,
+        resource_name="apexrest",
+        content=[{"message": "server error"}],
+    )
+    monkeypatch.setattr(svc, "_client", lambda: fake)
+    with pytest.raises(UpstreamUnavailable):
+        await svc.synthesize_and_post_brief("p", chatter_group_id="0F9G")

@@ -36,6 +36,9 @@ from pipelines.assets import (
     archive_and_tenant_disjoint,
     archive_retention_enforced,
     case_detector,
+    daily_brief_all,
+    daily_brief_east,
+    daily_brief_west,
     flight_plan_enrichment,
     foundry_aircraft_reconcile,
     foundry_cases_reconcile,
@@ -162,6 +165,24 @@ sf_case_sync_job = define_asset_job(
 case_detector_job = define_asset_job(
     name="case_detector_job",
     selection=AssetSelection.assets(case_detector),
+)
+
+
+daily_brief_west_job = define_asset_job(
+    name="daily_brief_west_job",
+    selection=AssetSelection.assets(daily_brief_west),
+)
+
+
+daily_brief_east_job = define_asset_job(
+    name="daily_brief_east_job",
+    selection=AssetSelection.assets(daily_brief_east),
+)
+
+
+daily_brief_all_job = define_asset_job(
+    name="daily_brief_all_job",
+    selection=AssetSelection.assets(daily_brief_all),
 )
 
 
@@ -456,6 +477,42 @@ case_detector_schedule = ScheduleDefinition(
 )
 
 
+# Daily brief — one schedule per region, each firing 07:00 in that region's own
+# local time so the brief covers that region's prior calendar day (BriefService's
+# window math uses the same zones). default RUNNING per the stack-wide "flip the
+# switch" convention; the outward Chatter post is separately gated by
+# AFM_CHATTER_BRIEF_GROUP_ID (unset → the brief still generates + persists but
+# AFM_BriefSynthesis skips the post). 07:00 is well clear of the other crons.
+daily_brief_west_schedule = ScheduleDefinition(
+    name="daily_brief_west_schedule",
+    job=daily_brief_west_job,
+    cron_schedule="0 7 * * *",
+    execution_timezone="America/Los_Angeles",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Daily at 07:00 PT: generate + post the West daily fleet brief.",
+)
+
+
+daily_brief_east_schedule = ScheduleDefinition(
+    name="daily_brief_east_schedule",
+    job=daily_brief_east_job,
+    cron_schedule="0 7 * * *",
+    execution_timezone="America/New_York",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Daily at 07:00 ET: generate + post the East daily fleet brief.",
+)
+
+
+daily_brief_all_schedule = ScheduleDefinition(
+    name="daily_brief_all_schedule",
+    job=daily_brief_all_job,
+    cron_schedule="0 7 * * *",
+    execution_timezone="America/Chicago",
+    default_status=DefaultScheduleStatus.RUNNING,
+    description="Daily at 07:00 CT: generate + post the fleet-wide (all regions) daily brief.",
+)
+
+
 defs = Definitions(
     assets=[
         noaa_weather,
@@ -475,6 +532,9 @@ defs = Definitions(
         sf_case_sync,
         case_detector,
         prune_stale_positions,
+        daily_brief_west,
+        daily_brief_east,
+        daily_brief_all,
     ],
     jobs=[
         opensky_positions_job,
@@ -494,6 +554,9 @@ defs = Definitions(
         sf_case_sync_job,
         case_detector_job,
         prune_stale_positions_job,
+        daily_brief_west_job,
+        daily_brief_east_job,
+        daily_brief_all_job,
     ],
     schedules=[
         noaa_weather_schedule,
@@ -508,6 +571,9 @@ defs = Definitions(
         flight_plan_enrichment_schedule,
         case_detector_schedule,
         prune_stale_positions_schedule,
+        daily_brief_west_schedule,
+        daily_brief_east_schedule,
+        daily_brief_all_schedule,
     ],
     sensors=[
         opensky_positions_sensor,

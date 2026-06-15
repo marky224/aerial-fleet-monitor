@@ -14,7 +14,7 @@ The full pipelines specification documents AFM's Dagster asset-oriented pipeline
   - `sf_case_push` — ~60-second sensor-driven push that drains `pending` cases into Salesforce (decoupled from detection; idempotent, single-flighted, retrying)
   - `sf_case_sync` — 60-second SF → Postgres mirror with persistent watermark
   - `site_metrics_refresh` — 15-minute SLA recomputation
-  - `daily_brief_generator` — per-region 7am-local brief synthesis
+  - `daily_brief_west` / `daily_brief_east` / `daily_brief_all` — per-region 7am-local brief synthesis (cases → Salesforce Models API via the `AFM_BriefSynthesis` Apex action → Chatter group + `app.briefs`)
   - `runbook_index_sync` — markdown → Notion sync, with sensor-driven webhook trigger
   - `partition_lifecycle` — daily Parquet retention sweep
 - Resources (12 dependency-injected clients including the swappable `BaselineProvider`)
