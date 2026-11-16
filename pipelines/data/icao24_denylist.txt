@@ -9,7 +9,7 @@
 #     all 65,536 codes ae0000..aeffff)
 #   - Lines starting with '#' are comments; blank lines are ignored
 #
-# Maintenance policy (per docs/SPEC.md):
+# Maintenance policy (per the project specification):
 #   This list is intentionally conservative. AFM is a fleet-ops demo,
 #   not a surveillance-deflection tool. Block obvious sensitive
 #   ranges; do not attempt to enumerate every military or government
