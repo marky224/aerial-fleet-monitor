@@ -29,6 +29,7 @@ again; revisit OPENSKY_POLL_INTERVAL_SECONDS if go-around coverage is needed.
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 
 import pandas as pd
 
@@ -78,7 +79,9 @@ class GoAroundRule(Rule):
             alts = near["altitude_ft"].dropna()
             if alts.empty:
                 continue
-            min_label = alts.idxmin()
+            # Annotated Any for the same reason as the label in latest_row():
+            # pandas-stubs 3.1 types idxmin() as Hashable, which .loc[] rejects.
+            min_label: Any = alts.idxmin()
             min_alt = float(alts.loc[min_label])
             if min_alt > GO_AROUND_FLOOR_FT:
                 continue
