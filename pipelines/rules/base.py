@@ -162,5 +162,10 @@ def latest_row(frame: pd.DataFrame, ts_col: str = "ts_polled") -> pd.Series:
     (a label could be non-unique). Within a per-icao24 group the max-ts
     label is unique in practice, so the cast is safe and keeps callers
     free of the union.
+
+    The label is annotated ``Any``: pandas-stubs 3.1 types ``idxmax()`` as
+    ``Hashable``, which ``.loc[]`` does not accept, and a cast back to the
+    ``int | str`` of earlier stubs is a redundant-cast error under those.
     """
-    return cast("pd.Series[Any]", frame.loc[frame[ts_col].idxmax()])
+    label: Any = frame[ts_col].idxmax()
+    return cast("pd.Series[Any]", frame.loc[label])
