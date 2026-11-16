@@ -18,12 +18,35 @@ from sqlalchemy import engine_from_config, pool
 
 from app.settings import settings
 
+
+def _sqlalchemy_url(dsn: str) -> str:
+    """Name the psycopg2 driver in a plain ``postgresql://`` DSN.
+
+    SQLAlchemy 2.1 resolves a bare ``postgresql://`` URL to its psycopg (v3)
+    driver, and the api installs psycopg2 only. A URL that already names a
+    driver is returned unchanged.
+
+    Only the scheme is rewritten; the rest of the DSN passes through as
+    written. (Re-rendering it through ``sqlalchemy.engine.URL`` would
+    percent-encode password punctuation, and ``set_main_option`` rejects a
+    bare ``%``.) ``settings.database_url`` itself stays the plain libpq DSN:
+    the app's connection pool hands it straight to psycopg2, which does not
+    accept a ``+psycopg2`` scheme.
+    """
+    plain = "postgresql://"
+    if dsn.startswith(plain):
+        return "postgresql+psycopg2://" + dsn[len(plain) :]
+    return dsn
+
+
 # Alembic Config object, providing access to values in alembic.ini.
 config = context.config
 
-# Hand the resolved DATABASE_URL to Alembic. Settings raises at import
-# time if DATABASE_URL is missing, so reaching this line means we have one.
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Hand the resolved DATABASE_URL to Alembic, with the driver named. Both the
+# offline and the online path below read it back from this option. Settings
+# raises at import time if DATABASE_URL is missing, so reaching this line
+# means we have one.
+config.set_main_option("sqlalchemy.url", _sqlalchemy_url(settings.database_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
