@@ -50,6 +50,7 @@ COPY foundry/sync ./foundry-sync
 COPY pipelines/pyproject.toml ./
 COPY pipelines/__init__.py ./
 COPY pipelines/definitions.py ./
+COPY pipelines/instance_storage.py ./
 COPY pipelines/assets ./assets
 COPY pipelines/data ./data
 COPY pipelines/resources ./resources
@@ -88,6 +89,7 @@ WORKDIR /srv/pipelines
 # paths rebased onto the repo-root build context).
 COPY --chown=afm:afm pipelines/__init__.py ./
 COPY --chown=afm:afm pipelines/definitions.py ./
+COPY --chown=afm:afm pipelines/instance_storage.py ./
 COPY --chown=afm:afm pipelines/assets ./assets
 COPY --chown=afm:afm pipelines/data ./data
 COPY --chown=afm:afm pipelines/resources ./resources
