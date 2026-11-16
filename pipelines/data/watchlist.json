@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "AFM watched-airport set. Source of truth for ref.airports.is_watched and ref.airports.customer_regions. Drawn from docs/SPEC.md §4. 35 airports total: union of the FAA Core 30 / OEP-35 and the AFM West/East customer scopes — not additive.",
+  "description": "AFM watched-airport set. Source of truth for ref.airports.is_watched and ref.airports.customer_regions. Drawn from the project specification's watched-airport set. 35 airports total: union of the FAA Core 30 / OEP-35 and the AFM West/East customer scopes — not additive.",
   "airports": {
     "KATL": {"customer_regions": []},
     "KORD": {"customer_regions": []},
