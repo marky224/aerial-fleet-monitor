@@ -16,24 +16,37 @@
 # Dagster's internal tables (runs, event_log, schedules) and its own
 # alembic_version table out of AFM's `app` schema, where AFM's search_path
 # would otherwise pull unqualified Dagster CREATEs.
+#
+# The three storage classes are pipelines/instance_storage.py: the stock
+# dagster_postgres classes, with the psycopg2 driver named in the URL they
+# hand to SQLAlchemy. SQLAlchemy 2.1 reads a plain postgresql:// URL as
+# psycopg (v3), which the image does not install. DAGSTER_DATABASE_URL stays
+# a plain postgresql:// URL, because the API passes it to psycopg2 as it is.
+#
+# This file is bind-mounted, but the classes ship inside the image, and the
+# webserver, the daemon and the user-code container (run workers) all load
+# them. `make dev` does not build, so an image built before this module
+# existed fails at start-up with "Couldn't import module
+# pipelines.instance_storage". Rebuild all three before starting the stack:
+#   docker compose build dagster-user-code dagster-webserver dagster-daemon
 
 run_storage:
-  module: dagster_postgres.run_storage
-  class: PostgresRunStorage
+  module: pipelines.instance_storage
+  class: Psycopg2RunStorage
   config:
     postgres_url:
       env: DAGSTER_DATABASE_URL
 
 event_log_storage:
-  module: dagster_postgres.event_log
-  class: PostgresEventLogStorage
+  module: pipelines.instance_storage
+  class: Psycopg2EventLogStorage
   config:
     postgres_url:
       env: DAGSTER_DATABASE_URL
 
 schedule_storage:
-  module: dagster_postgres.schedule_storage
-  class: PostgresScheduleStorage
+  module: pipelines.instance_storage
+  class: Psycopg2ScheduleStorage
   config:
     postgres_url:
       env: DAGSTER_DATABASE_URL

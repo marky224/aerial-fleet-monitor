@@ -4,7 +4,7 @@ The full testing specification documents AFM's test pyramid (pytest unit + integ
 
 ## Topics covered in the full specification
 
-- The test pyramid as built: ~524 unit (api · pipelines · foundry sync), Salesforce integration (run locally against the dev org), OpenAPI contract (schemathesis), and Apex
+- The test pyramid as built: 600+ unit (api · pipelines · foundry sync), Salesforce integration (run locally against the dev org), OpenAPI contract (schemathesis), and Apex
 - What each layer is for (unit = pure logic; integration = real Salesforce dev org; contract = OpenAPI drift detection via schemathesis; Apex = Salesforce test framework)
 - Test organization (where tests live alongside their code in `api/tests/`, `pipelines/tests/`, `foundry/sync/tests/`, and `salesforce/.../classes/`)
 - Markers and selective runs (pytest markers, `make test-unit` / `test-integration` / `test-contract` targets, total wall time)

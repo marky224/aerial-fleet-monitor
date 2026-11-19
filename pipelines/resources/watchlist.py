@@ -1,6 +1,6 @@
 """Watchlist resource.
 
-Reads ``ref.airports WHERE is_watched = TRUE`` (the 35 SPEC §4 airports
+Reads ``ref.airports WHERE is_watched = TRUE`` (the project specification's 35 watched airports
 plus ``customer_regions`` tags) and exposes:
 
 * ``get_airports()`` — full list, ordered by ICAO.

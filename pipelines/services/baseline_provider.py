@@ -1,7 +1,7 @@
 """BaselineProvider — expected city-pair flight durations for delay detection.
 
 The ``delay`` rule needs a baseline "how long should this flight take?"
-to decide whether an in-progress flight is running long. SPEC §3.5 names
+to decide whether an in-progress flight is running long. The project specification names
 two implementations (``OpenSkyHistoricalProvider`` over the OpenSky
 ``/flights`` endpoint, ``LocalParquetProvider`` over our own ≥30-day
 history). Both are deferred for Phase 05:
@@ -22,7 +22,7 @@ estimate for a known city pair, and is more than adequate to flag
 ``BASELINE_PROVIDER`` env switch are preserved so the historical/parquet
 providers can slot in later without touching the rule.
 
-Recorded as a SPEC §3.5 deviation in the Phase-05 Decisions log.
+Recorded as a deviation from the project specification in the Phase-05 Decisions log.
 """
 
 from __future__ import annotations
@@ -137,5 +137,5 @@ def build_baseline_provider(
     raise NotImplementedError(
         f"BASELINE_PROVIDER='{name}' is not implemented in Phase 05 "
         "(only 'heuristic'). See the Phase-05 Decisions log for the "
-        "SPEC §3.5 deviation; 'opensky'/'parquet' are future work."
+        "deviation from the project specification; 'opensky'/'parquet' are future work."
     )
