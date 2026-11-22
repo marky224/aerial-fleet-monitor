@@ -1,6 +1,6 @@
 # Aerial Fleet Monitor — API Specification
 
-> **Audience:** Claude Code building the FastAPI service and the Foundry sync client; reviewers of the integration contract.
+> **Audience:** Developers working on the FastAPI service and the Foundry sync client; reviewers of the integration contract.
 > **Status:** v1, locked. Endpoint additions are allowed; breaking changes require a `/v2/*` prefix.
 > **Companion docs:** `DATA_MODEL.md` for the underlying schemas, `FRONTEND.md` for dashboard (Foundry) patterns.
 
@@ -20,16 +20,13 @@ All endpoints are prefixed `/v1/`. v1 stays stable for the lifetime of the proje
 ### 1.2 Status codes
 
 - `200 OK` — successful read
-- `201 Created` — successful write (rarely used; POST endpoints are minimal in v1)
-- `204 No Content` — successful action with no payload
 - `400 Bad Request` — malformed input
-- `401 Unauthorized` — missing or invalid `afm_session` cookie
-- `403 Forbidden` — authenticated but scope insufficient (e.g., West Coast user requesting an East Coast site)
+- `403 Forbidden` — the request's scope does not cover the requested region or site
 - `404 Not Found` — resource doesn't exist
 - `409 Conflict` — duplicate write (e.g., same external ID)
 - `422 Unprocessable Entity` — Pydantic validation failure
-- `429 Too Many Requests` — rate-limited (rare in v1)
 - `500 Internal Server Error` — unexpected
+- `501 Not Implemented` — reserved path (`/v1/positions/stream`)
 - `503 Service Unavailable` — upstream (OpenSky/Salesforce/etc.) failure surfaced
 
 ### 1.3 Standard error envelope
@@ -51,17 +48,16 @@ All non-2xx responses return:
 
 ### 1.4 Request/response models
 
-All request bodies and response payloads are described as Pydantic v2 models. The OpenAPI spec is auto-generated and exposed at `/v1/openapi.json` and `/v1/docs` (Swagger UI in development; protected in production).
+All request bodies and response payloads are described as Pydantic v2 models. The OpenAPI spec is auto-generated and served at `/openapi.json`, with Swagger UI at `/docs` and ReDoc at `/redoc`, only when `EXPOSE_DOCS=true`; the default is `false`, and the API has no auth layer that gates these routes.
 
 ### 1.5 Pagination
 
-List endpoints accept `cursor` (opaque string) and `limit` (default 50, max 200). Responses include `next_cursor` (null if no more) and `count` (number of items in this page).
+No endpoint takes a `cursor`. List responses return the whole in-scope set as `items` plus `count` (the number of items); `/v1/positions/live` and `/v1/cases` add `truncated`, set when the 50,000-row safety ceiling clips the result (§3.1, §6.1). The one paged read is the system-internal `/v1/cases/all-for-sync`, which pages by a `since` timestamp (§6.5).
 
 ```json
 {
   "items": [...],
-  "count": 50,
-  "next_cursor": "eyJpZCI6ICJDQVNF..."
+  "count": 50
 }
 ```
 
@@ -71,25 +67,9 @@ All timestamps are ISO-8601 in UTC with explicit `Z` suffix: `2026-05-09T14:30:0
 
 ### 1.7 Auth
 
-Session is a signed JWT in `afm_session` HttpOnly cookie. JWT carries:
+No login is built in v1. Every request is served as one internal identity — `user_handle: "internal-ops"`, `region: "all"`, no custom permissions — with `sites_in_scope` taken from the live watched-airports list (`get_scope` in `api/app/dependencies.py`). There is no session cookie, JWT or CSRF handling, and no route returns `401`.
 
-```json
-{
-  "sub": "west-coast-ops",
-  "salesforce_user_id": "0058z000ABCDEFG",
-  "region": "west",
-  "custom_perms": ["AFM_Region_West"],
-  "exp": 1714000000,
-  "iat": 1713996400,
-  "iss": "afm.example.com"
-}
-```
-
-Anonymous visitors get an auto-issued JWT with `sub: "internal-ops"`, `region: "all"`, `read_only: true` (read-only mode prevents any state-changing endpoints). Read-only mode is the default for cold visits and never requires Salesforce authentication.
-
-CSRF: Use `SameSite=Lax` cookies plus `Origin` header validation on all non-GET endpoints. Demo doesn't include separate CSRF tokens.
-
-Note: `/v1/auth/callback` is a GET, so it is exempt from Origin validation by definition (the redirect originates from Salesforce, not the AFM client, so the Origin header would always be wrong). CSRF protection on the callback path uses the OAuth `state` parameter instead — generated at `/v1/auth/login`, persisted in a short-lived `oauth_state` cookie, verified on callback, rejected with 400 on mismatch.
+The scope checks are built: a query for a region or site outside the caller's scope is refused with `403 scope_insufficient`. With the single all-regions identity they pass every request.
 
 ## 2. Auth endpoints
 
@@ -109,40 +89,16 @@ class MeResponse(BaseModel):
     sites_in_scope: list[str]              # ICAO codes the user can read
 ```
 
-**Response 401** if no cookie. (Clients without an authenticated session must initiate the OAuth flow; the original auto-internal-ops cold-visit shortcut is deprecated under the Foundry-hosted dashboard — see Phase 04 re-plan.)
+Every caller gets the same response: the internal-ops identity from §1.7, with `salesforce_user_id: null`, `read_only: true` and `expires_at` 24 hours ahead. There is no `401`.
 
-### 2.2 `GET /v1/auth/login`
-
-Initiate Salesforce OAuth flow.
-
-**Query params:**
-- `as` (optional): demo user handle to pre-select. One of `west-coast-ops`, `east-coast-ops`. Sent as `login_hint` to Salesforce.
-- `return_to` (optional): post-auth redirect path within the dashboard. Defaults to `/`.
-
-**Response 302** to Salesforce login URL.
-
-### 2.3 `GET /v1/auth/callback`
-
-Salesforce OAuth callback. Exchange code, fetch userinfo + permissions, mint AFM JWT, set cookie.
-
-**Query params:** `code`, `state` (CSRF anti-replay token, validated against the cookie set during `/login`)
-
-**Response 302** to the original `return_to`.
-
-### 2.4 `POST /v1/auth/logout`
-
-Clear the cookie. If the cookie holds a Salesforce-issued session, also call SF's revoke endpoint (cleans up server-side).
-
-**Response 204.**
-
-### 2.5 `POST /v1/admin/sf-test-case` (dev-only)
+### 2.2 `POST /v1/admin/sf-test-case` (dev-only)
 
 Salesforce write smoke (Phase 04 acceptance #9). Creates a Case in the
 connected dev org populating **every** `AFM_*__c` custom field plus the
 `Fleet_Operations` record type, then deletes it. Returns the cross-system
-id pair and the exact field map sent (after the §10.1 region/format
-translation), so the AFM→SF write path can be verified end-to-end without
-the case detector.
+id pair and the exact field map sent (after `SalesforceService`'s region
+and field-name translation), so the AFM→SF write path can be verified
+end-to-end without the case detector.
 
 Mounted **only when `ENVIRONMENT=dev`** — the route does not exist (404)
 in any other environment, which is the access control. Authenticates to
@@ -172,7 +128,7 @@ bucket (`fresh` < 60 s, `stale` < 5 min, `lost` otherwise) so the
 recently-lost tail inside the window is distinguishable client-side.
 
 The endpoint returns the **complete** in-scope set (it is a snapshot, not
-a paginated list — the `cursor`/`limit` convention in §1 does not apply).
+a paginated list; see §1.5).
 A server-side safety ceiling of **50,000** rows bounds memory and response
 size; this is far above realistic airborne traffic (single-digit
 thousands). If the in-scope set ever exceeds the ceiling, the freshest
@@ -181,7 +137,7 @@ thousands). If the in-scope set ever exceeds the ceiling, the freshest
 
 **Query params:**
 - `bbox` (optional): `lat_min,lon_min,lat_max,lon_max`. If omitted, returns all in scope.
-- `region` (optional): override scope to a specific region (rejected with 403 if user lacks `AFM_All_Regions`).
+- `region` (optional): override scope to a specific region (rejected with 403 if the caller's scope is narrower than the requested region).
 
 **Response 200:**
 ```python
@@ -207,13 +163,13 @@ class PositionsLiveResponse(BaseModel):
     truncated: bool = False                         # True if clipped at the 50k safety ceiling
 ```
 
-Polling cadence from the dashboard sync: every 30s.
+Polling cadence from the dashboard sync: every 300 s (the `foundry_positions_sync` sensor).
 
 ### 3.2 `WebSocket /v1/positions/stream`
 
-**Reserved for v2 — currently returns 501 Not Implemented.**
+**Reserved for v2 — the path answers a plain `GET` with 501 Not Implemented; no WebSocket handler is mounted.**
 
-The v1 dashboard surface (Foundry positions sync) polls `/v1/positions/live` every 30s, which is sufficient for portfolio-scale read patterns. The WebSocket surface is kept on the spec so the v2 reservation is explicit, mirroring the `/v1/chat/*` reservation in §11.
+The v1 dashboard surface (Foundry positions sync) polls `/v1/positions/live` every 300 s, which is sufficient for portfolio-scale read patterns. The WebSocket surface is kept on the spec so the v2 reservation is explicit, mirroring the `/v1/chat/*` reservation in §11.
 
 When implemented, design intent is: plain-JSON server-pushed snapshots every 30s with the same payload shape as `/v1/positions/live`, 25-second `{"type":"ping"}` / `{"type":"pong"}` heartbeat, no binary frames, no per-message compression.
 
@@ -438,6 +394,7 @@ story to learn.
 class CaseListItem(BaseModel):
     case_id: str
     salesforce_id: str | None
+    salesforce_url: str | None    # Lightning deeplink; null until pushed
     case_type: str
     status: str
     severity: str
@@ -467,6 +424,7 @@ if the caller's region scope doesn't cover the case's `customer_region`
 class CaseDetail(BaseModel):
     case_id: str
     salesforce_id: str | None
+    salesforce_url: str | None
     case_type: str
     status: str
     severity: str
@@ -490,18 +448,17 @@ class CaseTimelineEvent(BaseModel):
     occurred_at: datetime
 ```
 
-**Not built in this slice** (intentional deferrals):
-- `salesforce_url` (Lightning deeplink) — needs a configured SF base
-  URL; future polish.
-- `related_tasks` — Salesforce Task sync isn't built yet.
+`salesforce_url` is the Lightning deeplink to the Case; it is null until the push has set `salesforce_id`, or when `SALESFORCE_INSTANCE_URL` is unset.
+
+**Not built:** `related_tasks` — Salesforce Task sync isn't built.
 
 ### 6.3 `POST /v1/cases/sync-pending`
 
 System-internal push trigger for the decoupled AFM→Salesforce write path
 (Phase 05). The case detector writes local cases as
 `sf_sync_status='pending'` and never touches Salesforce; this endpoint
-drains up to `limit` pending rows into the connected org via the §10.1
-write path and reconciles `app.cases` (`salesforce_id`, `sf_sync_status`)
+drains up to `limit` pending rows into the connected org through
+`SalesforceService` and reconciles `app.cases` (`salesforce_id`, `sf_sync_status`)
 + `app.case_timeline`. The pipelines `sf_case_push` asset polls it on a
 ~60s cadence; each call also retries cases left `pending` by a prior
 transient failure (so the endpoint is the retry surface too).
@@ -534,14 +491,14 @@ class CaseSyncSummary(BaseModel):
 System-internal pull trigger for the SF→Postgres mirror (Phase 05), the
 inverse of §6.3. Reads the persisted `sf_case_sync` watermark, fetches up
 to `limit` `Fleet_Operations` Cases with `SystemModstamp` greater than the
-watermark via the §10.1 read path, mirrors each onto its `app.cases` row
+watermark through `SalesforceService`, mirrors each onto its `app.cases` row
 (matched by `salesforce_id`, falling back to the external id), writes
 `app.case_timeline` events for material changes (`status_changed`,
 `severity_changed`, `resolved`), and advances the watermark to the maximum
 `SystemModstamp` observed (leaving it untouched when nothing changed). The
 pipelines `sf_case_sync` asset polls it on a ~60s cadence. SF→AFM
 translation (Status/Priority/Description → `app.cases` status/severity/
-summary) lives only in the §10.1 service.
+summary) lives only in `SalesforceService`.
 
 **Query params:**
 - `limit`: max modified Cases to pull this pass (default `200`, 1–200).
@@ -586,6 +543,7 @@ The subject field is derived at response time from `case_type` +
 class CaseForSync(BaseModel):
     case_id: str
     salesforce_id: str | None
+    salesforce_url: str | None
     case_type: str
     status: str                                  # open/acknowledged/in_progress/resolved
     severity: str                                # low/medium/high/critical
@@ -618,7 +576,7 @@ previous page's tail row is harmless.
 
 System-internal trigger for the daily-brief feature (Phase 11). Composes the
 prior-local-day operations brief for `region` from `app.cases`, synthesizes it
-via the Salesforce Models API (the `AFM_BriefSynthesis` Apex action — §10), posts
+via the Salesforce Models API (the `AFM_BriefSynthesis` Apex action), posts
 it to the Fleet Operations Chatter group, and upserts `app.briefs`. No scope
 filter — server-to-server, like §6.3–6.5. The three per-region `daily_brief_*`
 Dagster schedules fire it at 07:00 in each region's local timezone.
@@ -681,35 +639,37 @@ Liveness check. Returns 200 if the process is up.
 
 Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not authenticated — it is network-scoped (reachable only on the private network, never forwarded by the public reverse tunnel).
 
+### 9.3 `GET /v1/metrics/extras`
+
+Second Prometheus scrape endpoint: AFM gauges read from Postgres on each scrape (active and tracked aircraft, pipeline lag, case counts by severity, status, region, rule and site, the Salesforce sync backlog) plus Dagster run counts, duration and age read from the run store. Same format and exposure as §9.2; like `/v1/metrics`, it is not in the OpenAPI schema.
+
 ## 10. Endpoint summary table
 
-| Method | Path | Purpose | Auth required |
-|---|---|---|---|
-| GET | `/v1/auth/me` | current session | yes |
-| GET | `/v1/auth/login` | start OAuth | no |
-| GET | `/v1/auth/callback` | OAuth callback | no |
-| POST | `/v1/auth/logout` | clear session | yes |
-| POST | `/v1/admin/sf-test-case` | SF write smoke (dev-only, acceptance #9) | dev env only |
-| GET | `/v1/positions/live` | all current positions in scope | yes |
-| WS | `/v1/positions/stream` | streamed positions (501 in v1, reserved for v2) | yes |
-| GET | `/v1/flights/{icao24}` | single flight detail | yes |
-| GET | `/v1/flights/{icao24}/trail` | flight trail | yes |
-| POST | `/v1/flights/trail/batch` | bulk flight trails (one scan, NDJSON stream) | yes |
-| GET | `/v1/sites` | list sites | yes |
-| GET | `/v1/sites/{icao}` | site detail | yes |
-| GET | `/v1/sites/{icao}/sla` | SLA scorecard | yes |
-| GET | `/v1/sites/{icao}/inbound` | inbound list | yes |
-| GET | `/v1/sites/{icao}/outbound` | outbound list | yes |
-| GET | `/v1/cases` | case list | yes |
-| GET | `/v1/cases/{case_id}` | case detail | yes |
-| POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
-| POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
-| GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) | yes |
-| POST | `/v1/briefs/generate` | generate + post the daily brief for a region (system; daily 07:00 local) | yes |
-| GET | `/v1/health` | liveness | no |
-| GET | `/v1/metrics` | Prometheus metrics | no (network-protected) |
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/auth/me` | current identity (internal-ops stub) |
+| POST | `/v1/admin/sf-test-case` | SF write smoke (dev-only, acceptance #9) |
+| GET | `/v1/positions/live` | all current positions in scope |
+| GET | `/v1/positions/stream` | reserved for a v2 stream; returns 501 |
+| GET | `/v1/flights/{icao24}` | single flight detail |
+| GET | `/v1/flights/{icao24}/trail` | flight trail |
+| POST | `/v1/flights/trail/batch` | bulk flight trails (one scan, NDJSON stream) |
+| GET | `/v1/sites` | list sites |
+| GET | `/v1/sites/{icao}` | site detail |
+| GET | `/v1/sites/{icao}/sla` | SLA scorecard |
+| GET | `/v1/sites/{icao}/inbound` | inbound list |
+| GET | `/v1/sites/{icao}/outbound` | outbound list |
+| GET | `/v1/cases` | case list |
+| GET | `/v1/cases/{case_id}` | case detail |
+| POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) |
+| POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) |
+| GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) |
+| POST | `/v1/briefs/generate` | generate + post the daily brief for a region (system; daily 07:00 local) |
+| GET | `/v1/health` | liveness |
+| GET | `/v1/metrics` | Prometheus metrics |
+| GET | `/v1/metrics/extras` | Prometheus gauges from Postgres and the Dagster run store |
 
-All `yes` rows accept the auto-issued internal-ops session for cold visitors. Endpoints that require a real Salesforce-backed session (none in v1) would explicitly check `read_only == false`.
+No endpoint requires a login in v1 (§1.7). `/v1/admin/sf-test-case` exists only when `ENVIRONMENT=dev`; the two metrics endpoints are for the Prometheus scraper (§9).
 
 ## 11. Architectural reservation for v2 NL chat
 
