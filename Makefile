@@ -92,7 +92,7 @@ install:
 .PHONY: dev
 dev:
 	$(DOCKER_COMPOSE) up -d
-	@echo "→ Backend up. Dashboard lives in Foundry — see _private/docs/full/FRONTEND.md"
+	@echo "→ Backend up. Dashboard lives in Foundry."
 
 .PHONY: down
 down:
