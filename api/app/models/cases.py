@@ -140,8 +140,8 @@ class CaseListResponse(BaseModel):
     No cursor pagination — `truncated` follows the `/v1/positions/live`
     convention (API.md §3.1 / PR #10): a single page bounded by the 50k
     safety ceiling. Caller knows the result is complete when
-    `truncated=False`. See build-05 Decisions log for the rationale
-    (~1.1k cases tenant-wide; 46x headroom).
+    `truncated=False`. Rationale: ~1.1k cases tenant-wide, so the ceiling
+    leaves 46x headroom.
     """
 
     items: list[CaseListItem] = Field(default_factory=list)

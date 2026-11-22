@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     # Whether to expose the FastAPI auto-generated docs (/docs, /redoc,
     # /openapi.json). Defaults to False — secure by default. Set
     # EXPOSE_DOCS=true in .env only when running locally without public
-    # exposure, or once Phase 06 lands JWT auth that can gate the routes.
+    # exposure: the API has no auth layer that gates these routes.
     expose_docs: bool = Field(default=False)
 
     # Phase 04 — Salesforce (Agentforce DE org). Optional so the API still

@@ -10,7 +10,7 @@ The full observability specification documents AFM's self-hosted Loki + Promtail
 - Log shape standard (structured JSON via `structlog`, dotted event names, `request_id` correlation across components)
 - Metrics catalogue:
   - Counters (`afm_opensky_credits_used_total`, `afm_cases_created_total`, `afm_sf_sync_failures_total`, etc.)
-  - Histograms (`afm_sf_sync_duration_seconds`, `afm_anthropic_call_duration_seconds`, etc.)
+  - Histograms (`afm_sf_sync_duration_seconds`, etc.)
   - Gauges (`afm_pipeline_lag_seconds`, `afm_open_cases_count`, `afm_lakehouse_disk_usage_bytes`, etc.)
   - Standard FastAPI metrics via `prometheus-fastapi-instrumentator`
 - Grafana dashboards (5 provisioned at startup):
@@ -19,7 +19,7 @@ The full observability specification documents AFM's self-hosted Loki + Promtail
   - Pipeline Health
   - Per-Airport SLA Trends
   - Case Detector Tuning
-- Alerting (deliberately minimal — only OpenSky credit cap and lakehouse disk fill, both via Slack)
+- Alerting (none configured in v1: no alert rules, no notification channels)
 - Local development (same stack runs locally with the same dashboards)
 - What we deliberately don't observe in v1 (tracing, real-user monitoring, synthetic uptime, distributed log correlation)
 - Reading guide for reviewers (recommended dashboard order for cold inspection)

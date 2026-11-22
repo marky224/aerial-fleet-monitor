@@ -20,7 +20,7 @@ never starves a consumer:
 The widest need is 60 min; ``POSITION_RETENTION`` = 3 h leaves a wide
 margin while bounding the table to hours of distinct aircraft instead of
 days. Idempotent and safe to run on any cadence (scheduled hourly in
-``definitions.py``). See the Phase 03 build-doc decision log.
+``definitions.py``).
 
 NOTE: deliberately no ``from __future__ import annotations`` — it breaks
 Dagster's ``@asset`` context-parameter validation.
