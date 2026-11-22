@@ -3,8 +3,7 @@
 Fires when an icao24 with a known flight-plan destination is on the
 ground within 5 nm of a *watched* airport that isn't that destination.
 Limitation (Phase 05): nearest-site is computed against watched airports
-only, so a diversion to an unwatched field isn't caught — recorded in
-the Decisions log.
+only, so a diversion to an unwatched field isn't caught.
 """
 
 from __future__ import annotations

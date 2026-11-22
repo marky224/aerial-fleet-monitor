@@ -68,7 +68,7 @@ _DEFAULT_AFM_STATUS = "open"
 
 # Priority carries AFM severity (CaseCreateInput); reverse of _SEVERITY_TO_PRIORITY
 # in case_sync.py. Note 'critical' collapsed to High on the way out, so it
-# round-trips back as 'high' — lossy by design (build-doc decision log).
+# round-trips back as 'high' — lossy by design.
 SEVERITY_FROM_SF: dict[str, str] = {"Low": "low", "Medium": "medium", "High": "high"}
 
 _SF_API_VERSION = "62.0"  # REST data API; independent of metadata sourceApiVersion

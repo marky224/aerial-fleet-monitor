@@ -34,7 +34,7 @@ class CaseCreateInput(BaseModel):
     status: str = Field(default="New", description="→ standard Status (Fleet_Operations process).")
     priority: str | None = Field(
         default=None,
-        description="→ standard Priority. Carries AFM severity (see build-doc decision log).",
+        description="→ standard Priority. Carries AFM severity.",
     )
     flight_id: str | None = Field(default=None, description="ICAO24 hex. → AFM_Flight_Id__c.")
     site_icao: str | None = Field(default=None, description="Affected airport. → AFM_Site_Icao__c.")

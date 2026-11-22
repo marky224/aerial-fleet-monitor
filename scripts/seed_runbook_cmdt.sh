@@ -16,9 +16,7 @@
 #   package, `devedapp`, did not clear it). The trigger is platform-managed
 #   CustomMetadata that this org's deploy path can't resolve — an org/feature-level
 #   anomaly, not anything our metadata carries, and possibly present on other
-#   Agentforce orgs too. See _private/docs/build/07_agentforce.md (Decisions log),
-#   the drafted support case in _private/docs/build/, and the memory note
-#   afm-dev-cmdt-mdapi-deploy-broken.
+#   Agentforce orgs too.
 #
 #   So this script TRIES the standard path first and falls back to the Apex
 #   Metadata API (Metadata.Operations.enqueueDeployment — a different, unaffected

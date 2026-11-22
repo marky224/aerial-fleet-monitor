@@ -431,7 +431,7 @@ response carries `truncated=True` if the ceiling is hit (oldest rows
 dropped, since `ORDER BY created_at DESC`). Tenant case volume is
 ~1-2k at Phase-05 close, so 50k is ~30-50× headroom. Follows the same
 shape as `/v1/positions/live` (§3.1) so consumers have one pagination
-story to learn. See build-05 Decisions log.
+story to learn.
 
 **Response 200:**
 ```python
@@ -490,8 +490,7 @@ class CaseTimelineEvent(BaseModel):
     occurred_at: datetime
 ```
 
-**Not built in this slice** (intentional deferrals, see build-05
-Decisions log):
+**Not built in this slice** (intentional deferrals):
 - `salesforce_url` (Lightning deeplink) — needs a configured SF base
   URL; future polish.
 - `related_tasks` — Salesforce Task sync isn't built yet.

@@ -81,9 +81,9 @@ LIVE_POSITION_CEILING = 50_000
 
 # Same shape + rationale as LIVE_POSITION_CEILING, applied to `GET /v1/cases`.
 # Tenant case volume is ~1k-2k at Phase-05 close, so 50k is ~30-50x headroom.
-# Cases also has its own pagination story (see API.md §6.1 / build-05 Decisions
-# log entry "Pagination = 50k ceiling, not cursor"): every page is bounded by
-# the ceiling and the response carries `truncated` so a clip is observable.
+# Cases also has its own pagination story (see API.md §6.1): every page is
+# bounded by the ceiling and the response carries `truncated` so a clip is
+# observable.
 CASE_LIST_CEILING = 50_000
 
 # Default statuses for `GET /v1/cases` when no `status` filter is given —
