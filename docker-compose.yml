@@ -102,7 +102,7 @@ services:
       context: .
       dockerfile: pipelines/Dockerfile
     restart: unless-stopped
-    # Runs EVERY job (30s opensky ingest + foundry sync/reconcile/prune +
+    # Runs EVERY job (300s opensky ingest + foundry sync/reconcile/prune +
     # the flight-enrichment fanout) in one container. 512m/0.5cpu kept it
     # pegged at its memory ceiling at baseline on an 80GB/16-core host —
     # any perturbation (enrichment fanout, a redeploy) tipped it into
