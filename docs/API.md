@@ -349,7 +349,7 @@ class SiteDetail(BaseModel):
 
 class SiteWeather(BaseModel):
     metar_raw: str
-    metar_plain_english: str | None                  # Anthropic-generated, cached
+    metar_plain_english: str | None                  # always null in v1
     flight_category: Literal['VFR', 'MVFR', 'IFR', 'LIFR']
     wind_kt: int | None
     visibility_sm: float | None
@@ -494,23 +494,9 @@ class CaseTimelineEvent(BaseModel):
 Decisions log):
 - `salesforce_url` (Lightning deeplink) — needs a configured SF base
   URL; future polish.
-- `related_tasks` — Salesforce Task sync isn't built yet. The runbook
-  slugs in `runbook_refs` already give a path into the runbook lookup
-  via §6.3 when that endpoint lands.
+- `related_tasks` — Salesforce Task sync isn't built yet.
 
-### 6.3 `GET /v1/cases/{case_id}/runbooks`
-
-Returns the linked runbooks (markdown bodies) inline. Convenience for the case detail UI.
-
-**Response 200:**
-```python
-class CaseRunbooksResponse(BaseModel):
-    runbooks: list[Runbook]
-```
-
-(See §8 for `Runbook` model.)
-
-### 6.4 `POST /v1/cases/sync-pending`
+### 6.3 `POST /v1/cases/sync-pending`
 
 System-internal push trigger for the decoupled AFM→Salesforce write path
 (Phase 05). The case detector writes local cases as
@@ -544,10 +530,10 @@ class CaseSyncSummary(BaseModel):
 
 **Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
 
-### 6.5 `POST /v1/cases/sync-from-sf`
+### 6.4 `POST /v1/cases/sync-from-sf`
 
 System-internal pull trigger for the SF→Postgres mirror (Phase 05), the
-inverse of §6.4. Reads the persisted `sf_case_sync` watermark, fetches up
+inverse of §6.3. Reads the persisted `sf_case_sync` watermark, fetches up
 to `limit` `Fleet_Operations` Cases with `SystemModstamp` greater than the
 watermark via the §10.1 read path, mirrors each onto its `app.cases` row
 (matched by `salesforce_id`, falling back to the external id), writes
@@ -572,7 +558,7 @@ class CasePullSummary(BaseModel):
 
 **Response 503** (`upstream_unavailable`) if Salesforce is unconfigured or unreachable.
 
-### 6.6 `GET /v1/cases/all-for-sync`
+### 6.5 `GET /v1/cases/all-for-sync`
 
 System-internal read for the Foundry sync (Phase 05). Returns a paginated
 snapshot of `app.cases` consumed by two Foundry-sync pipelines assets:
@@ -635,7 +621,7 @@ System-internal trigger for the daily-brief feature (Phase 11). Composes the
 prior-local-day operations brief for `region` from `app.cases`, synthesizes it
 via the Salesforce Models API (the `AFM_BriefSynthesis` Apex action — §10), posts
 it to the Fleet Operations Chatter group, and upserts `app.briefs`. No scope
-filter — server-to-server, like §6.4–6.6. The three per-region `daily_brief_*`
+filter — server-to-server, like §6.3–6.5. The three per-region `daily_brief_*`
 Dagster schedules fire it at 07:00 in each region's local timezone.
 
 `region` is `west` | `east` | `all` (`all` is fleet-wide — no region filter, not
@@ -680,45 +666,7 @@ Salesforce Chatter feed, not an AFM-hosted UI.
 
 ## 8. Runbooks
 
-### 8.1 `GET /v1/runbooks`
-
-List all runbooks.
-
-**Response 200:**
-```python
-class RunbookListItem(BaseModel):
-    runbook_id: str
-    title: str
-    case_types: list[str]
-    severity_floor: str
-    tags: list[str]
-    notion_url: str | None
-
-class RunbookListResponse(BaseModel):
-    items: list[RunbookListItem]
-    count: int
-```
-
-### 8.2 `GET /v1/runbooks/{runbook_id}`
-
-Single runbook with rendered body.
-
-**Response 200:**
-```python
-class Runbook(BaseModel):
-    runbook_id: str
-    title: str
-    case_types: list[str]
-    severity_floor: str
-    tags: list[str]
-    body_markdown: str
-    body_html: str                                   # server-rendered for in-app viewer
-    salesforce_record_type: str | None
-    salesforce_template_id: str | None
-    salesforce_deeplink: str | None
-    notion_url: str | None
-    last_synced_at: datetime
-```
+Runbooks are not served by the API: they are the markdown files in `runbooks/`, and they reach Salesforce as `AFM_Runbook__mdt` records and Files through `make sf-seed-runbooks` (`RUNBOOKS.md` §5).
 
 ## 9. Health and ops endpoints
 
@@ -730,22 +678,7 @@ Liveness check. Returns 200 if the process is up.
 { "status": "ok", "service": "afm-api", "version": "1.0.0" }
 ```
 
-### 9.2 `GET /v1/health/deep`
-
-Deeper check: Postgres reachable, Parquet lake mounted, Salesforce token valid, Anthropic client healthy. Used by the reverse tunnel's health probes.
-
-**Response 200** if all green; **503** if any are degraded.
-
-```python
-class DeepHealthResponse(BaseModel):
-    status: Literal['ok', 'degraded']
-    components: dict[str, Literal['ok', 'degraded', 'down']]
-    pipeline_lag_seconds: int
-    last_successful_opensky_poll_at: datetime | None
-    last_successful_noaa_poll_at: datetime | None
-```
-
-### 9.3 `GET /v1/metrics`
+### 9.2 `GET /v1/metrics`
 
 Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not authenticated — it is network-scoped (reachable only on the private network, never forwarded by the public reverse tunnel).
 
@@ -770,15 +703,11 @@ Prometheus scrape endpoint. Standard `text/plain; version=0.0.4` format. Not aut
 | GET | `/v1/sites/{icao}/outbound` | outbound list | yes |
 | GET | `/v1/cases` | case list | yes |
 | GET | `/v1/cases/{case_id}` | case detail | yes |
-| GET | `/v1/cases/{case_id}/runbooks` | linked runbooks | yes |
 | POST | `/v1/cases/sync-pending` | push pending cases to SF (system; ~60s) | yes |
 | POST | `/v1/cases/sync-from-sf` | pull SF Case changes into app.cases (system; ~60s) | yes |
 | GET | `/v1/cases/all-for-sync` | paginated cases snapshot for Foundry sync (system; ~60s) | yes |
 | POST | `/v1/briefs/generate` | generate + post the daily brief for a region (system; daily 07:00 local) | yes |
-| GET | `/v1/runbooks` | runbook list | yes |
-| GET | `/v1/runbooks/{runbook_id}` | single runbook | yes |
 | GET | `/v1/health` | liveness | no |
-| GET | `/v1/health/deep` | deep health | no |
 | GET | `/v1/metrics` | Prometheus metrics | no (network-protected) |
 
 All `yes` rows accept the auto-issued internal-ops session for cold visitors. Endpoints that require a real Salesforce-backed session (none in v1) would explicitly check `read_only == false`.
@@ -788,7 +717,7 @@ All `yes` rows accept the auto-issued internal-ops session for cold visitors. En
 `/v1/chat/*` is intentionally unspecified in v1 but reserved. The NL chat endpoint will:
 
 - Accept `{ "query": "...", "session_id": "..." }`
-- Call into `QueryService` via Anthropic tool-use
+- Call into `QueryService` through an LLM tool layer
 - Return `{ "answer": "...", "sources": [...], "trace": [...] }`
 
 The Pydantic request/response models on every existing endpoint double as tool definitions for the chat layer. No v1 endpoint should hardcode response shapes outside Pydantic models — doing so would force a v2 rewrite when adding chat tool exposure.

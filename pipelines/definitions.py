@@ -10,7 +10,6 @@ Assets, schedules, sensors, and resources are added phase by phase:
              so the spec's 30s OpenSky cadence is a sensor, not a schedule).
   Phase 05 — Case detector asset and rule-engine resources.
   Phase 07 — Daily brief asset.
-  Phase 08 — Runbook → Notion sync asset.
 
 Schedules and the sensor default to RUNNING so the stack ticks
 immediately on startup — matches the local-first MVP "flip the switch

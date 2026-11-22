@@ -1,6 +1,6 @@
 # Aerial Fleet Monitor — Pipelines
 
-The full pipelines specification documents AFM's Dagster asset-oriented pipeline architecture: ingestion, anomaly detection, two-way Salesforce sync, analytical aggregation, daily brief generation, runbook indexing, and lifecycle management.
+The full pipelines specification documents AFM's Dagster asset-oriented pipeline architecture: ingestion, anomaly detection, two-way Salesforce sync, analytical aggregation, daily brief generation, and lifecycle management.
 
 ## Topics covered in the full specification
 
@@ -15,11 +15,10 @@ The full pipelines specification documents AFM's Dagster asset-oriented pipeline
   - `sf_case_sync` — 60-second SF → Postgres mirror with persistent watermark
   - `site_metrics_refresh` — 15-minute SLA recomputation
   - `daily_brief_west` / `daily_brief_east` / `daily_brief_all` — per-region 7am-local brief synthesis (cases → Salesforce Models API via the `AFM_BriefSynthesis` Apex action → Chatter group + `app.briefs`)
-  - `runbook_index_sync` — markdown → Notion sync, with sensor-driven webhook trigger
   - `partition_lifecycle` — daily Parquet retention sweep
 - Resources (12 dependency-injected clients including the swappable `BaselineProvider`)
 - Schedules (cadence per asset, including timezone-aware per-region brief schedules)
-- Sensors (GitHub webhook, case-sync retry, disk-usage threshold)
+- Sensors (case-sync retry, disk-usage threshold)
 - Jobs (asset groupings for orchestration)
 - Observability hooks (custom Prometheus metrics emitted per asset)
 - Local development workflow (Dagster UI as cockpit, manual asset materialization)

@@ -2,7 +2,7 @@
 
 > **Audience:** Claude Code creating runbooks; reviewers evaluating operational maturity; future maintainers.
 > **Status:** v1, locked. Adding new runbooks is encouraged. Modifying frontmatter schema requires spec update.
-> **Companion docs:** `DATA_MODEL.md` §3.3 for `runbook_index` schema; `PIPELINES.md` §3.8 for sync mechanics.
+> **Companion docs:** `DATA_MODEL.md` §3.3 for `runbook_index` schema.
 
 ---
 
@@ -12,7 +12,7 @@ Runbooks codify operational response procedures for the anomalies the case detec
 
 1. **Triage guide for support advocates.** When a Case opens, the linked runbook tells whoever picks it up *what to check, in what order, and what to escalate.* This is the same role runbooks play at any operations-heavy company.
 2. **Customer communication consistency.** Each runbook specifies recommended customer-facing language for the anomaly type, ensuring the same situation gets described the same way to every customer. Critical for trust at scale.
-3. **Code-as-documentation evidence.** Runbooks are markdown in the repo. They get versioned, reviewed, and synced to Notion. This proves operational knowledge is treated with the same rigor as code.
+3. **Code-as-documentation evidence.** Runbooks are markdown in the repo. They get versioned, reviewed, and seeded into Salesforce as custom metadata records and Files. This proves operational knowledge is treated with the same rigor as code.
 
 The runbook content is aviation-flavored because the demo data is aviation. The runbook *structure* is universal.
 
@@ -46,18 +46,18 @@ Field semantics:
 | Field | Purpose |
 |---|---|
 | `id` | Stable identifier referenced by case rules and linked from cases. Never rename without a migration. |
-| `title` | Display title in the in-app viewer, Notion, and Salesforce ContentDocument links. |
+| `title` | Display title. Also the title of the Salesforce File that triage links to the Case. |
 | `case_types` | Which anomaly types this runbook applies to. The case detector uses this to suggest runbook references when a new case fires. |
 | `severity_floor` | Minimum severity the agent should set when this runbook applies. May be overridden upward based on detection facts. |
-| `tags` | Search/grouping hints. Surfaced in the in-app viewer. |
+| `tags` | Search/grouping hints. |
 | `salesforce_record_type` | Almost always `Case`. Reserved for future use if other Salesforce records (e.g., WorkOrder) become AFM record types. |
 | `salesforce_template_id` | If set, the agent's `draftCustomerNotification` action uses this template instead of the generic one. |
 | `salesforce_deeplink` | Template for Lightning deeplink. `{case_id}` and `{external_id}` placeholders supported. |
-| `related_runbooks` | Soft links to other runbooks for context (rendered as "see also" in the in-app viewer). |
+| `related_runbooks` | Soft links to other runbooks for context. |
 
 ## 3. Body content structure
 
-After the frontmatter, every runbook follows the same five-section structure. Section headers are exact strings — sync logic and indexing depend on them.
+After the frontmatter, every runbook follows the same five-section structure. Section headers are exact strings.
 
 ```markdown
 # {Title}
@@ -99,7 +99,7 @@ paths. Specify what the timeline event for resolution should record.]
 if there are none.]
 ```
 
-The format is rigid by design. A runbook that follows the format is auto-discoverable, auto-syncable, and auto-rendered correctly in every surface (in-app, Notion, Salesforce).
+The format is rigid by design, so every runbook reads the same way in the repository and as the Salesforce File linked to a Case.
 
 ## 4. Initial library — eight runbooks
 
@@ -488,24 +488,14 @@ Severity changes are not communicated to customers directly. Severity drives int
 N/A — this is a reference runbook.
 ```
 
-## 5. Notion sync mechanics
+## 5. How runbooks reach Salesforce
 
-The sync job (`runbook_index_sync` in `PIPELINES.md`) maintains a one-way sync from `runbooks/` (source of truth) to a Notion database.
+`make sf-seed-runbooks` copies the runbooks into the Salesforce org in two steps:
 
-**Notion database structure:** one page per runbook. Properties:
-- `Title` (Notion title, from runbook `title`)
-- `ID` (rich text, from runbook `id`)
-- `Case Types` (multi-select, from runbook `case_types`)
-- `Severity Floor` (select, from runbook `severity_floor`)
-- `Tags` (multi-select, from runbook `tags`)
-- `Last Synced` (date, set by sync job)
-- `Git SHA` (rich text, set by sync job)
+- `scripts/seed_runbook_cmdt.sh` seeds one `AFM_Runbook__mdt` custom metadata record per runbook (title, case types, severity floor, triage steps) from the files in `salesforce/force-app/main/default/customMetadata/`, then checks the records with a SOQL read-back.
+- `scripts/seed_runbook_files.sh` uploads each `runbooks/*.md` as a Salesforce File whose title matches the record's `Title__c`.
 
-**Page body:** the runbook's body markdown converted to Notion blocks. The conversion uses the `notion-client` Python library (or `tomark` + manual block construction). Code blocks, headings, lists, tables all preserved.
-
-**Deletion handling:** If a runbook is removed from `runbooks/`, the sync job archives the corresponding Notion page (using `archived: true` in the API). It does not delete — preserves an audit trail.
-
-**Sync trigger:** GitHub webhook on push to `main` calls the AFM API's `/v1/webhooks/github` endpoint, which forwards to Dagster's GraphQL endpoint to launch `runbook_index_sync` immediately. Failsafe: a 5-minute scheduled run picks up any missed pushes.
+When a Fleet Operations Case is inserted, triage (`AFM_CaseTriageService`) reads the records for the Case's type, creates one investigation Task for each triage step not marked **[Auto]**, and links the matching Files to the Case.
 
 ## 6. Discovery and indexing
 
@@ -533,10 +523,9 @@ When adding a new runbook (Claude Code or human):
 
 1. Pick a unique kebab-case `id`. Verify by `grep -r "^id: " runbooks/`.
 2. Copy the structure of a similar runbook in §4. Adjust `case_types`, `severity_floor`, body content.
-3. Run `make lint-runbooks` (a small Python script that validates frontmatter against schema; tests for required sections in body).
-4. Commit. The Notion sync runs automatically.
+3. Add the matching `AFM_Runbook.<Name>.md-meta.xml` record (§5), commit, and run `make sf-seed-runbooks`.
 
 When modifying an existing runbook:
-- Never change `id` (breaks references). To rename conceptually, create a new file and remove the old one (the sync archives the old in Notion).
+- Never change `id` (breaks references). To rename conceptually, create a new file and remove the old one (the seed leaves the old Salesforce record and File in place; retire them by hand).
 - Severity floor changes are real semantic changes — flag in the PR description.
 - Body content changes are routine and don't require additional review unless they alter triage steps or resolution criteria.

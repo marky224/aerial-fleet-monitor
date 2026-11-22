@@ -2,7 +2,7 @@
 
 Every API.md §3-§5 endpoint goes through QueryService. v2 NL chat will
 reuse the same methods as LLM tools — the Pydantic return types double
-as Anthropic tool-output schemas.
+as LLM tool-output schemas.
 
 Scope enforcement happens at the method boundary: a method that detects
 an out-of-scope ask raises ScopeViolation (mapped to 403 by the global

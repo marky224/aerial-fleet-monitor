@@ -1,6 +1,6 @@
 """Position models for GET /v1/positions/live (API.md §3.1).
 
-Doubles as the response shape and (via OpenAPI → Anthropic tool defs)
+Doubles as the response shape and (via OpenAPI → LLM tool definitions)
 the v2 NL-chat tool description for the same query. Field-level
 descriptions are kept here so the OpenAPI spec carries them straight
 through to the NL-chat tool layer.

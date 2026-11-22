@@ -49,7 +49,7 @@ Palantir Foundry developer-tier tenant, hosting:
 
 - **Workshop apps** — Fleet Overview (live aircraft map), Site Drilldown (per-airport SLA + weather), Flight Detail (telemetry + trail). Bound to the AFM Ontology.
 - **Ontology** — `Aircraft`, `Flight`, `Site`, `Operator`, `Case` objects with link types. Sourced from local DuckDB marts via Foundry sync (a Dagster asset on the self-hosted box).
-- **AIP Logic** — natural-language fleet Q&A functions over the Ontology, complementing the Anthropic-Haiku-driven AFM-internal LLM path.
+- **AIP Logic** — natural-language fleet Q&A functions over the Ontology.
 
 Foundry hosts the dashboard; there is no separate React frontend or AWS hosting. The local stack remains authoritative for data and runs standalone if Foundry is unreachable (sync simply pauses).
 
@@ -88,7 +88,6 @@ Concrete hostnames are kept out of the public tree per scrub-infra discipline; e
 | AFM backend API | `/v1/*` for Salesforce + Foundry sync | public, via the self-hosted reverse tunnel |
 | Observability UI (Grafana) | dashboards/alerts | private network only — not publicly reachable |
 | Dagster UI | pipeline ops | private network only — not publicly reachable |
-| Transactional email | outbound alert/notification sender | provider-hosted |
 
 The public API is TLS-terminated by the reverse tunnel; Foundry handles its own tenant TLS. No direct port exposure from the self-hosted box — only the tunnel connector reaches in, and it forwards the API alone. Observability UIs, Dagster, and Postgres are reachable only on the private network.
 
@@ -102,7 +101,6 @@ The public API is TLS-terminated by the reverse tunnel; Foundry handles its own 
 | Case appears in dashboard after detection | ≤10 seconds |
 | Case appears in Salesforce | ≤3 seconds |
 | Agentforce agent completes its action sequence | ≤30 seconds |
-| Critical case alert email sent | ≤60 seconds from case open |
 | LWC telemetry refresh | every 30 seconds |
 | Daily brief generation | 7am customer-local |
 | Site metrics refresh | every 15 minutes |
@@ -116,7 +114,7 @@ Foundry sync (Dagster asset) ──► FastAPI ──► QueryService ──► 
                                                           ▼
                                          Foundry Workshop apps + AIP Logic
 
-Dagster pipelines ──► External APIs (OpenSky, NOAA, Anthropic, Salesforce, Notion, Resend, Slack)
+Dagster pipelines ──► External APIs (OpenSky, NOAA)
                   ──► Postgres + Parquet
                   ──► Salesforce Cases ──► SF Flow ──► Agentforce agent ──► Apex controller
 
