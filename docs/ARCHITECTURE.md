@@ -25,7 +25,7 @@ AFM is a hybrid system. The dashboard plane is hosted on Palantir Foundry (devel
    └────────▲─────────┘      └──────────┬───────────┘      └──────────┬───────────┘
             │                           │                              │
             │ Foundry sync              │ tunnelled                    │ OAuth + REST
-            │ (Dagster, every 30s)      ▼                              ▼
+            │ (Dagster, 1–5 min)        ▼                              ▼
             │                  ┌─────────────────────────────────────────────────────┐
             └──────────────────│        self-hosted Linux box (Ubuntu 24.04)         │
                                │                                                     │
@@ -48,7 +48,7 @@ The hybrid topology is a deliberate cost/realism tradeoff. All-AWS at all-US sca
 Palantir Foundry developer-tier tenant, hosting:
 
 - **Workshop apps** — Fleet Overview (live aircraft map), Site Drilldown (per-airport SLA + weather), Flight Detail (telemetry + trail). Bound to the AFM Ontology.
-- **Ontology** — `Aircraft`, `Flight`, `Site`, `Operator`, `Case` objects with link types. Sourced from local DuckDB marts via Foundry sync (a Dagster asset on the self-hosted box).
+- **Ontology** — `Aircraft`, `Flight`, `Site`, `Case` objects with link types. Populated by the Foundry sync: Dagster assets on the self-hosted box that read the AFM API and write to the Ontology.
 - **AIP Logic** — natural-language fleet Q&A functions over the Ontology.
 
 Foundry hosts the dashboard; there is no separate React frontend or AWS hosting. The local stack remains authoritative for data and runs standalone if Foundry is unreachable (sync simply pauses).
@@ -57,7 +57,7 @@ Foundry hosts the dashboard; there is no separate React frontend or AWS hosting.
 
 A single `docker-compose` stack runs the operational backbone:
 
-- **FastAPI** — REST and (reserved) WebSocket; auth; Salesforce sync
+- **FastAPI** — REST and (reserved) WebSocket; Salesforce sync
 - **Dagster** — asset-oriented pipeline orchestrator; webserver, daemon, user-code containers
 - **Postgres 16** — operational store (cases, timelines, site metrics, briefs, audit, reference data)
 - **Parquet lakehouse on NVMe** — historical position snapshots, queried in-process via DuckDB
@@ -66,17 +66,17 @@ A single `docker-compose` stack runs the operational backbone:
 
 ### CRM plane (Salesforce Agentforce DE org)
 
-A Connected App for OAuth, custom objects (`AFM_Site__c`, `AFM_Flight__c`), custom Case fields, Permission Sets and custom permissions, an Apex consolidated controller for the agent's actions, a Lightning Web Component embedded on the Case record page, and the Agentforce agent itself with a Record-Triggered Flow invoking it on Case insert.
+A Connected App for OAuth, custom objects (`AFM_Site__c`, `AFM_Flight__c`), custom Case fields, Permission Sets and custom permissions, an Apex trigger on Case insert that runs deterministic triage (investigation Tasks, runbook Files, escalation) and then a Salesforce Models API call for the severity justification and customer narrative, the on-demand Fleet Anomaly Triage Agentforce agent with one consolidated Apex action, and an Apex REST action that writes the daily brief and posts it to Chatter.
 
 ## 3. Data flow (high level)
 
 Three primary flows operate continuously:
 
-1. **Live ingestion.** A Dagster schedule polls OpenSky every 30 seconds for current US ADS-B positions, filters sensitive operators, writes each cycle as a Parquet snapshot partitioned by hour, and upserts the latest position per aircraft into a hot Postgres table for low-latency reads. A parallel five-minute schedule fetches METAR/TAF for the watched airport set.
+1. **Live ingestion.** A Dagster sensor polls OpenSky every 300 seconds for current US ADS-B positions, filters sensitive operators, writes each cycle as a Parquet snapshot partitioned by hour, and upserts the latest position per aircraft into a hot Postgres table for low-latency reads. A parallel five-minute schedule fetches METAR/TAF for the watched airport set.
 
-2. **Anomaly detection and Case sync.** Every five minutes, a rules engine reads the last hour of position snapshots via DuckDB plus current weather, applies six anomaly rules (lost signal, diversion, excessive holding, weather impact, go-around, delay), de-duplicates against open cases, and writes each new case **to Postgres only**, marked `pending`. The Salesforce write is intentionally *decoupled*: a separate sync path (the `POST /v1/cases/sync-pending` endpoint, driven by a ~60-second pipeline sensor) drains `pending` cases into Salesforce — so a Salesforce outage degrades sync but can never block detection. The push is idempotent and single-flighted (a duplicate external id reconciles to the existing record rather than failing), and retries transient failures while parking permanent ones. Salesforce remains the Case system of record: the Case insert fires a Record-Triggered Flow that invokes the Fleet Anomaly Triage Agentforce agent, and a reverse `sf_case_sync` pull (~60 seconds, watermarked on `SystemModstamp`) mirrors Salesforce-side changes — status transitions and the agent-authored summary — back into Postgres for fast dashboard reads.
+2. **Anomaly detection and Case sync.** Every five minutes, a rules engine reads the last 30 minutes of position snapshots via DuckDB plus current weather, applies six anomaly rules (lost signal, diversion, excessive holding, weather impact, go-around, delay), de-duplicates against open cases, and writes each new case **to Postgres only**, marked `pending` when its severity is high and `skipped` otherwise. The Salesforce write is intentionally *decoupled*: a separate sync path (the `POST /v1/cases/sync-pending` endpoint, driven by a ~60-second pipeline sensor) drains `pending` cases into Salesforce — so a Salesforce outage degrades sync but can never block detection. The push is idempotent and single-flighted (a duplicate external id reconciles to the existing record rather than failing), and retries transient failures while parking permanent ones. Salesforce remains the Case system of record: the Case insert fires an Apex trigger that runs deterministic triage and queues a Salesforce Models API call for the severity justification and customer narrative, and a reverse `sf_case_sync` pull (~60 seconds, watermarked on `SystemModstamp`) mirrors Salesforce-side changes — status, priority, description and the severity justification — back into Postgres for fast dashboard reads.
 
-3. **Authentication.** A user logs into the Foundry workspace; Foundry handles SSO. View-mode and customer-region scoping flows through Foundry's permissions on Ontology objects (replaces the original Salesforce-OAuth-cookie-on-React-frontend chain — see Phase 04 re-plan). Salesforce remains the IdP for the LWC↔API path (Salesforce LWC → Apex → Named Credential → AFM API), and the AFM API still validates per-request scope claims as a defense-in-depth layer.
+3. **Authentication.** A user logs into the Foundry workspace; Foundry handles sign-in. Customer-region scoping in the Workshop apps is a filter widget; no per-user region scoping is built. The AFM API has no login in v1: it serves every request as one internal, all-regions identity (`GET /v1/auth/me` returns that stub), and it authenticates to Salesforce with OAuth 2.0 Client Credentials.
 
 ## 4. Network topology
 
@@ -86,7 +86,7 @@ Concrete hostnames are kept out of the public tree per scrub-infra discipline; e
 |---|---|---|
 | Foundry tenant | AFM dashboard (Workshop apps) | Foundry-hosted (its own TLS) |
 | AFM backend API | `/v1/*` for Salesforce + Foundry sync | public, via the self-hosted reverse tunnel |
-| Observability UI (Grafana) | dashboards/alerts | private network only — not publicly reachable |
+| Observability UI (Grafana) | dashboards | private network only — not publicly reachable |
 | Dagster UI | pipeline ops | private network only — not publicly reachable |
 
 The public API is TLS-terminated by the reverse tunnel; Foundry handles its own tenant TLS. No direct port exposure from the self-hosted box — only the tunnel connector reaches in, and it forwards the API alone. Observability UIs, Dagster, and Postgres are reachable only on the private network.
@@ -97,13 +97,11 @@ The public API is TLS-terminated by the reverse tunnel; Foundry handles its own 
 |---|---|
 | Position poll latency budget | ≤2 seconds per poll cycle |
 | Case detection cadence | every 5 minutes |
-| Live position freshness shown to UI | typically ≤30 seconds, ≤60 seconds worst case |
-| Case appears in dashboard after detection | ≤10 seconds |
-| Case appears in Salesforce | ≤3 seconds |
-| Agentforce agent completes its action sequence | ≤30 seconds |
-| LWC telemetry refresh | every 30 seconds |
+| Live position refresh | OpenSky poll and Foundry positions sync every 300 seconds each |
+| Case appears in dashboard after detection | within about a minute (Foundry cases sync, ~60-second sensor) |
+| Case appears in Salesforce | within about a minute, high-severity cases only (~60-second push sensor) |
+| Agentforce agent completes its triage action | ≤30 seconds |
 | Daily brief generation | 7am customer-local |
-| Site metrics refresh | every 15 minutes |
 
 ## 6. Service boundaries
 
@@ -116,26 +114,26 @@ Foundry sync (Dagster asset) ──► FastAPI ──► QueryService ──► 
 
 Dagster pipelines ──► External APIs (OpenSky, NOAA)
                   ──► Postgres + Parquet
-                  ──► Salesforce Cases ──► SF Flow ──► Agentforce agent ──► Apex controller
+                  ──► AFM API ──► Salesforce Cases ──► Apex trigger ──► triage (Tasks, runbook Files) + Models API text
 
-Salesforce LWC ──► Apex controller ──► Named Credential ──► AFM API
+Agentforce agent (on demand) ──► Apex action ──► the same triage
 ```
 
-Single-direction dependencies make the system tractable to debug. The Foundry sync never talks to Salesforce directly; the Salesforce LWC never talks to Postgres directly; both go through the AFM API.
+Single-direction dependencies make the system tractable to debug. The Foundry sync never talks to Salesforce, and the pipelines reach Salesforce only through the AFM API.
 
 ## 7. Storage layout
 
 Postgres holds operational state across two schemas: `app` (cases, case timeline, site metrics, briefs, audit logs, user sessions, sync watermarks) and `ref` (airports, aircraft registry, runbook index). Migrations are managed by Alembic.
 
-The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so DuckDB can prune efficiently when reading historical positions. Each polling cycle writes one file (≈5,000 rows compressed via zstd to ~500 KB on average). A daily lifecycle job drops partitions older than 365 days; disk usage target stays under 500 GB sustained.
+The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so DuckDB can prune efficiently when reading historical positions. Each polling cycle writes one file (≈5,000 rows compressed via zstd to ~500 KB on average). No job prunes the position partitions in v1; the only retention sweep is `foundry_flight_archive_purge`, which drops `flights_archive/` day partitions older than 30 days.
 
 ## 8. Deployment process
 
-**Backend** is built into a Docker image by GitHub Actions, pushed to GHCR, and pulled by the self-hosted compose stack on each merge to `main`. Database migrations run before the API container starts.
+**Backend** images are built on the host by `docker compose` from `api/Dockerfile` and `pipelines/Dockerfile`; no workflow builds or publishes an image. Database migrations are applied with `make db-migrate`.
 
-**Foundry assets** (Ontology object definitions, Workshop app exports) are version-controlled in `foundry/ontology/*.yaml` and `foundry/workshop/*.json`. Tenant updates are applied via the Foundry CLI; CI verifies Ontology shapes match the local API contract.
+**Foundry assets**: the Ontology object definitions are version-controlled in `foundry/ontology/*.yaml` as the specification for provisioning the object types in the tenant. The Workshop apps are built in the tenant and cannot be exported as files (`foundry/workshop/README.md`). No CI job checks the Ontology.
 
-**Salesforce metadata** is deployed via `sf project deploy start --target-org afm-dev`. Agent script changes trigger a separate workflow that runs `sf agent validate && sf agent publish && sf agent activate`.
+**Salesforce metadata** is deployed with `make sf-deploy` (`sf project deploy start`). The `sf-agent-deploy` workflow runs a check-only deploy with the Apex tests on each pull request that touches Salesforce paths; on merge it deploys, runs the Apex tests, seeds the runbook records and Files, and publishes and activates the agent when its authoring bundle changed.
 
 ---
 
