@@ -84,9 +84,10 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /srv/pipelines
 
-# Copy the pipelines package source so `-m pipelines.definitions` resolves
-# from the working dir as well as the installed venv (unchanged behavior;
-# paths rebased onto the repo-root build context).
+# Copy the pipelines source into the working dir. Nothing imports this
+# copy: the files sit flat in /srv/pipelines, not under a `pipelines/`
+# folder, so `-m pipelines.definitions` resolves only from the package
+# installed in the venv.
 COPY --chown=afm:afm pipelines/__init__.py ./
 COPY --chown=afm:afm pipelines/definitions.py ./
 COPY --chown=afm:afm pipelines/instance_storage.py ./
