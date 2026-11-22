@@ -6,7 +6,7 @@
 # api/ — Foundry SDK deps don't pollute the FastAPI runtime.
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,7 +14,7 @@ name = "afm-foundry-sync"
 version = "1.0.0"
 description = "Aerial Fleet Monitor — Foundry Ontology sync service"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = "LicenseRef-Proprietary"
 authors = [
     { name = "Mark Andrew Marquez", email = "me@markandrewmarquez.com" }
 ]
