@@ -1,8 +1,9 @@
 /**
  * AFM_CaseTriageService — deterministic triage for Fleet Operations anomaly Cases.
  *
- * Shared logic behind both Phase-07 surfaces (the auto-triage Record-Triggered
- * Flow and the on-demand Agentforce agent), invoked through AFM_TriageCase.triage.
+ * Shared logic behind both Phase-07 surfaces: the auto-triage Apex trigger
+ * (AFM_CaseTrigger, which reaches triageCases through AFM_CaseTriggerHandler)
+ * and the on-demand Agentforce agent (through AFM_TriageCase.triage).
  * For each Case it:
  *   1. creates investigation Tasks from the non-[Auto] runbook triage steps,
  *   2. escalates fact-computable critical lost-signal cases to the Engineering
@@ -13,7 +14,7 @@
  *
  * Deterministic and bulk-safe (List in, one DML per object, partial success).
  * It does NOT write AFM_Severity_Justification__c or the notification body
- * prose — that GenAI narrative is Phase-07 Group C (a GenAiPromptTemplate).
+ * prose — that GenAI narrative is Phase-07 Group C (AFM_TriageNarrative).
  *
  * Runbook data is AFM_Runbook__mdt (queried via SOQL — getInstance()/getAll()
  * return null for the Triage_Steps__c LongTextArea). Files are matched to a
@@ -246,7 +247,7 @@ public with sharing class AFM_CaseTriageService {
     }
 
     private static Task notificationTask(Case c) {
-        // Deterministic shell; Group C's GenAiPromptTemplate fills the body with
+        // Deterministic shell; Group C (AFM_TriageNarrative) fills the body with
         // the customer-facing narrative. The subject prefix lets Group C find it.
         // (EmailMessage Draft was rejected: this org has Email-to-Case off and
         // "Enable Email Drafts" is a non-metadata, manual Setup toggle.)

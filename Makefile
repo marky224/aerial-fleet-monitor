@@ -1,8 +1,7 @@
 # Aerial Fleet Monitor — Makefile
 #
-# `make help` prints every target from day one, marked [Phase NN] for ones
-# whose real implementation lands later. Stubs print a phase pointer and
-# exit non-zero so CI fails loud if a future-phase target is invoked early.
+# `make help` prints every target. A [Phase NN] tag names the build phase
+# the target came from.
 #
 # Phase 00 real implementations: install, dev, down, logs, lint,
 # db-migrate, db-shell, help. test-unit runs the API pytest suite as
@@ -48,7 +47,6 @@ help:
 	@echo "  dev                    docker compose up -d (dashboard lives in Foundry)"
 	@echo "  down                   docker compose down"
 	@echo "  logs                   Tail logs from the docker-compose stack"
-	@echo "  api-shell              ipython with FastAPI app context loaded     [Phase 02]"
 	@echo "  sf-deploy              Deploy Salesforce metadata                   [Phase 04]"
 	@echo "  sf-validate            Validate metadata + Apex tests (no deploy)   [Phase 04]"
 	@echo "  sf-seed-runbooks       Seed AFM_Runbook__mdt records + runbook Files [Phase 07]"
@@ -63,16 +61,11 @@ help:
 	@echo "  test-contract          API contract tests (schemathesis)            [Phase 10]"
 	@echo "  sf-test                Apex unit tests in DE org                    [Phase 04]"
 	@echo "  lint                   ruff + mypy"
-	@echo "  lint-runbooks          Validate runbook frontmatter + cross-links   [Phase 08]"
 	@echo ""
 	@echo "Database:"
 	@echo "  db-migrate             alembic upgrade head"
 	@echo "  db-seed                Seed reference data (run download_airports.py first)"
 	@echo "  db-shell               psql into the running postgres container"
-	@echo ""
-	@echo "Salesforce + Ops:"
-	@echo "  afm-issue-service-token  Mint a service JWT for the SF→AFM Named Cred [Phase 06]"
-	@echo "  loom-record            Open the demo walkthrough script in \$$EDITOR  [Phase 11]"
 
 # ----------------------------------------------------------------------------
 # Real implementations (Phase 00)
@@ -160,8 +153,8 @@ db-shell:
 	$(DOCKER_COMPOSE) exec postgres sh -lc 'psql -U "$${POSTGRES_USER:-afm}" "$${POSTGRES_DB:-afm}"'
 
 # ----------------------------------------------------------------------------
-# Stubs — real implementation lands in the noted phase.
-# Each prints a pointer and exits 1 so accidental early use is loud.
+# Salesforce and test targets. `test-e2e` is a deprecated stub: it prints a
+# note and exits 1.
 # ----------------------------------------------------------------------------
 
 .PHONY: sf-auth
@@ -207,11 +200,6 @@ sf-publish-agent:
 sf-agent-up: sf-deploy sf-seed-runbooks sf-publish-agent
 	@echo "✔ Full Agentforce stack deployed + published to $(SF_ORG)."
 
-.PHONY: api-shell
-api-shell:
-	@echo "Target 'api-shell' available after Phase 02 — see docs/build/02_api_basic.md"
-	@exit 1
-
 .PHONY: test-contract
 test-contract:
 	@echo "→ test-contract: schemathesis vs the running API at $(AFM_CONTRACT_BASE_URL) (needs the stack up — make dev)"
@@ -230,18 +218,3 @@ test-e2e:
 .PHONY: test
 test: test-unit test-contract test-integration
 	@echo "✔ Full test pyramid: unit + contract + integration (integration auto-skips without SF env)."
-
-.PHONY: afm-issue-service-token
-afm-issue-service-token:
-	@echo "Target 'afm-issue-service-token' available after Phase 06 — see docs/build/06_lwc.md"
-	@exit 1
-
-.PHONY: lint-runbooks
-lint-runbooks:
-	@echo "Target 'lint-runbooks' available after Phase 08 — see docs/build/08_runbooks_notion.md"
-	@exit 1
-
-.PHONY: loom-record
-loom-record:
-	@echo "Target 'loom-record' available after Phase 11 — see docs/build/11_polish_demo.md"
-	@exit 1

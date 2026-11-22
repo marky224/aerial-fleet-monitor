@@ -75,7 +75,10 @@ class CaseForSync(BaseModel):
     )
     runbook_refs: list[str] = Field(
         default_factory=list,
-        description="Runbook slugs from `lookup_runbooks(rule, site_icao)`.",
+        description=(
+            "Runbook slugs the detector matched to the case's rule. Empty in v1: "
+            "nothing writes `ref.runbook_index`, the table it reads."
+        ),
     )
     created_at: datetime = Field(description="UTC time the detector inserted the row.")
     updated_at: datetime = Field(

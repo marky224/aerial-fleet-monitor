@@ -1,8 +1,8 @@
 # Aerial Fleet Monitor — Runbook Library
 
-> **Audience:** Claude Code creating runbooks; reviewers evaluating operational maturity; future maintainers.
+> **Audience:** Runbook authors; reviewers evaluating operational maturity; future maintainers.
 > **Status:** v1, locked. Adding new runbooks is encouraged. Modifying frontmatter schema requires spec update.
-> **Companion docs:** `DATA_MODEL.md` §3.3 for `runbook_index` schema.
+> **Companion docs:** `DATA_MODEL.md` for the storage overview, which lists `ref.runbook_index`.
 
 ---
 
@@ -18,7 +18,7 @@ The runbook content is aviation-flavored because the demo data is aviation. The 
 
 ## 2. Frontmatter schema
 
-Every runbook starts with YAML frontmatter. This is the contract Claude Code must honor when authoring or editing runbooks.
+Every runbook starts with YAML frontmatter. This is the contract to honor when authoring or editing runbooks.
 
 ```yaml
 ---
@@ -26,7 +26,7 @@ id: kebab-case-id                       # required, unique, matches filename min
 title: "Title Case Title"               # required, human-readable
 case_types:                             # required, ≥1 entry, must match enum
   - lost_signal | diversion | excessive_hold | weather_impact | go_around | delay
-severity_floor: low | medium | high | critical    # required, the agent uses this as minimum
+severity_floor: low | medium | high | critical    # required; mirrored into the Salesforce record
 tags:                                   # optional, freeform
   - telemetry
   - comms
@@ -47,12 +47,12 @@ Field semantics:
 |---|---|
 | `id` | Stable identifier referenced by case rules and linked from cases. Never rename without a migration. |
 | `title` | Display title. Also the title of the Salesforce File that triage links to the Case. |
-| `case_types` | Which anomaly types this runbook applies to. The case detector uses this to suggest runbook references when a new case fires. |
-| `severity_floor` | Minimum severity the agent should set when this runbook applies. May be overridden upward based on detection facts. |
+| `case_types` | Which anomaly types this runbook applies to. Mirrored by hand into the record's `Case_Types__c`, which Salesforce triage matches against the Case's type (§5). |
+| `severity_floor` | Minimum severity for cases this runbook applies to. Mirrored into `Severity_Floor__c`; no code reads it in v1. |
 | `tags` | Search/grouping hints. |
 | `salesforce_record_type` | Almost always `Case`. Reserved for future use if other Salesforce records (e.g., WorkOrder) become AFM record types. |
-| `salesforce_template_id` | If set, the agent's `draftCustomerNotification` action uses this template instead of the generic one. |
-| `salesforce_deeplink` | Template for Lightning deeplink. `{case_id}` and `{external_id}` placeholders supported. |
+| `salesforce_template_id` | Optional Salesforce email template id. Mirrored into `Salesforce_Template_Id__c`; empty for all v1 runbooks and not read by code. |
+| `salesforce_deeplink` | Lightning deeplink template for the Case. Not read by code in v1; the API builds `salesforce_url` itself. |
 | `related_runbooks` | Soft links to other runbooks for context. |
 
 ## 3. Body content structure
@@ -103,7 +103,7 @@ The format is rigid by design, so every runbook reads the same way in the reposi
 
 ## 4. Initial library — eight runbooks
 
-The v1 library covers all six case types plus two cross-cutting procedures. Each entry below shows the full file content that should land in `runbooks/` at first commit.
+The v1 library covers all six case types plus two cross-cutting procedures. Each entry below is the full content of the file in `runbooks/`.
 
 ### 4.1 `runbooks/lost-signal-cruise.md`
 
@@ -499,27 +499,23 @@ When a Fleet Operations Case is inserted, triage (`AFM_CaseTriageService`) reads
 
 ## 6. Discovery and indexing
 
-The case detector consults `ref.runbook_index` when creating a case to populate `runbook_refs`. Matching logic (in `pipelines/assets/detection.py`):
+When the case detector creates a case it looks up runbook ids for the case's rule and stores them in `app.cases.runbook_refs`. The lookup is `_load_runbook_refs` in `pipelines/assets/detection.py`:
 
 ```python
-def runbooks_for(case_type: str, site_icao: str | None) -> list[str]:
-    candidates = postgres.query(
-        "SELECT runbook_id FROM ref.runbook_index WHERE %s = ANY(case_types)",
-        case_type,
-    )
-    # Always append the cross-cutting severity runbook
-    candidates.append("severity-escalation-criteria")
-    # Always append IFR communication runbook for weather-related cases
-    if case_type in ("weather_impact", "diversion"):
-        candidates.append("customer-communication-ifr-operations")
-    return list(dict.fromkeys(candidates))   # de-dup, preserve order
+def _load_runbook_refs(postgres: PostgresResource, case_type: str) -> list[str]:
+    sql = "SELECT runbook_id FROM ref.runbook_index WHERE %s = ANY(case_types)"
+    with postgres.get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (case_type,))
+        return [row[0] for row in cur.fetchall()]
 ```
 
-Result is written to `app.cases.runbook_refs` and to Salesforce `AFM_Runbook_Refs__c` as comma-separated IDs.
+Nothing in this repository writes `ref.runbook_index`: the initial migration creates the table and the detector reads it. The table is therefore empty, the lookup returns no rows, and every case the detector creates has an empty `runbook_refs`. The push sends that list to Salesforce as `AFM_Runbook_Refs__c` (comma-separated ids), so the field is blank on the Case; the pull copies it back only if someone fills it in there.
+
+A Case gets its runbooks through Salesforce triage instead (§5): the `AFM_Runbook__mdt` record's case types select the runbooks, and triage links their Files to the Case.
 
 ## 7. Authoring guidance
 
-When adding a new runbook (Claude Code or human):
+When adding a new runbook:
 
 1. Pick a unique kebab-case `id`. Verify by `grep -r "^id: " runbooks/`.
 2. Copy the structure of a similar runbook in §4. Adjust `case_types`, `severity_floor`, body content.
