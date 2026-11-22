@@ -125,7 +125,7 @@ Single-direction dependencies make the system tractable to debug. The Foundry sy
 
 Postgres holds operational state across two schemas: `app` (cases, case timeline, site metrics, briefs, audit logs, user sessions, sync watermarks) and `ref` (airports, aircraft registry, runbook index). Migrations are managed by Alembic.
 
-The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so DuckDB can prune efficiently when reading historical positions. Each polling cycle writes one file (≈5,000 rows compressed via zstd to ~500 KB on average). No job prunes the position partitions in v1; the only retention sweep is `foundry_flight_archive_purge`, which drops `flights_archive/` day partitions older than 30 days.
+The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so DuckDB can prune efficiently when reading historical positions. Each polling cycle writes one file (≈5,000 rows compressed via zstd to ~500 KB on average). No job prunes the position partitions in v1; the only lakehouse retention sweep is `foundry_flight_archive_purge`, which drops `flights_archive/` day partitions older than 30 days.
 
 ## 8. Deployment process
 

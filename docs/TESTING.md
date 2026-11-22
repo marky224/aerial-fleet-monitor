@@ -9,7 +9,7 @@ The full testing specification documents AFM's test pyramid (pytest unit + integ
 - Test organization (where tests live alongside their code in `api/tests/`, `pipelines/tests/`, `foundry/sync/tests/`, and `salesforce/.../classes/`)
 - Markers and selective runs (pytest markers, `make test-unit` / `test-integration` / `test-contract` targets, total wall time)
 - Critical fixtures:
-  - Mocked Postgres pool and lakehouse (no unit test opens a database connection)
+  - Mocked Postgres pool (no unit test opens a Postgres connection); lakehouse tests read real Parquet in a temp folder
   - Recorded OpenSky JSON fixtures across 5 scenarios
   - One module-scoped Salesforce service fixture (`sf`) for the integration suite
   - Mandatory cleanup discipline for any SF integration test
