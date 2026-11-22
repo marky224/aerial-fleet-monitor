@@ -181,8 +181,9 @@ properties:
     type: array<string>          # logical; serialized as JSON string on the wire
     nullable: false
     description: |
-      Runbook slugs discovered for this case (`runbooks/{slug}.md`).
-      Populated at detection time by `lookup_runbooks(rule, site_icao)`.
+      Runbook slugs matched to this case's rule (`runbooks/{slug}.md`).
+      Read at detection time from `ref.runbook_index` by `_load_runbook_refs`;
+      empty in v1, since that table is never populated.
 
   # ---- Timestamps ----
   created_at:

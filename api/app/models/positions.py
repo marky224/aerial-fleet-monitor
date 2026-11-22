@@ -18,7 +18,7 @@ from app.models.common import CustomerRegion, Staleness
 class Position(BaseModel):
     """A single aircraft's current state on the surface or in the air.
 
-    Sourced from the OpenSky `/states/all` poller (every 30 s) joined
+    Sourced from the OpenSky `/states/all` poller (every 300 s) joined
     with `ref.aircraft_registry` for type-code enrichment. `lat`/`lon`
     are WGS84.
     """
