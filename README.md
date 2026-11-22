@@ -9,7 +9,7 @@
 
 ## What it is
 
-AFM is a real-time information console for public US aircraft activity, backed by Salesforce case management. It ingests live aircraft positions and weather data, detects operational anomalies in real time, opens Salesforce Cases for each anomaly, and surfaces everything through Foundry dashboards and a Salesforce Service Console.
+AFM is a real-time information console for public US aircraft activity, backed by Salesforce case management. It ingests live aircraft positions and weather data, detects operational anomalies in real time, opens Salesforce Cases for high-severity anomalies, and surfaces everything through Foundry dashboards and a Salesforce Service Console.
 
 The project covers an end-to-end aircraft-information toolchain — telemetry visualization, anomaly detection, CRM-backed case management, and bidirectional sync between an operational data plane and a CRM plane.
 
@@ -35,7 +35,7 @@ The project covers an end-to-end aircraft-information toolchain — telemetry vi
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  CRM plane (Salesforce Agentforce Developer Edition)                    │
 │    Custom objects: AFM_Site__c, AFM_Flight__c                           │
-│    Case extensions: 13 custom fields, 4 Quick Actions, 6 reports        │
+│    Case extensions: 11 custom fields, 4 Quick Actions, 6 reports        │
 │    Service Console app + AFM Fleet Operations dashboard                 │
 │    Permission Sets: internal-ops + region-scoped (East/West)            │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -86,7 +86,7 @@ Once per region per local day, a Dagster schedule triggers an LLM-synthesized op
 
 ### Data plane
 
-- **FastAPI** with 18 endpoints under `/v1/` covering positions (live + SSE stream), flights (detail + trail + batch trail), sites (list + detail + SLA + inbound/outbound), case sync, daily brief generation, and health.
+- **FastAPI** with 18 endpoints under `/v1/` covering positions (live, plus a stream path reserved for v2 that returns 501), flights (detail + trail + batch trail), sites (list + detail + SLA + inbound/outbound), case sync, daily brief generation, and health.
 - **Postgres 16** with 14 tables across `app.` (operational) and `ref.` (reference data) schemas, managed by Alembic.
 - **DuckDB-over-Parquet lakehouse** for atomic position snapshots written by the ingestion asset.
 - **Dagster orchestration** with 20 assets organized into ingestion (OpenSky positions, NOAA weather @5m), detection (`case_detector`), flight enrichment, Salesforce sync (push + pull), the daily brief (three per-region Chatter posts), Foundry sync (positions, sites, flights, cases, aircraft reconcile), and maintenance (TTL pruning, reference seeding).
@@ -116,9 +116,9 @@ Every service binds to localhost — observability is an operator surface, not a
 ### Salesforce metadata
 
 - 2 custom objects (`AFM_Site__c`, `AFM_Flight__c`)
-- 13 custom fields on Case (type, region, external ID, flight/site links, severity badge + justification, detection facts, resolution hours, runbook refs, internal URL)
+- 11 custom fields on Case (type, region, external ID, flight/site links, severity badge + justification, detection facts, resolution hours, runbook refs, internal URL)
 - 4 Quick Actions, 6 reports, 1 dashboard, 6 list views, 2 validation rules, 1 Path Assistant, 1 record type
-- 4 Permission Sets (internal-ops console access, internal-ops admin, East customer, West customer)
+- 5 Permission Sets (internal-ops console access, internal-ops admin, triage automation, East customer, West customer)
 - 3 Custom Permissions for region scoping
 - 2 connected applications
 
