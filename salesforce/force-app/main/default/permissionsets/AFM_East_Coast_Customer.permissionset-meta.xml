@@ -3,8 +3,8 @@
     <label>AFM East Coast Customer</label>
     <!-- Case access intentionally omitted: Salesforce Platform license disallows Case,
          and per SALESFORCE.md §5.3 customer users never open the SF Console — the
-         Permission Set exists primarily to populate the AFM JWT scope claim. -->
-    <description>East Coast customer read-only. Carries AFM_Region_East for the AFM JWT scope claim. Dashboard-only — no SF Case access (Platform license).</description>
+         Permission Set exists primarily to carry the region custom permission. -->
+    <description>East Coast customer read-only. Carries the AFM_Region_East custom permission. Dashboard-only — no SF Case access (Platform license).</description>
     <hasActivationRequired>false</hasActivationRequired>
     <objectPermissions>
         <object>AFM_Site__c</object>
