@@ -22,7 +22,7 @@ estimate for a known city pair, and is more than adequate to flag
 ``BASELINE_PROVIDER`` env switch are preserved so the historical/parquet
 providers can slot in later without touching the rule.
 
-Recorded as a deviation from the project specification in the Phase-05 Decisions log.
+This deviates from the project specification, for the two reasons above.
 """
 
 from __future__ import annotations
@@ -136,6 +136,6 @@ def build_baseline_provider(
         return HeuristicBaselineProvider(airport_coords)
     raise NotImplementedError(
         f"BASELINE_PROVIDER='{name}' is not implemented in Phase 05 "
-        "(only 'heuristic'). See the Phase-05 Decisions log for the "
+        "(only 'heuristic'). See the pipelines/services/baseline_provider.py docstring for the "
         "deviation from the project specification; 'opensky'/'parquet' are future work."
     )
