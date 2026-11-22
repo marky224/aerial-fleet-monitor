@@ -8,8 +8,7 @@
 #   alembic.util.exc.CommandError: Version table 'alembic_version' has
 #   more than one head present
 # This was supposed to land in Phase 01 (per the original Phase 00 build
-# decision in docs/build/00_foundations.md), but the SQLite bug forced
-# the switch earlier.
+# decision), but the SQLite bug forced the switch earlier.
 #
 # Dagster runs against its own `dagster` database (created by
 # infra/postgres/init.sql), separate from AFM's `afm` database. This keeps

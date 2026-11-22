@@ -1,8 +1,6 @@
 # Aerial Fleet Monitor — docker-compose stack
 #
 # Phase 00 services: postgres, api, dagster (user-code/webserver/daemon).
-# Public API exposure is handled out-of-stack by a host-level reverse
-# tunnel; details live in `_private/docs/build/00_foundations.md`.
 # Observability (Loki/Promtail/Prometheus/Grafana) lands Phase 09.
 #
 # Bring up with:    docker compose up -d
@@ -61,8 +59,7 @@ services:
     # purpose — verified empirically, tunable).
     mem_limit: 768m
     cpus: 1.5
-    # Mirrors the Dockerfile CMD (keep --proxy-headers / forwarded-allow-ips
-    # for the Cloudflare Tunnel) + --workers for connection concurrency.
+    # Mirrors the Dockerfile CMD + --workers for connection concurrency.
     command: >
       uvicorn app.main:app
       --host 0.0.0.0
@@ -105,7 +102,7 @@ services:
       context: .
       dockerfile: pipelines/Dockerfile
     restart: unless-stopped
-    # Runs EVERY job (30s opensky ingest + foundry sync/reconcile/prune +
+    # Runs EVERY job (300s opensky ingest + foundry sync/reconcile/prune +
     # the flight-enrichment fanout) in one container. 512m/0.5cpu kept it
     # pegged at its memory ceiling at baseline on an 80GB/16-core host —
     # any perturbation (enrichment fanout, a redeploy) tipped it into
