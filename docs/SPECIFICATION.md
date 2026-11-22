@@ -9,11 +9,11 @@ The full specification is the project's locked v1 constitution: scope, architect
 - Key decisions, with rationale for each:
   - Hybrid edge/local architecture
   - Lakehouse pattern (Postgres OLTP + Parquet/DuckDB analytical)
-  - Salesforce as IdP via OAuth Web Server Flow
+  - Salesforce access through OAuth 2.0 Client Credentials (no interactive login in v1)
   - Foundry-hosted dashboard (Workshop apps + Ontology) replacing a local React/ArcGIS frontend
   - BaselineProvider abstraction (OpenSky vs local Parquet baseline swap point)
-  - LLM strategy (no third-party LLM API for AFM, Agentforce default for the SF agent, Foundry default for AIP Logic)
-  - Notification channel separation (in-app, Salesforce, out-of-band)
+  - LLM strategy (AFM calls no third-party LLM API; LLM text comes from the Salesforce Models API; Agentforce default for the SF agent, Foundry default for AIP Logic)
+  - Notifications through Salesforce only (Tasks on high-severity Cases, the daily Chatter brief)
   - Self-hosted observability stack
   - License and visibility decisions
 - Demo accounts and customer scoping (3 Salesforce users, Permission Sets, watched-airport tagging)
@@ -25,6 +25,6 @@ The full specification is available on request.
 
 ---
 
-This stub exists so that automated reviewers (e.g., CodeRabbit) and human readers know this scope is documented. For the complete specification, including the per-phase build sequence, the decision rationales, and the locked demo-account model, contact the author.
+This stub exists so readers know this scope is documented. For the complete specification, including the per-phase build sequence, the decision rationales, and the locked demo-account model, contact the author.
 
 **Mark Andrew Marquez** · mark@markandrewmarquez.com
