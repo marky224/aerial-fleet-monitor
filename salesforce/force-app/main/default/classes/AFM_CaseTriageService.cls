@@ -2,8 +2,8 @@
  * AFM_CaseTriageService — deterministic triage for Fleet Operations anomaly Cases.
  *
  * Shared logic behind both Phase-07 surfaces: the auto-triage Apex trigger
- * (AFM_CaseTrigger, which calls triageCases directly) and the on-demand
- * Agentforce agent (through AFM_TriageCase.triage).
+ * (AFM_CaseTrigger, which reaches triageCases through AFM_CaseTriggerHandler)
+ * and the on-demand Agentforce agent (through AFM_TriageCase.triage).
  * For each Case it:
  *   1. creates investigation Tasks from the non-[Auto] runbook triage steps,
  *   2. escalates fact-computable critical lost-signal cases to the Engineering
