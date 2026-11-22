@@ -292,8 +292,15 @@ $RECYCLE.BIN/
 # AI agent / Claude Code artifacts
 # ----------------------------------------------------------------------------
 # Claude Code may create local state files; exclude unless you want them
+.claude/
 .claude-code/
+CLAUDE.md
+CLAUDE.local.md
 .claude-context/
+
+# Private working documents — never commit. Moving anything out of _private/
+# into docs/ makes it public; do that deliberately, not by accident.
+_private/
 
 # Other AI tool artifacts
 .cursor/
