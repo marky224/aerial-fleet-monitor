@@ -5,9 +5,10 @@ name: sf-agent-deploy
 #   pull_request → main : VALIDATE only — a check-only deploy of force-app + the full
 #                         Apex suite (RunLocalTests). Never mutates the org, so it is
 #                         safe on every PR commit. Make it a required status check.
-#   push → main / manual: FULL live lifecycle — real deploy → seed runbook CMDT+Files
-#                         → run Apex tests → provision the agent run-as user → publish
-#                         + activate the Agentforce agent → verify it is live.
+#   push → main / manual: FULL live lifecycle — real deploy → run Apex tests → seed
+#                         runbook CMDT+Files (when their inputs changed, or on a manual
+#                         run) → provision the agent run-as user → publish + activate
+#                         the Agentforce agent → verify it is live.
 #
 # Why this split (researched, production-correct): `sf project deploy quick` is
 # Production-only and does NOT work on a Developer Edition org, so the merge job just
@@ -26,6 +27,7 @@ on:
     branches: [main]
     paths:
       - 'salesforce/**'
+      - 'runbooks/**'
       - 'scripts/seed_runbook_cmdt.sh'
       - 'scripts/seed_runbook_files.sh'
       - 'scripts/publish_agent.sh'
@@ -35,6 +37,7 @@ on:
     branches: [main]
     paths:
       - 'salesforce/**'
+      - 'runbooks/**'
       - 'scripts/seed_runbook_cmdt.sh'
       - 'scripts/seed_runbook_files.sh'
       - 'scripts/publish_agent.sh'
@@ -135,7 +138,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Need history so the agent-bundle change-detection step can diff the push.
+          # Need history so the two change-detection steps (runbook seed, agent bundle)
+          # can diff the push.
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
@@ -165,7 +169,35 @@ jobs:
       - name: Run Apex tests (gate before publishing the agent)
         run: make sf-test
 
+      # Seed only when something the seed reads changed (or on a manual run): the
+      # runbooks, their metadata records and object, the File seeder class, or either
+      # seed script. Other merges leave the runbook records and Files alone.
+      - name: Detect runbook-seed changes
+        id: seed
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            decision=true;  reason="manual run (forced)"
+          else
+            before="${{ github.event.before }}"
+            git rev-parse -q --verify "$before^{commit}" >/dev/null 2>&1 || before="${{ github.sha }}^"
+            if git diff --name-only "$before" "${{ github.sha }}" -- \
+                 'runbooks/**' \
+                 'salesforce/force-app/main/default/customMetadata/AFM_Runbook.*.md-meta.xml' \
+                 'salesforce/force-app/main/default/objects/AFM_Runbook__mdt/**' \
+                 'salesforce/force-app/main/default/classes/AFM_RunbookFileSeeder.cls' \
+                 'salesforce/force-app/main/default/classes/AFM_RunbookFileSeeder.cls-meta.xml' \
+                 'scripts/seed_runbook_cmdt.sh' \
+                 'scripts/seed_runbook_files.sh' | grep -q .; then
+              decision=true;  reason="seed inputs changed"
+            else
+              decision=false; reason="no seed-input change"
+            fi
+          fi
+          echo "changed=$decision" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Runbook seed::$reason -> seed=$decision"
+
       - name: Seed runbook CMDT records + Files (org-adaptive seed — apex mode on afm-dev)
+        if: steps.seed.outputs.changed == 'true'
         # seed_runbook_cmdt.sh is org-adaptive (standard MDAPI -> Apex fallback on
         # the GACK). afm-dev reliably hits the CustomMetadata-record GACK
         # (-315522575), so force the Apex path here to skip the ~15s doomed standard
@@ -177,8 +209,8 @@ jobs:
 
       # Publishing mints a new BotVersion + re-activates. Only do that when the
       # authoring bundle actually changed (or on a manual run) — otherwise every
-      # unrelated merge to main churns throwaway BotVersions. deploy/test/seed above
-      # still run for any Salesforce change.
+      # unrelated merge to main churns throwaway BotVersions. deploy/test above still
+      # run for any Salesforce change; the seed has its own gate (above).
       # (The CI connected app must grant the SFAP scopes — chatbot_api, sfap_api, web —
       # so `sf agent publish` can obtain its named-user token.)
       - name: Detect agent-bundle changes

@@ -495,6 +495,8 @@ N/A — this is a reference runbook.
 - `scripts/seed_runbook_cmdt.sh` seeds one `AFM_Runbook__mdt` custom metadata record per runbook (title, case types, severity floor, triage steps) from the files in `salesforce/force-app/main/default/customMetadata/`, then checks the records with a SOQL read-back.
 - `scripts/seed_runbook_files.sh` sends every `runbooks/*.md` to the Apex class `AFM_RunbookFileSeeder` in one transaction. Each runbook is a Salesforce File whose title matches the record's `Title__c`: the class creates the File when none has that title, adds a new version when the content changed (Cases keep their link to the File), and skips it when the content is unchanged. It never deletes a File. The script prints one line per runbook with the action taken and the File's Case-link count before and after.
 
+The `sf-agent-deploy` workflow runs both steps on a merge to `main` that changes a runbook, a runbook record, the `AFM_Runbook__mdt` object, the seeder class or either seed script, and on a manual run of the workflow.
+
 When a Fleet Operations Case is inserted, triage (`AFM_CaseTriageService`) reads the records for the Case's type, creates one investigation Task for each triage step not marked **[Auto]**, and links the matching Files to the Case.
 
 ## 6. Discovery and indexing
@@ -519,7 +521,7 @@ When adding a new runbook:
 
 1. Pick a unique kebab-case `id`. Verify by `grep -r "^id: " runbooks/`.
 2. Copy the structure of a similar runbook in §4. Adjust `case_types`, `severity_floor`, body content.
-3. Add the matching `AFM_Runbook.<Name>.md-meta.xml` record (§5), commit, and run `make sf-seed-runbooks`.
+3. Add the matching `AFM_Runbook.<Name>.md-meta.xml` record (§5) and commit. Merging to `main` seeds it (§5); `make sf-seed-runbooks` does the same by hand.
 
 When modifying an existing runbook:
 - Never change `id` (breaks references). To rename conceptually, create a new file and remove the old one (the seed leaves the old Salesforce record and File in place; retire them by hand).
