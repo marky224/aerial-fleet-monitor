@@ -133,7 +133,7 @@ The Parquet lakehouse uses Hive-style partitioning on `year/month/day/hour` so D
 
 **Foundry assets**: the Ontology object definitions are version-controlled in `foundry/ontology/*.yaml` as the specification for provisioning the object types in the tenant. The Workshop apps are built in the tenant and cannot be exported as files (`foundry/workshop/README.md`). No CI job checks the Ontology.
 
-**Salesforce metadata** is deployed with `make sf-deploy` (`sf project deploy start`). The `sf-agent-deploy` workflow runs a check-only deploy with the Apex tests on each pull request that touches Salesforce paths; on merge it deploys, runs the Apex tests, seeds the runbook records and Files, and publishes and activates the agent when its authoring bundle changed.
+**Salesforce metadata** is deployed with `make sf-deploy` (`sf project deploy start`). The `sf-agent-deploy` workflow runs a check-only deploy with the Apex tests on each pull request that touches Salesforce or runbook paths; on merge it deploys, runs the Apex tests, seeds the runbook records and Files when a runbook, its metadata or the seed code changed, and publishes and activates the agent when its authoring bundle changed.
 
 ---
 

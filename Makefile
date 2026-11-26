@@ -178,9 +178,10 @@ sf-test:
 		--code-coverage --result-format human --wait 30
 
 # Seed the runbook data (CMDT records + reference Files). Run AFTER sf-deploy
-# (which deploys the AFM_Runbook__mdt type+fields). Records go via the Apex
-# Metadata API, not `sf project deploy` — afm-dev hits a known Salesforce GACK
-# on CustomMetadata record deploys (see salesforce/.forceignore for the why).
+# (which deploys the AFM_Runbook__mdt type+fields and the AFM_RunbookFileSeeder
+# class the File seed calls). Records go via the Apex Metadata API, not
+# `sf project deploy` — afm-dev hits a known Salesforce GACK on CustomMetadata
+# record deploys (see salesforce/.forceignore for the why).
 .PHONY: sf-seed-runbooks
 sf-seed-runbooks:
 	./scripts/seed_runbook_cmdt.sh $(SF_ORG)

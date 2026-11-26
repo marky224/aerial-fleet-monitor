@@ -14,6 +14,7 @@ The full Salesforce specification covers org provisioning, OAuth Connected App c
   - `AFM_CaseTriageService` (deterministic triage: investigation Tasks, escalation, customer-notification Task, runbook File links)
   - `AFM_CaseTriggerHandler` and the `AFM_CaseTrigger` trigger (auto-triage on Case insert)
   - `AFM_TriageNarrative` (Salesforce Models API text for the severity justification and customer narrative)
+  - `AFM_RunbookFileSeeder` (seeds the runbook Files in one transaction: a new File, a new version when the content changed, or nothing; called by `scripts/seed_runbook_files.sh`)
   - `AFM_TestDataFactory` (`@IsTest` helpers)
   - `AFM_BriefSynthesis` (Phase 11 — `@RestResource` daily-brief action: Salesforce Models API synthesis + Chatter post to the "Fleet Operations Daily" group)
   - `*_Test` class patterns
