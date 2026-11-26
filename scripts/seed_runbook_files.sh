@@ -20,9 +20,9 @@
 # read-only query table of the runbook Files only (title, path, version number,
 # created date).
 #
-# A runbook's title and file name go into the Apex and into that query as string
-# literals, with every backslash and single quote escaped. One that holds a line
-# break (CR or LF) stops the script before anything is sent.
+# A runbook's title and file name go into the Apex, and its title into that
+# query, as string literals with every backslash and single quote escaped. One
+# that holds a line break (CR or LF) stops the script before anything is sent.
 #
 # Env:
 #   AFM_FILES_SEED_DRY_RUN=1   print the anonymous Apex and exit; no org is called
@@ -93,7 +93,7 @@ fi
 
 echo "Seeding ${count} runbook Files into org '${ORG}'..."
 if ! run_out="$(sf apex run --target-org "$ORG" --file "$APEX_FILE" 2>&1)"; then
-  echo "ERROR: the runbook File seed did not finish." >&2
+  echo "ERROR: sf apex run exited with an error." >&2
   echo "  A failed Apex run writes nothing: the seed is one transaction. A CLI that lost its connection" >&2
   echo "  after sending the run looks the same from here, so the seed may still have run. A re-run is safe." >&2
   echo "  If the error is 'Invalid type: AFM_RunbookFileSeeder', run 'make sf-deploy' first." >&2
