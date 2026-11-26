@@ -129,6 +129,16 @@ private class AFM_RunbookFileSeeder_Test {
         System.assertEquals(1, laterLinks.size(), 'Triage links the versioned File to a new Case');
         System.assertEquals(docId, laterLinks[0].ContentDocumentId,
             'The new Case links the same File');
+
+        // Seed the same bytes again. The File now has two versions and two Case
+        // links: only its latest version is compared, and every Case link counts.
+        List<AFM_RunbookFileSeeder.Result> again = seedOne(
+            CRUISE_TITLE, 'lost-signal-cruise.md', changed);
+        System.assertEquals(AFM_RunbookFileSeeder.UNCHANGED, again[0].action,
+            'The latest of two versions already holds these bytes -> unchanged');
+        System.assertEquals(2, versionCount(docId), 'No third version');
+        System.assertEquals(2, again[0].caseLinksBefore, 'Both Case links counted before');
+        System.assertEquals(2, again[0].caseLinksAfter, 'Both Case links counted after');
     }
 
     @IsTest
